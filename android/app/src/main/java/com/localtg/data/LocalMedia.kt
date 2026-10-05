@@ -260,7 +260,18 @@ class LocalMedia(private val ctx: Context) {
     /** 缩略图(JPEG 字节):Android 10+ 用系统的 loadThumbnail(有系统缓存,很快),更低版本自己解码。 */
     fun thumbnail(i: LItem, size: Int): ByteArray? {
         var bmp: Bitmap? = null
-        if (Build.VERSION.SDK_INT >= 29) bmp = runCatching { ctx.contentResolver.loadThumbnail(i.uri, Size(size, size), null) }.getOrNull()
+        // 图片:自己从原图缩小(系统缩略图只有几百像素,放大显示会糊,且 ImageDecoder 会处理 EXIF 方向)
+        if (!i.video && Build.VERSION.SDK_INT >= 28) bmp = runCatching {
+            android.graphics.ImageDecoder.decodeBitmap(android.graphics.ImageDecoder.createSource(ctx.contentResolver, i.uri)) { d, info, _ ->
+                val m = maxOf(info.size.width, info.size.height)
+                if (m > size) {
+                    val k = size.toFloat() / m
+                    d.setTargetSize((info.size.width * k).toInt().coerceAtLeast(1), (info.size.height * k).toInt().coerceAtLeast(1))
+                }
+                d.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+        }.getOrNull()
+        if (bmp == null && Build.VERSION.SDK_INT >= 29) bmp = runCatching { ctx.contentResolver.loadThumbnail(i.uri, Size(size, size), null) }.getOrNull()
         if (bmp == null) bmp = if (i.video) videoFrame(i) else sampled(i, size)
         if (bmp == null) return null
         return ByteArrayOutputStream().use { bos -> bmp.compress(Bitmap.CompressFormat.JPEG, 88, bos); bos.toByteArray() }
