@@ -172,6 +172,11 @@ private fun ViewerPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Uni
         "全屏图片清晰度", s.viewerImageWidth, listOf(1440 to "1440 像素宽(省流量)", 2160 to "2160 像素宽", 2880 to "2880 像素宽(默认)", 4096 to "4096 像素宽(最清晰)"),
         desc = "放大看细节时越大越清晰;服务端会按这个宽度生成预览图",
     ) { u { copy(viewerImageWidth = it) } }
+    Header("翻页")
+    SwitchRow(
+        "向右滑 = 上一个", "在聊天流里打开的图片 / 视频:向右滑回到上面那一条(更早的),向左滑到下面那一条;关闭则相反。上一个 / 下一个按钮和自动播放下一个也按这个方向",
+        s.rightSwipePrev,
+    ) { u { copy(rightSwipePrev = it) } }
     Header("缩放")
     ChoiceRow(
         "放大上限", s.maxZoom, listOf(2f to "2 倍(默认)", 3f to "3 倍", 4f to "4 倍", 6f to "6 倍", 8f to "8 倍"),
@@ -342,14 +347,10 @@ private fun CodecPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
         "缓冲大小", s.bufferMode,
         listOf("small" to "小(约 15 秒,省流量)", "standard" to "标准(约 50 秒)", "large" to "大(约 120 秒,Wi-Fi 不稳时用)"),
     ) { u { copy(bufferMode = it) } }
-    Header("画质限制(用于转码 / 自适应码率)")
+    Header("服务端转码")
     ChoiceRow(
-        "最大分辨率", s.maxHeight, listOf(0 to "不限", 2160 to "2160p (4K)", 1440 to "1440p", 1080 to "1080p", 720 to "720p", 480 to "480p"),
-        desc = "服务端转码时的最大分辨率(不限 = 1080p);直接播放原文件不受影响",
-    ) { u { copy(maxHeight = it) } }
-    ChoiceRow(
-        "最大码率", s.maxBitrateMbps, listOf(0 to "不限", 40 to "40 Mbps", 20 to "20 Mbps", 10 to "10 Mbps", 5 to "5 Mbps", 2 to "2 Mbps"),
-        desc = "服务端转码时的视频码率上限(不限 = 按分辨率自动:480p 1.5M / 720p 3M / 1080p 6M / 1440p 12M / 2160p 20M)",
+        "转码码率", s.maxBitrateMbps, listOf(0 to "自动(按原分辨率)", 40 to "40 Mbps", 20 to "20 Mbps", 10 to "10 Mbps", 5 to "5 Mbps", 2 to "2 Mbps"),
+        desc = "转码只调整码率,不改变分辨率(原来多少像素还是多少)。自动 = 按视频原分辨率:480p 1.5M / 720p 3M / 1080p 6M / 1440p 12M / 2160p 20M;网络不好时调低",
     ) { u { copy(maxBitrateMbps = it) } }
     Header("音轨与字幕")
     val langs = listOf("" to "跟随系统", "zh" to "中文", "en" to "English", "ja" to "日本語", "ko" to "한국어")
@@ -388,11 +389,15 @@ private fun StoragePage(c: AppContainer) {
         msg = "图片缓存已清除"
     }
     Header("记录")
-    ActionRow("清除浏览位置记录", "所有文件夹下次打开都从最新一端开始", confirm = "清除所有文件夹的浏览位置?") {
-        c.viewState.clearAll(); msg = "浏览位置已清除"
+    ActionRow("清除浏览位置记录", "所有文件夹下次打开都从最新一端开始(同时清除服务器上同步的记录)", confirm = "清除所有文件夹的浏览位置?") {
+        c.viewState.clearAll()
+        if (!c.isLocal) runCatching { c.api.clearSyncedViews() } // 服务器上同步的记录一起清
+        msg = "浏览位置已清除"
     }
-    ActionRow("清除播放进度记录", "所有视频下次都从头播放", confirm = "清除所有视频的播放进度?") {
-        c.playback.clearAll(); msg = "播放进度已清除"
+    ActionRow("清除播放进度记录", "所有视频下次都从头播放(同时清除服务器上同步的记录)", confirm = "清除所有视频的播放进度?") {
+        c.playback.clearAll()
+        if (!c.isLocal) runCatching { c.api.clearSyncedPlayback() }
+        msg = "播放进度已清除"
     }
     Header("设置")
     ActionRow("恢复默认设置", "不影响登录状态和浏览记录", confirm = "把所有设置恢复为默认值?", danger = true) {

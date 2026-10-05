@@ -153,6 +153,8 @@ private data class Query(val sort: String, val dir: String, val types: Set<Strin
 class ChatViewModel(private val c: AppContainer, private val dialogId: String) : ViewModel() {
     private val defaultTypes = setOf("photo", "video", "gif")
     private val ns = c.session.ns() // 打开时是哪台服务器(退出时保存位置要写回它,不是当时的"当前服务器")
+    private val startBase = c.session.session.value?.baseUrl
+    private var serverJob: Job? = null
     val ready = MutableStateFlow(false)
     // 服务器上的文件夹默认按文件名排序;本地媒体默认按文件时间
     val sortKey = MutableStateFlow(if (c.isLocal) "taken" else "name")
@@ -197,7 +199,10 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
         }
         if (c.isLocal && st.defaultSort == "auto" && st.defaultSortDir == "auto") ascGrid.value = false
         viewModelScope.launch {
-            (if (st.rememberPosition) c.viewState.load(dialogId, ns) else null)?.let { v ->
+            // 先问服务器(换设备也回到上次的位置),没有记录或连不上再用本机保存的
+            val remote = if (st.rememberPosition && !c.isLocal)
+                kotlinx.coroutines.withTimeoutOrNull(2500) { c.api.getDialogView(dialogId) } else null
+            (if (st.rememberPosition) remote ?: c.viewState.load(dialogId, ns) else null)?.let { v ->
                 sortKey.value = v.sort; ascChat.value = v.ascChat; ascGrid.value = v.ascGrid
                 grid.value = v.grid; columns.value = v.columns.coerceIn(2, 6)
                 types.value = v.types.toSet().ifEmpty { defaultTypes }
@@ -295,9 +300,9 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     }
 
     /** 离开页面时立即保存;用应用级协程域,界面销毁后也能写完。 */
-    fun persistNow() { saveJob?.cancel(); persist() }
+    fun persistNow() { saveJob?.cancel(); persist(now = true) }
 
-    private fun persist() {
+    private fun persist(now: Boolean = false) {
         if (!c.settings.value.rememberPosition) return
         val p = pos
         val v = DialogView(
@@ -306,6 +311,14 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
             types = types.value.toList(), columns = columns.value,
         )
         c.scope.launch { c.viewState.save(dialogId, v, ns) }
+        // 同步到服务器:滚动时 3 秒去抖,离开页面时立即发;还是打开时那台服务器才发
+        if (!c.isLocal && c.session.session.value?.baseUrl == startBase) {
+            serverJob?.cancel()
+            serverJob = c.scope.launch {
+                if (!now) delay(3000)
+                runCatching { c.api.putDialogView(dialogId, v) }.onFailure { AppLog.d("chat", "同步浏览位置失败: ${it.message}") }
+            }
+        }
     }
 }
 
@@ -337,7 +350,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, onBack: () -> Unit, onOpenView
 
     val open: (Item) -> Unit = { item ->
         val snap = lazyItems.itemSnapshotList.items
-        c.viewerFeed = com.localtg.data.ViewerFeed(snap, vm.moreLoader())
+        c.viewerFeed = com.localtg.data.ViewerFeed(snap, prevIsHigherIndex = !grid, loader = vm.moreLoader())
         onOpenViewer(snap.indexOfFirst { it.id == item.id }.coerceAtLeast(0))
     }
 

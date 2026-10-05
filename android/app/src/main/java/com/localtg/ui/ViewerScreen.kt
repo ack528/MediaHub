@@ -90,9 +90,12 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
     // VLC 方式:视频页水平滑动 = 快进快退,此时翻页靠上一个 / 下一个按钮
     val videoSwipeSeek = cur.isVideo && cfg.gestures && cfg.swipeSeek
 
+    // 翻页方向:向右滑 = 上一个(设置里可改)。列表序号和屏幕上的先后可能相反(聊天流最新在底部),所以按"上一个是不是序号更大的一项"决定
+    val prevDelta = if (feed.prevIsHigherIndex) 1 else -1
+    val reverse = feed.prevIsHigherIndex == cfg.rightSwipePrev
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(
-            pager, Modifier.fillMaxSize(), beyondViewportPageCount = cfg.viewerPreload, key = { items[it].id },
+            pager, Modifier.fillMaxSize(), beyondViewportPageCount = cfg.viewerPreload, key = { items[it].id }, reverseLayout = reverse,
             userScrollEnabled = !ui.locked && !videoSwipeSeek,
         ) { page ->
             val item = items[page]
@@ -100,11 +103,11 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
             if (item.isVideo) {
                 VideoPage(
                     item, c, isCurrent, ui, onBack = onBack,
-                    onPrev = if (page > 0) { { scope.launch { pager.animateScrollToPage(page - 1) } } } else null,
-                    onNext = if (page < items.lastIndex) { { scope.launch { pager.animateScrollToPage(page + 1) } } } else null,
+                    onPrev = if (page + prevDelta in items.indices) { { scope.launch { pager.animateScrollToPage(page + prevDelta) } } } else null,
+                    onNext = if (page - prevDelta in items.indices) { { scope.launch { pager.animateScrollToPage(page - prevDelta) } } } else null,
                     onEnded = {
                         if (ui.sleepAt == -1L) { ui.sleepAt = 0L; AppLog.i("player", "睡眠定时:播完停止") }
-                        else if (c.settings.value.autoNext && page < items.lastIndex) scope.launch { pager.animateScrollToPage(page + 1) }
+                        else if (c.settings.value.autoNext && page - prevDelta in items.indices) scope.launch { pager.animateScrollToPage(page - prevDelta) }
                     },
                 )
             } else {

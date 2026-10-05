@@ -12,6 +12,8 @@ import androidx.compose.runtime.setValue
  */
 class ViewerFeed(
     initial: List<Item>,
+    /** 屏幕上"上一个"(上面那条 / 前一格)是不是列表里序号更大的那一项:聊天流(最新在底部)里是,网格 / 搜索结果里不是 */
+    val prevIsHigherIndex: Boolean = false,
     private val loader: (suspend (cursor: String?, lastId: String?) -> Pair<List<Item>, String?>)? = null,
 ) {
     val items = mutableStateListOf<Item>().apply { addAll(initial) }

@@ -72,7 +72,6 @@ fun createPlayer(ctx: Context, c: AppContainer, s: AppSettings, forceSoftware: B
         .setHandleAudioBecomingNoisy(s.pauseOnUnplug)
         .build()
     player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().apply {
-        if (s.maxHeight > 0) setMaxVideoSize(Int.MAX_VALUE, s.maxHeight)
         if (s.maxBitrateMbps > 0) setMaxVideoBitrate(s.maxBitrateMbps * 1_000_000)
         if (s.audioLanguage.isNotEmpty()) setPreferredAudioLanguage(s.audioLanguage)
         setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !s.showSubtitles)

@@ -35,7 +35,7 @@ class AuthInterceptor(
             req = req.newBuilder().header("Authorization", "Bearer ${s.token}").build()
         }
         val resp = chain.proceed(req)
-        if (resp.code == 401 && s != null && !req.url.encodedPath.endsWith("/auth/login")) onUnauthorized(s)
+        if (resp.code == 401 && s != null && req.url.toString().startsWith(s.baseUrl) && !req.url.encodedPath.endsWith("/auth/login")) onUnauthorized(s)
         return resp
     }
 }
@@ -151,8 +151,47 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     fun fileUrl(id: String): String = "$base/api/v1/media/$id/file"
 
     /** 服务端转码(内置 ffmpeg 或 Jellyfin 的 HLS)的播放地址:maxHeight 目标高度,maxBitrate 视频码率(bps),sid 本次播放的会话标识。 */
-    fun hlsUrl(item: Item, maxHeight: Int, maxBitrate: Int, sid: String, audioIndex: Int? = null): String =
-        "$base/api/v1/media/${item.id}/hls/master.m3u8?maxHeight=$maxHeight&maxBitrate=$maxBitrate&sid=$sid" + (audioIndex?.let { "&audio=$it" } ?: "")
+    fun hlsUrl(item: Item, maxBitrate: Int, sid: String, audioIndex: Int? = null): String =
+        "$base/api/v1/media/${item.id}/hls/master.m3u8?maxBitrate=$maxBitrate&sid=$sid" + (audioIndex?.let { "&audio=$it" } ?: "")
+
+    // ---- 浏览记录 / 播放进度同步(存在服务器上,换设备打开回到上次的位置)----
+    @kotlinx.serialization.Serializable
+    private class ViewResp(val json: DialogView, val savedAt: Long = 0)
+
+    @kotlinx.serialization.Serializable
+    private class PlayResp(val posMs: Long = 0, val savedAt: Long = 0)
+
+    private suspend fun send(req: Request) {
+        withContext(Dispatchers.IO) {
+            http.newCall(req).await().use { resp ->
+                if (!resp.isSuccessful) throw ApiException(resp.code, "http.${resp.code}", "HTTP ${resp.code}")
+            }
+        }
+    }
+
+    /** 服务器上这个群的浏览记录;没有记录(404)或出错返回 null。 */
+    suspend fun getDialogView(dialogId: String): DialogView? = runCatching {
+        call<ViewResp>(Request.Builder().url("$base/api/v1/dialogs/$dialogId/view").build()).json
+    }.getOrNull()
+
+    suspend fun putDialogView(dialogId: String, v: DialogView) {
+        val body = AppJson.encodeToString(v.copy(savedAt = System.currentTimeMillis()))
+        send(Request.Builder().url("$base/api/v1/dialogs/$dialogId/view").put(body.toRequestBody(json)).build())
+    }
+
+    /** 服务器上这个视频的播放进度(毫秒,0 = 看完 / 重新开始);没有记录或出错返回 null。 */
+    suspend fun getPlayback(mediaId: String): Long? = runCatching {
+        call<PlayResp>(Request.Builder().url("$base/api/v1/media/$mediaId/playback").build()).posMs
+    }.getOrNull()
+
+    suspend fun putPlayback(mediaId: String, posMs: Long) {
+        val body = AppJson.encodeToString(mapOf("posMs" to posMs, "savedAt" to System.currentTimeMillis()))
+        send(Request.Builder().url("$base/api/v1/media/$mediaId/playback").put(body.toRequestBody(json)).build())
+    }
+
+    suspend fun clearSyncedViews() = send(Request.Builder().url("$base/api/v1/state/views").delete().build())
+
+    suspend fun clearSyncedPlayback() = send(Request.Builder().url("$base/api/v1/state/playback").delete().build())
 
     /** 退出播放时通知服务端结束这个会话的转码,释放 CPU / 核显。 */
     suspend fun stopHls(item: Item, sid: String) {

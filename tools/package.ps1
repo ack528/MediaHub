@@ -4,7 +4,7 @@
 #   powershell -File tools\package.ps1 -SkipDesktop    # 只打安卓端
 # 前提:已运行过 tools\setup.ps1(便携工具链),signing\ 下有 Android 发布密钥(没有则用调试签名)。
 param(
-  [string]$Version = '1.2.1',
+  [string]$Version = '1.3.0',
   [switch]$SkipAndroid,
   [switch]$SkipDesktop,
   [switch]$SkipTests

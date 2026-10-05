@@ -42,13 +42,12 @@ const (
 type hlsParams struct {
 	MediaID int64
 	SID     string
-	Height  int // 目标高度上限,0 = 保持原尺寸
-	Bitrate int // 视频码率 bps,0 = 默认
+	Bitrate int // 视频码率 bps,0 = 默认;转码只调码率,始终保持原分辨率
 	Audio   int // 音频流在源文件里的序号,0 = 第一条音轨
 }
 
 func (p hlsParams) key() string {
-	return fmt.Sprintf("%d|%s|%d|%d|%d", p.MediaID, p.SID, p.Height, p.Bitrate, p.Audio)
+	return fmt.Sprintf("%d|%s|%d|%d", p.MediaID, p.SID, p.Bitrate, p.Audio)
 }
 
 func parseHLSParams(id int64, r *http.Request) hlsParams {
@@ -57,12 +56,8 @@ func parseHLSParams(id int64, r *http.Request) hlsParams {
 	if p.SID == "" {
 		p.SID = "x"
 	}
-	p.Height, _ = strconv.Atoi(q.Get("maxHeight"))
 	p.Bitrate, _ = strconv.Atoi(q.Get("maxBitrate"))
 	p.Audio, _ = strconv.Atoi(q.Get("audio"))
-	if p.Height < 0 || p.Height > 4320 {
-		p.Height = 0
-	}
 	if p.Bitrate < 0 {
 		p.Bitrate = 0
 	}
@@ -252,10 +247,7 @@ func (s *hlsSess) args(idx int, hw bool) []string {
 	if hw {
 		pix = "nv12"
 	}
-	vf := "format=" + pix
-	if s.p.Height > 0 {
-		vf = fmt.Sprintf("scale=-2:'min(%d,ih)',format=%s", s.p.Height, pix)
-	}
+	vf := "format=" + pix // 不缩放:转码只改码率,分辨率保持原样
 	br := s.p.Bitrate
 	if br <= 0 {
 		br = 5_000_000
@@ -317,7 +309,7 @@ func (s *hlsSess) launchLocked(idx int, hw bool) error {
 		return err
 	}
 	s.cmd, s.cancel, s.runStart = cmd, cancel, idx
-	s.h.log.Info("转码开始", "id", s.p.MediaID, "seg", idx, "height", s.p.Height, "bitrate", s.p.Bitrate, "qsv", hw)
+	s.h.log.Info("转码开始", "id", s.p.MediaID, "seg", idx, "bitrate", s.p.Bitrate, "qsv", hw)
 	go func() {
 		defer func() { _ = recover() }()
 		err := cmd.Wait()

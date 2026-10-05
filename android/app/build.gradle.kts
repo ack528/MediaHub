@@ -14,8 +14,8 @@ android {
         applicationId = "com.localtg"
         minSdk = 26
         targetSdk = 37
-        versionCode = 12
-        versionName = "1.4.0"
+        versionCode = 13
+        versionName = "1.5.0"
     }
     // 发布签名:密钥库与口令放在项目根目录 signing\(不要外传);没有该文件时 release 用调试签名,方便别人构建
     val signingProps = Properties().apply {

@@ -158,7 +158,7 @@ private fun trackOpts(tracks: Tracks, type: Int): List<TrackOpt> {
     return out
 }
 
-/** 转码目标高度对应的默认视频码率(bps)。 */
+/** 视频分辨率(短边像素)对应的默认转码码率(bps)。转码不改分辨率,只按这个码率压缩。 */
 private fun bitrateFor(h: Int): Int = when {
     h <= 480 -> 1_500_000
     h <= 720 -> 3_000_000
@@ -166,6 +166,11 @@ private fun bitrateFor(h: Int): Int = when {
     h <= 1440 -> 12_000_000
     else -> 20_000_000
 }
+
+/** 转码码率:设置里指定了就用,否则按原视频分辨率自动。 */
+private fun autoBitrate(item: Item, s: com.localtg.data.AppSettings): Int =
+    if (s.maxBitrateMbps > 0) s.maxBitrateMbps * 1_000_000
+    else bitrateFor(minOf(item.w ?: 1920, item.h ?: 1080).let { if (it <= 0) 1080 else it })
 
 private fun fmt(ms: Long): String {
     val s = (ms.coerceAtLeast(0)) / 1000
@@ -186,6 +191,7 @@ fun VideoPage(
     val inPip by c.inPip.collectAsState()
 
     val ns = remember { c.session.ns() }
+    val base0 = remember { c.session.session.value?.baseUrl } // 打开时是哪台服务器(进度要同步回它)
     var player by remember { mutableStateOf<ExoPlayer?>(null) }
     var firstFrame by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -193,7 +199,7 @@ fun VideoPage(
     var modeOverride by remember(item.id) { mutableStateOf<String?>(null) } // 用户手动指定解码方式
     var forceTry by remember(item.id) { mutableStateOf(false) } // 服务端判定文件损坏时,用户选择"仍然尝试播放"
     val blocked = item.brokenLabel() != null && (item.size == 0L || !forceTry)
-    var transcodeHeight by remember(item.id) { mutableStateOf<Int?>(null) } // null = 直接播放原文件;否则请服务端转码成这个高度
+    var transcodeBitrate by remember(item.id) { mutableStateOf<Int?>(null) } // null = 直接播放原文件;否则请服务端按这个码率(bps)转码,分辨率不变
     val sid = remember(item.id) { java.util.UUID.randomUUID().toString().take(8) }
     var resumeMs by remember(item.id) { mutableLongStateOf(-1L) }        // -1 = 还没读取保存的进度
     var stats by remember { mutableStateOf("") }
@@ -222,10 +228,16 @@ fun VideoPage(
 
     // 读取上次播放进度(只在成为当前页时读一次)
     LaunchedEffect(isCurrent, item.id) {
-        if (isCurrent && resumeMs < 0) resumeMs = if (cfg.resume) c.playback.get(item.id, ns) else 0L
+        if (isCurrent && resumeMs < 0) {
+            // 先问服务器(换设备接着看),没有记录或连不上再用本机保存的
+            resumeMs = if (!cfg.resume) 0L else {
+                val remote = if (c.isLocal) null else kotlinx.coroutines.withTimeoutOrNull(2000) { c.api.getPlayback(item.id) }
+                remote ?: c.playback.get(item.id, ns)
+            }
+        }
     }
 
-    DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, transcodeHeight, blocked, resumeMs >= 0) {
+    DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, transcodeBitrate, blocked, resumeMs >= 0) {
         var p: ExoPlayer? = null
         val loudness = arrayOfNulls<android.media.audiofx.LoudnessEnhancer>(1)
         if (isCurrent && resumeMs >= 0 && !blocked) {
@@ -277,16 +289,16 @@ fun VideoPage(
                     if (codecProblem && !useSoftware && modeOverride == null && cs.autoSoftwareFallback) {
                         resumeMs = pl.currentPosition
                         useSoftware = true // 触发本 Effect 重建播放器(软解优先)
-                    } else if (transcodeHeight == null && cs.autoTranscode && !c.isLocal && (formatProblem || codecProblem)) {
+                    } else if (transcodeBitrate == null && cs.autoTranscode && !c.isLocal && (formatProblem || codecProblem)) {
                         // 手机解不了:改用服务端转码(服务端 ffmpeg / Jellyfin → H.264 / AAC 的 HLS)
-                        val h = if (cs.maxHeight > 0) cs.maxHeight else 1080
-                        AppLog.i("player", "自动改用服务端转码 ${h}p(原因 ${e.errorCodeName})")
+                        val br = autoBitrate(item, cs)
+                        AppLog.i("player", "自动改用服务端转码 ${br / 1000}kbps,分辨率不变(原因 ${e.errorCodeName})")
                         resumeMs = pl.currentPosition
                         useSoftware = false
-                        transcodeHeight = h
-                        showHud(Hud(TgIcons.Speed, "手机无法直接播放,已改用服务端转码 ${h}p"))
+                        transcodeBitrate = br
+                        showHud(Hud(TgIcons.Speed, "手机无法直接播放,已改用服务端转码(${"%.1f".format(br / 1_000_000f)} Mbps,分辨率不变)"))
                     } else {
-                        error = if (transcodeHeight != null) {
+                        error = if (transcodeBitrate != null) {
                             if (e.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) "服务端转码失败(多半是服务端的 ffmpeg 无法处理这个文件,详情见服务端日志)"
                             else "转码播放失败:${e.errorCodeName}"
                         } else friendlyPlayerError(e, item)
@@ -303,11 +315,10 @@ fun VideoPage(
                     AppLog.d("player", "丢帧 $droppedFrames / ${elapsedMs}ms")
                 }
             })
-            val th = transcodeHeight
-            if (th != null) {
-                val br = c.settings.value.maxBitrateMbps.let { if (it > 0) it * 1_000_000 else bitrateFor(th) }
-                pl.setMediaItem(MediaItem.Builder().setUri(c.api.hlsUrl(item, th, br, sid)).setMimeType(MimeTypes.APPLICATION_M3U8).build())
-                AppLog.i("player", "服务端转码 ${th}p ${br / 1000}kbps")
+            val br = transcodeBitrate
+            if (br != null) {
+                pl.setMediaItem(MediaItem.Builder().setUri(c.api.hlsUrl(item, br, sid)).setMimeType(MimeTypes.APPLICATION_M3U8).build())
+                AppLog.i("player", "服务端转码 ${br / 1000}kbps(分辨率不变)")
             } else {
                 pl.setMediaItem(MediaItem.fromUri(c.api.fileUrl(item)))
             }
@@ -324,9 +335,13 @@ fun VideoPage(
                 val pos = pl.currentPosition
                 val dur = pl.duration
                 val keep = pos > 5000 && (dur <= 0 || pos < dur - 5000)
-                if (c.settings.value.resume && firstFrame) c.scope.launch { c.playback.set(item.id, if (keep) pos else 0L, ns) }
+                if (c.settings.value.resume && firstFrame) c.scope.launch {
+                    val v = if (keep) pos else 0L
+                    c.playback.set(item.id, v, ns)
+                    if (!c.isLocal && c.session.session.value?.baseUrl == base0) runCatching { c.api.putPlayback(item.id, v) }
+                }
                 pl.release()
-                if (transcodeHeight != null) c.scope.launch { c.api.stopHls(item, sid) } // 通知服务端结束转码
+                if (transcodeBitrate != null) c.scope.launch { c.api.stopHls(item, sid) } // 通知服务端结束转码
             }
             player = null; firstFrame = false; playing = false
             if (p != null) c.videoPlaying = false
@@ -372,7 +387,7 @@ fun VideoPage(
                     append('\n')
                 }
                 if (a != null) append("音频:").append(codecName(a.sampleMimeType) ?: "?").append("  ${a.channelCount}ch ${a.sampleRate}Hz\n")
-                transcodeHeight?.let { append("服务端转码:${it}p\n") }
+                transcodeBitrate?.let { append("服务端转码:${it / 1000}kbps(分辨率不变)\n") }
                 append("丢帧:${dropped[0]}   缓冲:${pl.totalBufferedDuration / 1000}s   速度:${pl.playbackParameters.speed}x")
             }
             delay(1000)
@@ -681,7 +696,7 @@ fun VideoPage(
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(item.name, color = Color.White, fontSize = 16.sp, maxLines = 1, fontWeight = FontWeight.Medium)
                     Text(
-                        listOfNotNull(item.w?.let { "${item.w}×${item.h}" }, formatSize(item.size), transcodeHeight?.let { "转码 ${it}p" }, decoderName[0].takeIf { it.isNotEmpty() }?.let { if (it.startsWith("c2.android") || it.startsWith("OMX.google")) "软解" else "硬解" }).joinToString(" · "),
+                        listOfNotNull(item.w?.let { "${item.w}×${item.h}" }, formatSize(item.size), transcodeBitrate?.let { "转码 ${"%.1f".format(it / 1_000_000f)}M" }, decoderName[0].takeIf { it.isNotEmpty() }?.let { if (it.startsWith("c2.android") || it.startsWith("OMX.google")) "软解" else "硬解" }).joinToString(" · "),
                         color = Color(0xB3FFFFFF), fontSize = 12.sp, maxLines = 1,
                     )
                 }
@@ -691,7 +706,7 @@ fun VideoPage(
                     Box {
                         CtrlIcon(TgIcons.More, "更多") { menu = true }
                         DropdownMenu(menu, { menu = false }) {
-                            DropdownMenuItem(text = { Text("画质 / 转码  " + (transcodeHeight?.let { "${it}p" } ?: "原画")) }, onClick = { menu = false; dialog = "quality" })
+                            DropdownMenuItem(text = { Text("画质 / 转码  " + (transcodeBitrate?.let { "${"%.1f".format(it / 1_000_000f)} Mbps" } ?: "原画")) }, onClick = { menu = false; dialog = "quality" })
                             DropdownMenuItem(text = { Text("画质增强(超分 / 补帧 / HDR)" + if (cfg.enhUpscale != "off" || cfg.enhFrc != "off" || cfg.enhHdr != "off") "  ✓" else "") }, onClick = { menu = false; dialog = "enhance" })
                             DropdownMenuItem(text = { Text("播放速度  ${"%.2f".format(speed).trimEnd('0').trimEnd('.')}x") }, onClick = { menu = false; dialog = "speed" })
                             DropdownMenuItem(text = { Text("跳转到指定时间") }, onClick = { menu = false; dialog = "jump" })
@@ -774,8 +789,8 @@ fun VideoPage(
                 Row {
                     TextButton(onClick = { error = null; resumeMs = 0L; modeOverride = "sw_first" }) { Text("软解重试") }
                     TextButton(onClick = { error = null; resumeMs = 0L; modeOverride = "hw_first" }) { Text("硬解重试") }
-                    if (transcodeHeight == null) TextButton(onClick = { error = null; resumeMs = 0L; transcodeHeight = if (c.settings.value.maxHeight > 0) c.settings.value.maxHeight else 1080 }) { Text("服务端转码") }
-                    else TextButton(onClick = { error = null; resumeMs = 0L; transcodeHeight = null }) { Text("直接播放") }
+                    if (transcodeBitrate == null) TextButton(onClick = { error = null; resumeMs = 0L; transcodeBitrate = autoBitrate(item, c.settings.value) }) { Text("服务端转码") }
+                    else TextButton(onClick = { error = null; resumeMs = 0L; transcodeBitrate = null }) { Text("直接播放") }
                     TextButton(onClick = {
                         val n = AppLog.copyRecent(ctx)
                         Toast.makeText(ctx, "已复制 $n 字日志", Toast.LENGTH_SHORT).show()
@@ -808,18 +823,19 @@ fun VideoPage(
             }
         }
         "quality" -> {
-            val heights = listOf(null, 480, 720, 1080, 1440, 2160)
+            // 转码只改码率,不改分辨率
+            val rates = listOf(null, 1_500_000, 3_000_000, 6_000_000, 12_000_000, 20_000_000)
             PickDialog(
-                "画质 / 转码",
-                listOf("原画(直接播放)") .plus(heights.drop(1).map { "服务端转码 ${it}p" }).mapIndexed { i, t -> t to (heights[i] == transcodeHeight) },
+                "画质 / 转码(只调码率,分辨率不变)",
+                listOf("原画(直接播放)").plus(rates.drop(1).map { "服务端转码 ${"%.1f".format(it!! / 1_000_000f)} Mbps" }).mapIndexed { i, t -> t to (rates[i] == transcodeBitrate) },
                 { dialog = "" },
             ) { i ->
                 dialog = ""
-                if (heights[i] != transcodeHeight) {
+                if (rates[i] != transcodeBitrate) {
                     resumeMs = p?.currentPosition ?: 0L
                     useSoftware = false
-                    transcodeHeight = heights[i]
-                    AppLog.i("player", "手动切换画质:" + (heights[i]?.let { "转码 ${it}p" } ?: "原画"))
+                    transcodeBitrate = rates[i]
+                    AppLog.i("player", "手动切换画质:" + (rates[i]?.let { "转码 ${it / 1000}kbps" } ?: "原画"))
                 }
             }
         }

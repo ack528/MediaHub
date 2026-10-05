@@ -35,7 +35,7 @@ func TestBuiltinHLS(t *testing.T) {
 		t.Fatal("long.mp4 not found")
 	}
 	id := s.Items[0].ID
-	q := "?maxHeight=240&maxBitrate=500000&sid=t1"
+	q := "?maxBitrate=500000&sid=t1"
 	resp, body := e.do("GET", "/api/v1/media/"+id+"/hls/master.m3u8"+q, nil, nil)
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "#EXT-X-PLAYLIST-TYPE:VOD") || !strings.Contains(string(body), "#EXT-X-ENDLIST") {
 		t.Fatalf("playlist: %d %s", resp.StatusCode, body)
@@ -44,7 +44,7 @@ func TestBuiltinHLS(t *testing.T) {
 	if n < 2 {
 		t.Fatalf("样本太短,只有 %d 段", n)
 	}
-	if !strings.Contains(string(body), "seg00000.ts?maxHeight=240&maxBitrate=500000&sid=t1") {
+	if !strings.Contains(string(body), "seg00000.ts?maxBitrate=500000&sid=t1") {
 		t.Fatalf("segment uri: %s", body)
 	}
 	for _, i := range []int{0, n - 1, 1} { // 先顺序,再跳到最后一段,再回看(已被清掉的不一定存在,会重新转)
@@ -62,7 +62,7 @@ func TestBuiltinHLS(t *testing.T) {
 		t.Fatalf("应有 1 个会话目录,实际 %d", len(dirs))
 	}
 	// 切换画质:同一个 sid 的旧会话被结束
-	e.do("GET", "/api/v1/media/"+id+"/hls/master.m3u8?maxHeight=144&maxBitrate=300000&sid=t1", nil, nil)
+	e.do("GET", "/api/v1/media/"+id+"/hls/master.m3u8?maxBitrate=300000&sid=t1", nil, nil)
 	if resp, _ := e.do("DELETE", "/api/v1/media/"+id+"/hls?sid=t1", nil, nil); resp.StatusCode != 204 {
 		t.Fatalf("stop: %d", resp.StatusCode)
 	}

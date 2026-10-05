@@ -57,7 +57,8 @@ data class AppSettings(
     // ---- 图片查看器
     val viewerPreload: Int = 1,                // 左右各预加载几页
     val viewerImageWidth: Int = 2880,          // 全屏查看时加载的图片宽度(像素)
-    val maxZoom: Float = 2f,                   // 双击 / 双指放大的上限
+    val maxZoom: Float = 2f,
+    val rightSwipePrev: Boolean = true,        // 查看器里向右滑 = 上一个(和聊天里"上面那条"一致);关闭则向右滑 = 下一个                   // 双击 / 双指放大的上限
     // ---- 视频播放
     val autoplay: Boolean = true,
     val loop: Boolean = false,
@@ -91,8 +92,7 @@ data class AppSettings(
     val autoTranscode: Boolean = true,         // 手机解不了(格式 / 编码不支持)时,自动改用服务端转码播放
     val asyncQueueing: String = "auto",        // auto / on / off:MediaCodec 异步队列
     val tunneling: Boolean = false,            // 隧道播放(部分电视 / 手机的硬解可降低功耗,不稳定)
-    val maxHeight: Int = 0,                    // 0 = 不限;否则视频最大高度(用于以后的转码 / HLS)
-    val maxBitrateMbps: Int = 0,               // 0 = 不限
+    val maxBitrateMbps: Int = 0,               // 服务端转码的视频码率(Mbps),0 = 自动(按原分辨率);转码只改码率,不改分辨率
     val bufferMode: String = "standard",       // small / standard / large
     val audioLanguage: String = "",            // "" = 跟随系统
     val showSubtitles: Boolean = false,

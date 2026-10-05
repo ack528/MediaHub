@@ -81,6 +81,13 @@ UPDATE media SET state=0 WHERE state=2;
 UPDATE roots SET scan_state='complete', last_scan=COALESCE(last_scan, CAST(strftime('%s','now') AS INTEGER))
  WHERE scan_state='' AND EXISTS (SELECT 1 FROM media WHERE media.root_id = roots.id);
 `,
+	// v7:每个用户的浏览记录 / 播放进度存在服务器上,换设备打开同一个群 / 视频回到上次的位置
+	`
+CREATE TABLE user_view(user_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, json TEXT NOT NULL, saved_at INTEGER NOT NULL,
+  PRIMARY KEY(user_id, dialog_id));
+CREATE TABLE user_playback(user_id INTEGER NOT NULL, media_id INTEGER NOT NULL, pos_ms INTEGER NOT NULL, saved_at INTEGER NOT NULL,
+  PRIMARY KEY(user_id, media_id));
+`,
 }
 
 // Migrate 把数据库升级到最新模式。

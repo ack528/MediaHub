@@ -15,7 +15,7 @@ const jfDeviceID = "mediahub-gateway"
 
 // mediaHLS 把 Jellyfin 的 HLS 转码流转给手机:
 //
-//	GET /api/v1/media/{id}/hls/master.m3u8?maxHeight=720&maxBitrate=3000000&sid=xxx&audio=1
+//	GET /api/v1/media/{id}/hls/master.m3u8?maxBitrate=3000000&sid=xxx&audio=1
 //	GET /api/v1/media/{id}/hls/main.m3u8?...、/hls/hls1/main/0.ts?...(播放列表里的相对地址,原样转发)
 //
 // 手机访问的始终是 MediaHub(带自己的令牌),Jellyfin 的密钥只在服务端使用。
@@ -56,9 +56,6 @@ func (s *Server) mediaHLS(w http.ResponseWriter, r *http.Request) {
 			"MediaSourceId": {jfid}, "VideoCodec": {"h264"}, "AudioCodec": {"aac"}, "SegmentContainer": {"ts"},
 			"TranscodingMaxAudioChannels": {"2"}, "MinSegments": {"1"}, "BreakOnNonKeyFrames": {"true"},
 			"PlaySessionId": {"mh" + strconv.FormatInt(id, 10) + "-" + sid}, "DeviceId": {jfDeviceID},
-		}
-		if h, _ := strconv.Atoi(q.Get("maxHeight")); h > 0 {
-			nq.Set("MaxHeight", strconv.Itoa(h))
 		}
 		if b, _ := strconv.Atoi(q.Get("maxBitrate")); b > 0 {
 			nq.Set("VideoBitRate", strconv.Itoa(b))
