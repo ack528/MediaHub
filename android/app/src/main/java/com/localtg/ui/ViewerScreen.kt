@@ -7,6 +7,25 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import com.localtg.ui.tg.Pill
+import com.localtg.ui.tg.TgIcons
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -114,28 +133,97 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
                 PhotoPage(item, c, ui, shared = pager.currentPage == page)
             }
         }
-        // 图片的顶栏(视频页自带顶栏)
+        // 图片的顶栏 / 底栏:和视频页同一套风格(渐变底、图标按钮、小字号),不再是一整块半透明黑条
         if (!cur.isVideo) {
+            var menu by remember { mutableStateOf(false) }
+            var info by remember { mutableStateOf(false) }
             AnimatedVisibility(
                 ui.chrome && !inPip, Modifier.align(Alignment.TopStart),
                 enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
             ) {
-                Column(Modifier.fillMaxWidth().background(Color(0x66000000)).statusBarsPadding().padding(8.dp)) {
-                    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = onBack) { Text("‹ 返回", color = Color.White) }
-                        androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
-                        if (!c.isLocal && cur.size > 0L && !cur.flags.corrupt) TextButton(onClick = { scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, cur) } }) { Text("保存到手机", color = Color.White) }
-                    }
-                    Text(cur.name, color = Color.White, modifier = Modifier.padding(horizontal = 12.dp), maxLines = 1)
+                Row(
+                    Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
+                        .statusBarsPadding().padding(horizontal = 4.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ViewerIcon(TgIcons.Back, "返回") { onBack() }
                     Text(
-                        "${pager.currentPage + 1} / ${items.size}   ${formatDateTime(cur.takenAt)}   ${formatSize(cur.size)}" +
-                            (cur.w?.let { "   ${cur.w}×${cur.h}" } ?: ""),
-                        color = Color(0xCCFFFFFF), modifier = Modifier.padding(horizontal = 12.dp),
+                        cur.name, Modifier.weight(1f).padding(horizontal = 4.dp), color = Color.White, fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
+                    ViewerIcon(TgIcons.Info, "图片信息") { info = true }
+                    Box {
+                        ViewerIcon(TgIcons.More, "更多") { menu = true }
+                        DropdownMenu(menu, { menu = false }) {
+                            if (!c.isLocal && cur.size > 0L && !cur.flags.corrupt) {
+                                DropdownMenuItem(text = { Text("保存到手机") }, onClick = {
+                                    menu = false
+                                    scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, cur) }
+                                })
+                            }
+                            DropdownMenuItem(text = { Text("图片信息") }, onClick = { menu = false; info = true })
+                        }
+                    }
                 }
             }
+            AnimatedVisibility(
+                ui.chrome && !inPip, Modifier.align(Alignment.BottomStart),
+                enter = fadeIn() + slideInVertically { it / 2 }, exit = fadeOut() + slideOutVertically { it / 2 },
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))))
+                        .navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 28.dp, bottom = 12.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(formatDateTime(cur.takenAt), color = Color.White, fontSize = 14.sp)
+                        Text(
+                            listOfNotNull(cur.w?.let { "${cur.w}×${cur.h}" }, formatSize(cur.size), cur.ext.uppercase().takeIf { it.isNotEmpty() }).joinToString(" · "),
+                            color = Color(0xB3FFFFFF), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                    Pill("${pager.currentPage + 1} / ${items.size}", sizeSp = 12)
+                }
+            }
+            if (info) PhotoInfoDialog(cur) { info = false }
         }
     }
+}
+
+/** 顶栏上的圆形图标按钮(和视频页的控制按钮同尺寸)。 */
+@Composable
+private fun ViewerIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, onClick: () -> Unit) {
+    Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Icon(icon, desc, tint = Color.White, modifier = Modifier.size(24.dp))
+    }
+}
+
+@Composable
+private fun PhotoInfoDialog(item: Item, onDismiss: () -> Unit) {
+    val rows = listOfNotNull(
+        "名称" to item.name,
+        "格式" to listOf(item.ext.uppercase(), item.mime).filter { it.isNotEmpty() }.joinToString(" · "),
+        item.w?.let { "尺寸" to "${item.w} × ${item.h}" },
+        "大小" to "${formatSize(item.size)}(${"%,d".format(item.size)} 字节)",
+        formatDateTime(item.takenAt).takeIf { it.isNotEmpty() }?.let { "拍摄 / 排序时间" to it },
+        formatDateTime(item.modifiedAt).takeIf { it.isNotEmpty() }?.let { "修改时间" to it },
+        formatDateTime(item.createdAt).takeIf { it.isNotEmpty() }?.let { "创建时间" to it },
+    ).filter { it.second.isNotEmpty() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("图片信息", fontSize = 18.sp) },
+        text = {
+            Column {
+                rows.forEach { (k, v) ->
+                    Column(Modifier.padding(vertical = 5.dp)) {
+                        Text(k, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(v, fontSize = 14.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
 }
 
 @Composable
