@@ -601,7 +601,7 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
             BrokenTile(item.brokenLabel()!! + (item.problem?.let { "\n点开查看原因" } ?: ""), Modifier.fillMaxSize())
         } else {
             AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current).data(url)
+                model = ImageRequest.Builder(LocalContext.current).data(url).memoryCacheKey(thumbKey(item))
                     .networkCachePolicy(if (loadEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED).build(),
                 contentDescription = item.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
                 onError = { failed = true }, onSuccess = { failed = false },

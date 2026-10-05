@@ -526,7 +526,11 @@ fun VideoPage(
         }
         if (!firstFrame) { // 封面先显示,首帧到达后消失
             AsyncImage(
-                model = c.api.posterUrl(item), contentDescription = null,
+                model = coil3.request.ImageRequest.Builder(ctx).data(c.api.posterUrl(item))
+                    .placeholderMemoryCacheKey(thumbKey(item)) // 点开前的缩略图先顶上,封面解码好前不黑屏
+                    .memoryCacheKey(thumbKey(item))
+                    .build(),
+                contentDescription = null,
                 contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize(),
             )
         }

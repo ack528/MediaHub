@@ -54,6 +54,9 @@ fun formatSize(b: Long): String = when {
     else -> "$b B"
 }
 
+/** 缩略图的内存缓存键:查看器用它做占位图(见 ViewerScreen / VideoPlayer),点开时不再闪一下。 */
+fun thumbKey(item: Item): String = "mt-${item.id}-${item.v}"
+
 /** 图片能否由 Android 直接解码显示;否则需要服务端转换(M4)。 */
 fun Item.canShowNatively(): Boolean = isVideo || type == "photo" || type == "gif" // 手机不能直接显示的格式由服务端转成 JPEG
 
@@ -99,6 +102,7 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
             val url = if (item.isVideo) api.posterUrl(item) else api.imageUrl(item, com.localtg.ui.tg.LocalSettings.current.gridThumbWidth)
             val req = ImageRequest.Builder(LocalContext.current)
                 .data(url)
+                .memoryCacheKey(thumbKey(item))
                 .networkCachePolicy(if (loadEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED)
                 .build()
             AsyncImage(

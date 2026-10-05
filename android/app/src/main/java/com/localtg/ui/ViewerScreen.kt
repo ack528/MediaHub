@@ -109,12 +109,15 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
     // VLC 方式:视频页水平滑动 = 快进快退,此时翻页靠上一个 / 下一个按钮
     val videoSwipeSeek = cur.isVideo && cfg.gestures && cfg.swipeSeek
 
+    // 打开的转场动画期间只加载当前这一页,动画结束后再预加载左右页:三张大图同时解码 / 上传 GPU 会让转场掉帧(看起来就是闪 / 卡一下)
+    var settled by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { kotlinx.coroutines.delay(600); settled = true }
     // 翻页方向:向右滑 = 上一个(设置里可改)。列表序号和屏幕上的先后可能相反(聊天流最新在底部),所以按"上一个是不是序号更大的一项"决定
     val prevDelta = if (feed.prevIsHigherIndex) 1 else -1
     val reverse = feed.prevIsHigherIndex == cfg.rightSwipePrev
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(
-            pager, Modifier.fillMaxSize(), beyondViewportPageCount = cfg.viewerPreload, key = { items[it].id }, reverseLayout = reverse,
+            pager, Modifier.fillMaxSize(), beyondViewportPageCount = if (settled) cfg.viewerPreload else 0, key = { items[it].id }, reverseLayout = reverse,
             userScrollEnabled = !ui.locked && !videoSwipeSeek,
         ) { page ->
             val item = items[page]
@@ -236,7 +239,9 @@ private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean
     }
     val cfg = LocalSettings.current
     ZoomableAsyncImage(
-        model = ImageRequest.Builder(LocalContext.current).data(c.api.imageUrl(item, cfg.viewerImageWidth)).build(),
+        model = ImageRequest.Builder(LocalContext.current).data(c.api.imageUrl(item, cfg.viewerImageWidth))
+            .placeholderMemoryCacheKey(thumbKey(item)) // 先显示点开前的缩略图,不是一片黑
+            .build(),
         contentDescription = item.name,
         state = me.saket.telephoto.zoomable.rememberZoomableImageState(
             me.saket.telephoto.zoomable.rememberZoomableState(zoomSpec = me.saket.telephoto.zoomable.ZoomSpec(maxZoomFactor = cfg.maxZoom)),
