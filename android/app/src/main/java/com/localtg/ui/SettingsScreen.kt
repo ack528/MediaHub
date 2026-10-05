@@ -221,6 +221,10 @@ private fun BrowsePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Uni
         "图片清晰度", s.chatImageWidth, listOf(480 to "标准(省流量)", 720 to "高", 960 to "很高(默认)", 1280 to "最高"),
     ) { u { copy(chatImageWidth = it) } }
     Header("加载")
+    ChoiceRow(
+        "预加载附近缩略图", s.preloadCount, listOf(0 to "关闭", 24 to "24 张", 48 to "48 张(默认)", 96 to "96 张", 192 to "192 张"),
+        desc = "滑动或跳到某处、停下来之后,把那附近屏幕外的缩略图提前下载进本机缓存(滑动方向多一些),再往那边滑就不用等网络。会多用一些流量和缓存空间;只进磁盘缓存,不占内存",
+    ) { u { copy(preloadCount = it) } }
     SwitchRow("快速滑动时暂停加载缩略图", "滑得很快时先不请求图片,停下后再加载,省流量也更流畅", s.pauseThumbsWhenFast) { u { copy(pauseThumbsWhenFast = it) } }
 }
 

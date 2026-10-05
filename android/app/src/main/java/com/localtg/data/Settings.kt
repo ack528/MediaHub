@@ -46,6 +46,7 @@ data class AppSettings(
     val defaultColumns: Int = 3,               // 网格默认列数(各文件夹自己记住的优先)
     val newestAtBottom: Boolean = true,        // 聊天流默认最新在底部
     val rememberPosition: Boolean = true,      // 记住每个文件夹的浏览位置
+    val preloadCount: Int = 48,                // 滑动 / 跳到某处停下后,预加载附近这么多张缩略图(0 = 关闭)
     val pauseThumbsWhenFast: Boolean = true,   // 快速滑动时暂停加载缩略图
     val showDatePills: Boolean = true,         // 聊天流里显示日期胶囊
     // ---- 图片(重启生效)

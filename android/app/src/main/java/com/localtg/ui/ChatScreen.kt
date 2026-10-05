@@ -546,6 +546,10 @@ private fun ChatFeed(
                 }
             }
         }
+        PreloadNear(
+            items, api, cfg.chatImageWidth, { state.firstVisibleItemIndex },
+            { state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: state.firstVisibleItemIndex },
+        )
         // 往上翻了一段以后,右下角出现"回到最新"按钮(Telegram 的做法)
         val scope = rememberCoroutineScope()
         JumpButton(
@@ -667,6 +671,10 @@ private fun MediaGrid(
             }
         }
     }
+    PreloadNear(
+        items, api, LocalSettings.current.gridThumbWidth, { state.firstVisibleItemIndex },
+        { state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: state.firstVisibleItemIndex },
+    )
     JumpButton(visible = state.firstVisibleItemIndex > columns * 5, up = true, modifier = Modifier.align(Alignment.BottomEnd)) {
         onJumpNewest(); gridScope.launch { state.scrollToItem(0) }
     }
