@@ -57,7 +57,7 @@ export function Overview() {
         ))}
       </Card>
 
-      <Card icon="folder" title="索引进度" extra={<Btn icon="refresh" disabled={!running || !!busy} onClick={rescan}>重新扫描</Btn>}>
+      <Card icon="folder" title="索引进度" extra={<Btn icon="refresh" disabled={!running || !!busy} onClick={() => rescan()}>全部重新扫描</Btn>}>
         {!running && <Row icon="clock" title="服务未运行" desc="启动后显示每个媒体盘的扫描与元数据进度。" />}
         {running && st && st.index.length === 0 && <Row icon="folder" title="还没有配置媒体库" desc={'到“媒体库”页添加根目录。'} />}
         {running && st?.index.map((p) => {
@@ -65,16 +65,17 @@ export function Overview() {
           const scanning = p.state === "scanning";
           const enriching = p.state === "enriching";
           const total = p.enrichTotal && p.enrichTotal > 0 ? p.enrichTotal : Math.max(p.files, 1);
+          const done = Math.min(p.enriched, total);
           return (
             <Row key={p.rootId} icon="drive" title={p.label}
                  desc={<>
                    {fmtNum(p.files)} 个文件 · {fmtNum(p.dirs)} 个文件夹
                    {scanning && <> · <b className="speed">{fmtRate(p.scanRate)} 文件/秒</b></>}
-                   {enriching && <> · 已读元数据 {fmtNum(p.enriched)} / {fmtNum(total)} · <b className="speed">{fmtRate(p.enrichRate)} 个/秒</b>{p.etaSec ? <> · 预计还需 {fmtEta(p.etaSec)}</> : null}</>}
+                   {enriching && <> · 已读元数据 {fmtNum(done)} / {fmtNum(total)} · <b className="speed">{fmtRate(p.enrichRate)} 个/秒</b>{p.etaSec ? <> · 预计还需 {fmtEta(p.etaSec)}</> : null}</>}
                    {scanning && p.resumed && <> · 接着上次中断的扫描继续</>}
                    {(p.skipped ?? 0) > 0 && <> · {p.skipped} 个目录已跳过</>}
                    {p.errors > 0 && <> · <span className="warn-text">{p.errors} 个目录读取失败</span></>}
-                   {enriching && <Progress value={p.enriched} max={total} />}
+                   {enriching && <Progress value={done} max={total} />}
                    {(p.failedDirs?.length ?? 0) > 0 && (
                      <details className="faildirs">
                        <summary>查看跳过 / 失败的目录({p.failedDirs!.length}{p.failedDirs!.length >= 50 ? "+" : ""})</summary>
@@ -91,7 +92,10 @@ export function Overview() {
                      </details>
                    )}
                  </>}>
-              <Badge tone={busyState ? "blue" : "green"}>{scanning ? "扫描中" : enriching ? "读取元数据" : p.state === "error" ? "出错" : "已完成"}</Badge>
+              <div className="btn-group">
+                <Badge tone={busyState ? "blue" : "green"}>{scanning ? "扫描中" : enriching ? "读取元数据" : p.state === "error" ? "出错" : "已完成"}</Badge>
+                <Btn icon="refresh" disabled={!!busy || busyState} onClick={() => rescan(p.rootId)}>{busyState ? "进行中" : "只扫这个盘"}</Btn>
+              </div>
             </Row>
           );
         })}

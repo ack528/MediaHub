@@ -20,6 +20,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,10 +66,20 @@ type Progress struct {
 	ETASec      int64   `json:"etaSec"`      // 预计剩余秒数(元数据阶段),未知为 0
 	Resumed     bool    `json:"resumed"`     // 本次是接着上次被中断的扫描继续
 
-	// 采样用的内部状态
-	lastFiles, lastEnriched int64
-	lastT                   time.Time
+	// 速度采样用的内部状态:最近几秒的计数快照(滑动窗口),状态切换时清空
+	hist      []rateSample
+	histState string
 }
+
+// rateSample 某一时刻的计数快照,速度 = 窗口内的计数增量 / 窗口时长(比"每秒一次的瞬时值"稳定得多)。
+type rateSample struct {
+	t     time.Time
+	files int64
+	enr   int64
+}
+
+// 速度窗口:最近 rateWindow 秒。元数据读取按单个文件计数(以前按 300 个一批计数,显示会长时间是 0 然后突然跳变)。
+const rateWindow = 10
 
 // DirFailure 一个读取失败(或被跳过)的目录及原因。
 type DirFailure struct {
@@ -91,6 +102,7 @@ type Indexer struct {
 
 	mu       sync.Mutex
 	progress map[int64]*Progress
+	order    map[int64]int // 根目录在配置里的顺序,进度列表按它排,不会乱动
 	exclude  map[string]bool
 }
 
@@ -102,7 +114,7 @@ func New(db *sql.DB, cfg *config.Config, log *slog.Logger) *Indexer {
 	for _, n := range cfg.Exclude {
 		ex[strings.ToLower(n)] = true
 	}
-	ix := &Indexer{DB: db, Cfg: cfg, Log: log, progress: map[int64]*Progress{}, exclude: ex}
+	ix := &Indexer{DB: db, Cfg: cfg, Log: log, progress: map[int64]*Progress{}, order: map[int64]int{}, exclude: ex}
 	logx.Go("扫描速度采样", ix.sampler)
 	return ix
 }
@@ -116,21 +128,32 @@ func (ix *Indexer) sampler() {
 		for _, p := range ix.progress {
 			files := atomic.LoadInt64(&p.Files)
 			enr := atomic.LoadInt64(&p.Enriched)
-			if !p.lastT.IsZero() {
-				dt := now.Sub(p.lastT).Seconds()
-				if dt > 0 {
-					scan, enrich := 0.0, 0.0
-					if p.State == "scanning" {
-						scan = float64(files-p.lastFiles) / dt
+			// 状态切换(或新一轮计数从 0 重来)时清空窗口
+			if p.histState != p.State || (len(p.hist) > 0 && (files < p.hist[len(p.hist)-1].files || enr < p.hist[len(p.hist)-1].enr)) {
+				p.hist, p.histState = nil, p.State
+				p.ScanRate, p.EnrichRate = 0, 0
+			}
+			p.hist = append(p.hist, rateSample{now, files, enr})
+			if len(p.hist) > rateWindow+1 {
+				p.hist = p.hist[len(p.hist)-rateWindow-1:]
+			}
+			if len(p.hist) >= 2 {
+				first := p.hist[0]
+				if dt := now.Sub(first.t).Seconds(); dt > 0 {
+					switch p.State {
+					case "scanning":
+						p.ScanRate = float64(files-first.files) / dt
+					case "enriching":
+						p.EnrichRate = float64(enr-first.enr) / dt
 					}
-					if p.State == "enriching" {
-						enrich = float64(enr-p.lastEnriched) / dt
-					}
-					p.ScanRate = smooth(p.ScanRate, scan)
-					p.EnrichRate = smooth(p.EnrichRate, enrich)
 				}
 			}
-			p.lastFiles, p.lastEnriched, p.lastT = files, enr, now
+			if p.State != "scanning" {
+				p.ScanRate = 0
+			}
+			if p.State != "enriching" {
+				p.EnrichRate = 0
+			}
 			p.ETASec = 0
 			if p.State == "enriching" && p.EnrichRate > 0.01 {
 				if left := atomic.LoadInt64(&p.EnrichTotal) - enr; left > 0 {
@@ -142,18 +165,28 @@ func (ix *Indexer) sampler() {
 	}
 }
 
-func smooth(old, cur float64) float64 {
-	if cur == 0 && old < 0.5 {
-		return 0
-	}
-	return old*0.6 + cur*0.4
-}
-
 func (ix *Indexer) Progress() []Progress {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	out := make([]Progress, 0, len(ix.progress))
-	for _, p := range ix.progress {
+	ids := make([]int64, 0, len(ix.progress))
+	for id := range ix.progress {
+		ids = append(ids, id)
+	}
+	// 固定顺序:按配置里根目录的顺序(配置里没有的排最后,再按 id)——map 的遍历顺序是随机的,以前列表会跳来跳去
+	sort.Slice(ids, func(i, j int) bool {
+		oi, iok := ix.order[ids[i]]
+		oj, jok := ix.order[ids[j]]
+		if iok != jok {
+			return iok
+		}
+		if oi != oj {
+			return oi < oj
+		}
+		return ids[i] < ids[j]
+	})
+	for _, id := range ids {
+		p := ix.progress[id]
 		out = append(out, Progress{
 			RootID: p.RootID, Label: p.Label, State: p.State,
 			Dirs: atomic.LoadInt64(&p.Dirs), Files: atomic.LoadInt64(&p.Files),
@@ -234,7 +267,44 @@ func (ix *Indexer) SyncRoots() ([]Root, error) {
 		}
 		out = append(out, Root{ID: id, Path: path, Label: rc.Label, Serial: serial, Reused: reused})
 	}
+	ix.mu.Lock()
+	ix.order = map[int64]int{}
+	for i, r := range out {
+		ix.order[r.ID] = i
+	}
+	ix.mu.Unlock()
+	for _, r := range out {
+		ix.register(r)
+	}
 	return out, nil
+}
+
+// register 让每个根目录一开始就出现在进度列表里(位置固定),并用数据库里已有的数量初始化计数:
+// 启动后直接复用旧索引时不再显示"0 个文件"。
+func (ix *Indexer) register(r Root) {
+	p := ix.prog(r)
+	ix.mu.Lock()
+	p.Label = r.Label
+	ix.mu.Unlock()
+	var last sql.NullInt64
+	_ = ix.DB.QueryRow(`SELECT last_scan FROM roots WHERE id=?`, r.ID).Scan(&last)
+	if last.Valid {
+		ix.mu.Lock()
+		p.Finished = time.Unix(last.Int64, 0)
+		ix.mu.Unlock()
+	}
+	logx.Go("读取已有索引数量", func() {
+		var files, dirs int64
+		_ = ix.DB.QueryRow(`SELECT count(*) FROM media WHERE root_id=?`, r.ID).Scan(&files)
+		_ = ix.DB.QueryRow(`SELECT count(DISTINCT dir_rel) FROM media WHERE root_id=?`, r.ID).Scan(&dirs)
+		ix.mu.Lock()
+		idle := p.State == "idle" && atomic.LoadInt64(&p.Files) == 0 && atomic.LoadInt64(&p.Dirs) == 0
+		ix.mu.Unlock()
+		if idle { // 已经开始扫描的不覆盖
+			atomic.StoreInt64(&p.Files, files)
+			atomic.StoreInt64(&p.Dirs, dirs)
+		}
+	})
 }
 
 func (ix *Indexer) excluded(name string) bool { return ix.exclude[strings.ToLower(name)] }

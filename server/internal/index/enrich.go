@@ -58,21 +58,34 @@ func (ix *Indexer) Enrich(ctx context.Context, r Root) error {
 			break
 		}
 
+		// 每处理完一个文件就计数(照片按 30 张一小批给 exiftool),进度和速度才平滑
 		var photos []pending
+		flush := func() {
+			if len(photos) > 0 {
+				ix.enrichPhotos(ctx, photos)
+				atomic.AddInt64(&p.Enriched, int64(len(photos)))
+				photos = photos[:0]
+			}
+		}
 		for _, pe := range batch {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			switch pe.typ {
 			case classify.Photo, classify.GIF:
 				photos = append(photos, pe)
+				if len(photos) >= 30 {
+					flush()
+				}
 			case classify.Video:
 				ix.enrichVideo(ctx, pe)
+				atomic.AddInt64(&p.Enriched, 1)
 			default:
 				ix.markDone(pe, 1, "")
+				atomic.AddInt64(&p.Enriched, 1)
 			}
 		}
-		if len(photos) > 0 {
-			ix.enrichPhotos(ctx, photos)
-		}
-		atomic.AddInt64(&p.Enriched, int64(len(batch)))
+		flush()
 	}
 	if err := ix.Finalize(r.ID); err != nil {
 		return err

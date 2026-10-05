@@ -13,7 +13,7 @@ export interface Bridge {
   serviceStatus(): Promise<ServiceStatus>;
   start(): Promise<void>;
   stop(): Promise<void>;
-  rescan(): Promise<void>;
+  rescan(rootId?: number): Promise<void>;
   listUsers(): Promise<UserInfo[]>;
   addUser(name: string, password: string): Promise<void>;
   setPassword(name: string, password: string): Promise<void>;
@@ -38,7 +38,7 @@ const tauri: Bridge = {
   serviceStatus: () => invoke("service_status"),
   start: () => invoke("service_start"),
   stop: () => invoke("service_stop"),
-  rescan: () => invoke("admin_rescan"),
+  rescan: (rootId) => invoke("admin_rescan", { rootId: rootId ?? null }),
   listUsers: () => invoke("list_users"),
   addUser: (name, password) => invoke("add_user", { name, password }),
   setPassword: (name, password) => invoke("set_password", { name, password }),
@@ -108,7 +108,7 @@ const mockBridge: Bridge = {
   },
   start: async () => { mock.running = true; mock.startedAt = Date.now(); save(); await delay(null, 600); },
   stop: async () => { mock.running = false; save(); await delay(null, 400); },
-  rescan: () => delay(undefined),
+  rescan: (_rootId) => delay(undefined),
   listUsers: () => delay(mock.users),
   addUser: async (name) => { if (mock.users.some((u) => u.name === name)) throw "用户已存在"; mock.users.push({ name, created: Math.floor(Date.now() / 1000) }); save(); },
   setPassword: () => delay(undefined),

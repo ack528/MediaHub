@@ -17,7 +17,7 @@ interface AppCtx {
   start: () => Promise<void>;
   stop: () => Promise<void>;
   restart: () => Promise<void>;
-  rescan: () => Promise<void>;
+  rescan: (rootId?: number) => Promise<void>;
   refresh: () => Promise<void>;
   toast: (text: string, kind?: "ok" | "err") => void;
 }
@@ -96,7 +96,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const restart = useCallback(async () => {
     await run("restart", async () => { await bridge.stop(); await bridge.start(); setRestartPending(false); }, "服务已重启");
   }, [run]);
-  const rescan = useCallback(() => run("rescan", () => bridge.rescan(), "已开始重新扫描"), [run]);
+  const rescan = useCallback((rootId?: number) => run("rescan", () => bridge.rescan(rootId), rootId ? "已开始重新扫描这个盘" : "已开始重新扫描"), [run]);
 
   const value = useMemo<AppCtx>(
     () => ({ config, loaded, env, svc, ips, busy, restartPending, toasts, update, start, stop, restart, rescan, refresh, toast }),

@@ -113,6 +113,16 @@ fn http_post_empty(url: &str, key: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+fn http_post_json(url: &str, key: &str, body: &str) -> Result<(), String> {
+    agent(3000)
+        .post(url)
+        .header("X-Admin-Key", key)
+        .header("Content-Type", "application/json")
+        .send(body)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// 桌面管理程序访问服务的地址:开启 TLS(默认)时对外端口是 HTTPS 自签名证书,管理程序改走仅本机的明文端口
 /// (配置 adminListen,留空 = 监听端口 + 1,只监听回环地址);关闭 TLS 时就是监听端口本身。
 fn base_url(cfg: &Value) -> String {
@@ -283,10 +293,15 @@ fn stop_service_blocking() -> Result<(), String> {
     }
 }
 
-fn rescan_blocking() -> Result<(), String> {
+/// root_id = None 重新扫描全部;Some(id) 只扫描这一个盘(根目录)。
+fn rescan_blocking(root_id: Option<i64>) -> Result<(), String> {
     let cfg = read_json(&config_path());
     let key = admin_key(&cfg).ok_or("找不到管理密钥(服务未运行?)")?;
-    http_post_empty(&format!("{}/api/v1/admin/rescan", base_url(&cfg)), &key)
+    let url = format!("{}/api/v1/admin/rescan", base_url(&cfg));
+    match root_id {
+        Some(id) => http_post_json(&url, &key, &format!("{{\"rootId\":\"{id}\"}}")),
+        None => http_post_empty(&url, &key),
+    }
 }
 
 #[tauri::command]
@@ -300,8 +315,8 @@ async fn service_stop() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn admin_rescan() -> Result<(), String> {
-    blocking(rescan_blocking).await
+async fn admin_rescan(root_id: Option<i64>) -> Result<(), String> {
+    blocking(move || rescan_blocking(root_id)).await
 }
 
 // ---------------------------------------------------------------- 命令:账号(调用服务程序的 CLI)
@@ -633,7 +648,7 @@ pub fn run() {
                     }
                     "rescan" => {
                         tauri::async_runtime::spawn_blocking(|| {
-                            let _ = rescan_blocking();
+                            let _ = rescan_blocking(None);
                         });
                     }
                     "quit" => app.exit(0),
