@@ -26,8 +26,10 @@ import kotlin.math.min
 data class EnhanceConfig(
     /** off | fsr | anime4k_s | anime4k_m */
     val upscale: String = "off",
-    /** off | blend | mc */
+    /** off | blend(帧混合)| mc_fast(运动补偿·轻量)| mc(运动补偿)| mc_hq(运动补偿·高质量) */
     val frc: String = "off",
+    /** 补帧跟不上时自动降级:mc_hq → mc → mc_fast → blend */
+    val frcAdaptive: Boolean = true,
     /** off | auto(显示器支持 HDR 才启用)| on */
     val hdr: String = "off",
     val hdrPeakNits: Int = 600,
@@ -86,7 +88,10 @@ class VideoRenderer(
     @Volatile private var vpar = 1f
     @Volatile private var resizeMode = "fit"
 
-    private class Slot(val ts: Long, val img: Gl.Tex, val pyr: LumaPyramid?, var mv: Gl.Tex?, val id: Long)
+    private class Slot(val ts: Long, val img: Gl.Tex, val pyr: LumaPyramid?, var mv: Gl.Tex?, val id: Long) {
+        var mvUW = 1   // 运动向量的单位(某一层亮度图的宽高)
+        var mvUH = 1
+    }
     private val ring = ArrayList<Slot>()
     private var nextId = 1L
     private var tsInDisplayClock: Boolean? = null
@@ -98,6 +103,10 @@ class VideoRenderer(
 
     // 统计 / 自适应
     @Volatile var stats = ""; private set
+    /** 补帧时显示在画面右上角的小字:源帧率 → 输出帧率 */
+    @Volatile var fpsText = ""; private set
+    @Volatile private var frcDemote = 0   // 因性能不够已降了几档
+    private var ingestedWin = 0
     private var ingestEma = 0.0
     private var ingestN = 0
     private var degraded = false
@@ -130,7 +139,22 @@ class VideoRenderer(
     private fun poke() { handler.post { dirty = true; if (!released && !choreoPosted && ring.isNotEmpty()) scheduleVsync() } }
     fun setVideoSize(w: Int, h: Int, par: Float) { vw = w; vh = h; vpar = if (par > 0f) par else 1f; poke() }
     fun setResizeMode(m: String) { resizeMode = m; poke() }
-    fun setConfig(c: EnhanceConfig) { config = c; poke() }
+    fun setConfig(c: EnhanceConfig) {
+        if (c.frc != config.frc) frcDemote = 0
+        config = c; poke()
+    }
+
+    /** 降级后实际使用的补帧方式。 */
+    private fun effFrc(cfg: EnhanceConfig): String {
+        val ladder = listOf("mc_hq", "mc", "mc_fast", "blend")
+        val i = ladder.indexOf(cfg.frc)
+        return if (i < 0) cfg.frc else ladder[min(i + frcDemote, ladder.size - 1)]
+    }
+
+    private fun isMc(m: String) = m == "mc" || m == "mc_fast" || m == "mc_hq"
+
+    /** 源帧率已经接近刷新率(例如 60fps 视频在 60Hz 屏上)时不需要插帧,也就不用做运动估计。 */
+    private fun frcNeeded(): Boolean = interval <= 0L || (1e9 / interval) * 1.3 < refreshRate
     fun onSurfaceSize(w: Int, h: Int) { surfaceW = w; surfaceH = h; poke() }
 
     fun release() {
@@ -288,6 +312,7 @@ class VideoRenderer(
         if (w <= 0 || h <= 0) return
         val cfg = config
         frames++
+        ingestedWin++
 
         val src = pool.acquire(w, h)
         Gl.target(src)
@@ -298,7 +323,9 @@ class VideoRenderer(
         GLES20.glUniformMatrix4fv(Gl.loc(pOes, "uMat"), 1, false, stMatrix, 0)
         Gl.draw()
 
-        val needPyr = (cfg.frc == "mc" || hdrActive(cfg)) && halfOk
+        val eff = effFrc(cfg)
+        val needMv = isMc(eff) && frcNeeded()
+        val needPyr = (needMv || hdrActive(cfg)) && halfOk
         val pyr = if (needPyr) me?.pyramid(src) else null
         var img = src
         if (cfg.upscale != "off" && halfOk && !degraded && h <= cfg.upscaleMaxSrcHeight) {
@@ -308,8 +335,12 @@ class VideoRenderer(
         }
         val slot = Slot(ts, img, pyr, null, nextId++)
         val prev = ring.lastOrNull()
-        if (cfg.frc == "mc" && prev?.pyr != null && pyr != null && halfOk) {
-            slot.mv = me?.estimate(prev.pyr, pyr, grid)
+        if (needMv && prev?.pyr != null && pyr != null && halfOk) {
+            val m = me
+            if (m != null) {
+                slot.mv = m.estimate(prev.pyr, pyr, grid, eff)
+                slot.mvUW = m.unitW; slot.mvUH = m.unitH
+            }
         }
         if (slot.mv != null && frames % 48L == 0L && AppLog.isDebug()) debugDumpMotion(slot.mv!!)
         if (frames % 120L == 0L && AppLog.isDebug()) probeLeft = 12
@@ -332,6 +363,11 @@ class VideoRenderer(
             if (overBudget >= 6 && cfg.upscale != "off" && !degraded) {
                 degraded = true
                 AppLog.w("enhance", "超分耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms,自动停用超分")
+            } else if (overBudget >= 6 && cfg.frcAdaptive && isMc(eff) && (cfg.upscale == "off" || degraded)) {
+                // 超分已经停了(或没开)还是跟不上:补帧降一档(高质量 → 标准 → 轻量 → 帧混合)
+                frcDemote++
+                overBudget = 0
+                AppLog.w("enhance", "补帧耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms,自动降级为 ${effFrc(cfg)}")
             }
         }
         if (!choreoPosted) scheduleVsync()
@@ -410,7 +446,7 @@ class VideoRenderer(
             val srcHz = 1e9 / dt
             if (dt in 4_000_000L..120_000_000L && refreshHz > srcHz * 1.3) {
                 t = ((nowNs - a.ts).toDouble() / dt).toFloat().coerceIn(0f, 1f)
-                mode = if (cfg.frc == "mc" && b.mv != null) 2 else 1
+                mode = if (isMc(effFrc(cfg)) && b.mv != null) 2 else 1
             }
         }
         val key = "${a.id}/${if (mode == 0) 0 else (t * 64).toInt()}/$mode"
@@ -438,8 +474,9 @@ class VideoRenderer(
         Gl.bindTex(4, lb?.id ?: a.img.id); GLES20.glUniform1i(Gl.loc(pFinal, "uLB"), 4)
         GLES20.glUniform1f(Gl.loc(pFinal, "uT"), t)
         GLES20.glUniform1i(Gl.loc(pFinal, "uMode"), mode)
-        val d1 = a.pyr?.d1
-        GLES20.glUniform2f(Gl.loc(pFinal, "uD1Size"), (d1?.w ?: 1).toFloat(), (d1?.h ?: 1).toFloat())
+        val mvSlot = if (mode == 2) b else null
+        GLES20.glUniform2f(Gl.loc(pFinal, "uD1Size"), (mvSlot?.mvUW ?: 1).toFloat(), (mvSlot?.mvUH ?: 1).toFloat())
+        GLES20.glUniform1i(Gl.loc(pFinal, "uCand"), when (effFrc(cfg)) { "mc_fast" -> 1; "mc_hq" -> 9; else -> 5 })
         GLES20.glUniform1i(Gl.loc(pFinal, "uHasArea"), if (la != null) 1 else 0)
         GLES20.glUniform1i(Gl.loc(pFinal, "uHdr"), if (hdrActive(cfg)) 1 else 0)
         GLES20.glUniform1f(Gl.loc(pFinal, "uPeak"), cfg.hdrPeakNits.toFloat())
@@ -463,10 +500,24 @@ class VideoRenderer(
             append(
                 when (cfg.upscale) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K-S"; "anime4k_m" -> "Anime4K-M"; else -> "" }.let { if (it.isNotEmpty() && degraded) "$it(已因性能停用)" else it }
             )
-            if (cfg.frc != "off") append(" 补帧${if (cfg.frc == "mc") "(运动补偿)" else "(混合)"}${if (mode == 0) "·待机" else ""}")
+            if (cfg.frc != "off") {
+                val e = effFrc(cfg)
+                append(" 补帧(${frcLabel(e)})${if (mode == 0) "·待机" else ""}${if (e != cfg.frc) "·已降级" else ""}")
+            }
             if (hdrActive(cfg)) append(" HDR(PQ,${cfg.hdrPeakNits}nit)") else if (cfg.hdr != "off") append(" HDR:显示器/表面不支持")
             append("\n输出 ${"%.0f".format(fps)}fps  源 ${a.img.w}×${a.img.h}  处理 ${"%.1f".format(ingestEma)}ms")
         }
+        val srcFps = ingestedWin / secs
+        ingestedWin = 0
+        fpsText = when {
+            cfg.frc == "off" -> ""
+            mode == 0 -> "补帧待机 ${"%.0f".format(srcFps)}fps"
+            else -> "补帧 ${"%.0f".format(srcFps)} → ${"%.0f".format(fps)} fps"
+        }
+    }
+
+    private fun frcLabel(m: String) = when (m) {
+        "blend" -> "混合"; "mc_fast" -> "运动补偿·轻量"; "mc_hq" -> "运动补偿·高质量"; else -> "运动补偿"
     }
 
     companion object {
@@ -495,6 +546,7 @@ uniform sampler2D uLB;
 uniform float uT;
 uniform int uMode;       // 0 单帧 1 混合 2 运动补偿
 uniform vec2 uD1Size;
+uniform int uCand;       // 运动补偿时每个像素比较的相邻块向量个数:1 轻量 / 5 标准 / 9 高质量
 uniform int uHasArea;
 uniform int uHdr;
 uniform float uPeak;
@@ -512,13 +564,15 @@ vec3 interp() {
     vec3 b0 = texture(uB, vPos).rgb;
     vec3 z = mix(a0, b0, uT);
     if (uMode == 1) return z;
+    if (dot(abs(a0 - b0), vec3(1.0)) < 0.03) return z;   // 两帧几乎一样(静止区域):不用做运动补偿,省掉十次采样
     // 运动补偿:A 沿运动场前移 t,B 后移 (1-t)。物体边缘处自己那个块的向量常常不准(块里一半是背景),
     // 所以在自己与上下左右 4 个相邻块的向量里,逐像素挑"A、B 对得最齐"的那一个。
     ivec2 msz = textureSize(uMV, 0);
     ivec2 c0 = ivec2(floor(vPos * vec2(msz)));
-    ivec2 offs[5] = ivec2[5](ivec2(0, 0), ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+    ivec2 offs[9] = ivec2[9](ivec2(0, 0), ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1), ivec2(1, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(-1, -1));
     float dMC = 1e9; vec3 a = a0; vec3 b = b0;
-    for (int k = 0; k < 5; k++) {
+    for (int k = 0; k < 9; k++) {
+        if (k >= uCand) break;
         vec2 v = texelFetch(uMV, clamp(c0 + offs[k], ivec2(0), msz - 1), 0).xy / uD1Size;
         vec3 ca = texture(uA, vPos - uT * v).rgb;
         vec3 cb = texture(uB, vPos + (1.0 - uT) * v).rgb;

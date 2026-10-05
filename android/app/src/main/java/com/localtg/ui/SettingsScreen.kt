@@ -312,9 +312,15 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
     ) { u { copy(enhMaxH = it) } }
     Header("补帧")
     ChoiceRow(
-        "补帧方式", s.enhFrc, listOf("off" to "关闭", "blend" to "帧混合(省电,轻微拖影)", "mc" to "运动补偿(更流畅,实验)"),
-        desc = "把 24 / 30 帧视频补到屏幕刷新率(60 / 120 Hz),画面更顺滑(类似电视的“流畅运动”)。运动补偿用 GPU 块匹配估计运动;快速运动和遮挡处可能有瑕疵",
+        "补帧方式", s.enhFrc,
+        listOf(
+            "off" to "关闭", "blend" to "帧混合(最省电,轻微拖影)", "mc_fast" to "运动补偿·轻量(省电,适合 1080p 以上)",
+            "mc" to "运动补偿(平衡)", "mc_hq" to "运动补偿·高质量(最顺滑,最费电)",
+        ),
+        desc = "把 24 / 30 帧视频补到屏幕刷新率(60 / 120 Hz),画面更顺滑(类似电视的“流畅运动”)。运动补偿用 GPU 金字塔块匹配估计运动(和 AMD FSR 3 的光流同一类做法):轻量档只估到 1/4 分辨率、候选少;高质量档多一轮 1/8 像素精修、每个像素比较 9 个相邻块。快速运动和遮挡处可能有瑕疵",
     ) { u { copy(enhFrc = it) } }
+    SwitchRow("补帧跟不上时自动降级", "补帧耗时持续超过帧间隔时,自动降一档(高质量 → 标准 → 轻量 → 帧混合),避免掉帧", s.enhFrcAdaptive) { u { copy(enhFrcAdaptive = it) } }
+    SwitchRow("右上角显示帧率", "补帧时在画面右上角用小字显示“源帧率 → 输出帧率”;源帧率已接近屏幕刷新率时显示“补帧待机”", s.enhFpsOverlay) { u { copy(enhFpsOverlay = it) } }
     Header("SDR 转 HDR")
     ChoiceRow(
         "SDR→HDR", s.enhHdr, listOf("off" to "关闭", "auto" to "自动(屏幕支持 HDR 时开启)", "on" to "总是开启"),

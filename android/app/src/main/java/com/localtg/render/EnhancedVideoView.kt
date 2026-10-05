@@ -109,6 +109,9 @@ class EnhancedVideoView(context: Context) : SurfaceView(context), SurfaceHolder.
 
     val stats: String get() = renderer?.stats.orEmpty()
 
+    /** 补帧时画面右上角的小字("补帧 24 → 60 fps");没开补帧为空。 */
+    val fpsText: String get() = renderer?.fpsText.orEmpty()
+
     fun release() {
         attached?.removeListener(listener)
         attached = null

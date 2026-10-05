@@ -124,6 +124,10 @@ void main() {
 class LumaPyramid(val d1: Gl.Tex, val d2: Gl.Tex, val d3: Gl.Tex)
 
 class MotionEstimator(private val pool: Gl.Pool) {
+    /** 最近一次 estimate 返回的运动场,向量的单位是哪一层亮度图的像素(尺寸);插帧着色器用它把向量换算成纹理坐标。 */
+    var unitW = 1; private set
+    var unitH = 1; private set
+
     private val down = Gl.program(FrcShaders.DOWN)
     private val coarse = Gl.program(FrcShaders.ME_COARSE)
     private val refine = Gl.program(FrcShaders.ME_REFINE)
@@ -160,12 +164,20 @@ class MotionEstimator(private val pool: Gl.Pool) {
      * 估计 A→B 的运动场。返回 1/8 分辨率(相对 D1 的 4×4 块)的 RGBA16F 纹理,xy = 向量(单位:D1 像素),调用方用完要放回池。
      * 运动场纹理尺寸:(D1.w/4, D1.h/4);三层的格子大小依次是 D3/4、D2/4、D1/4。
      */
-    fun estimate(a: LumaPyramid, b: LumaPyramid, grid: GridPool): Gl.Tex {
+    fun estimate(a: LumaPyramid, b: LumaPyramid, grid: GridPool, quality: String = "mc"): Gl.Tex {
         val g3 = grid.acquire((b.d3.w + 3) / 4, (b.d3.h + 3) / 4)
         pass(coarse, g3, "uA" to a.d3, "uB" to b.d3)
         val g2 = grid.acquire((b.d2.w + 3) / 4, (b.d2.h + 3) / 4)
         pass(refine, g2, "uA" to a.d2, "uB" to b.d2, "uPrev" to g3)
         grid.release(g3)
+        if (quality == "mc_fast") {
+            // 轻量档:运动场只算到 1/4 分辨率层(格子数是细层的 1/4),只做一轮半像素精修 —— 估计耗时约为标准档的 1/3
+            val s = grid.acquire(g2.w, g2.h)
+            pass(subpel, s, "uA" to a.d2, "uB" to b.d2, "uPrev" to g2) { GLES20.glUniform1f(Gl.loc(subpel, "uStep"), 0.5f) }
+            grid.release(g2)
+            unitW = b.d2.w; unitH = b.d2.h
+            return s
+        }
         val g1 = grid.acquire((b.d1.w + 3) / 4, (b.d1.h + 3) / 4)
         pass(refine, g1, "uA" to a.d1, "uB" to b.d1, "uPrev" to g2)
         grid.release(g2)
@@ -175,6 +187,14 @@ class MotionEstimator(private val pool: Gl.Pool) {
         val s2 = grid.acquire(g1.w, g1.h)
         pass(subpel, s2, "uA" to a.d1, "uB" to b.d1, "uPrev" to s1) { GLES20.glUniform1f(Gl.loc(subpel, "uStep"), 0.25f) }
         grid.release(g1); grid.release(s1)
+        unitW = b.d1.w; unitH = b.d1.h
+        if (quality == "mc_hq") {
+            // 高质量档:再来一轮 1/8 像素精修,运动更准(插值时少一点抖动)
+            val s3 = grid.acquire(g1.w, g1.h)
+            pass(subpel, s3, "uA" to a.d1, "uB" to b.d1, "uPrev" to s2) { GLES20.glUniform1f(Gl.loc(subpel, "uStep"), 0.125f) }
+            grid.release(s2)
+            return s3
+        }
         return s2
     }
 

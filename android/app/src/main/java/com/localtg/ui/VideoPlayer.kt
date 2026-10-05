@@ -204,6 +204,7 @@ fun VideoPage(
     var resumeMs by remember(item.id) { mutableLongStateOf(-1L) }        // -1 = 还没读取保存的进度
     var stats by remember { mutableStateOf("") }
     var enhStats by remember { mutableStateOf("") }
+    var frcText by remember { mutableStateOf("") }
     var enhView by remember { mutableStateOf<com.localtg.render.EnhancedVideoView?>(null) }
     val decoderName = remember { arrayOf("") }
     val dropped = remember { longArrayOf(0) }
@@ -395,8 +396,12 @@ fun VideoPage(
     }
 
     // 增强渲染的实时信息(输出帧率 / 处理耗时 / 是否已因性能停用超分)
-    LaunchedEffect(enhView, cfg.showStats) {
-        while (true) { enhStats = if (cfg.showStats) enhView?.stats.orEmpty() else ""; delay(1000) }
+    LaunchedEffect(enhView, cfg.showStats, cfg.enhFrc, cfg.enhFpsOverlay) {
+        while (true) {
+            enhStats = if (cfg.showStats) enhView?.stats.orEmpty() else ""
+            frcText = if (cfg.enhFpsOverlay && cfg.enhFrc != "off") enhView?.fpsText.orEmpty() else ""
+            delay(1000)
+        }
     }
 
     // 画中画:更新自动小窗所需信息
@@ -461,7 +466,7 @@ fun VideoPage(
         }
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        val enh = com.localtg.render.EnhanceConfig(cfg.enhUpscale, cfg.enhFrc, cfg.enhHdr, cfg.enhPeak, cfg.enhMaxH)
+        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = cfg.enhFrc, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH)
         var enhFailed by remember(item.id) { mutableStateOf(false) }
         // HDR 片源本身不处理;转码播放的是 H.264 SDR,可以处理
         val useEnh = enh.active && !enhFailed && item.video?.hdr.isNullOrEmpty() && android.os.Build.VERSION.SDK_INT >= 26
@@ -783,6 +788,15 @@ fun VideoPage(
             )
         }
 
+        // 补帧时右上角的帧率小字(控制条显示时让到顶栏下面)
+        if (frcText.isNotEmpty() && !inPip) {
+            Text(
+                frcText, color = Color(0xFFB9F6CA), fontSize = 11.sp,
+                modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = if (showControls) 56.dp else 4.dp, end = 10.dp)
+                    .background(Color(0x66000000), androidx.compose.foundation.shape.RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
+
         error?.let { msg ->
             Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(msg, color = Color(0xFFFF8A80), fontSize = 16.sp)
@@ -846,8 +860,10 @@ fun VideoPage(
                 "超分:FSR(通用,很快)" to (s.enhUpscale == "fsr"),
                 "超分:Anime4K 小模型(动漫)" to (s.enhUpscale == "anime4k_s"),
                 "超分:Anime4K 中模型(动漫,更好)" to (s.enhUpscale == "anime4k_m"),
-                "补帧:帧混合" to (s.enhFrc == "blend"),
-                "补帧:运动补偿(实验)" to (s.enhFrc == "mc"),
+                "补帧:帧混合(最省电)" to (s.enhFrc == "blend"),
+                "补帧:运动补偿(平衡)" to (s.enhFrc == "mc"),
+                "补帧:运动补偿·轻量(省电)" to (s.enhFrc == "mc_fast"),
+                "补帧:运动补偿·高质量" to (s.enhFrc == "mc_hq"),
                 "SDR→HDR" to (s.enhHdr != "off"),
             )
             PickDialog("画质增强(点选后立即生效;再点一次取消)", rows, { dialog = "" }) { i ->
@@ -860,6 +876,8 @@ fun VideoPage(
                         3 -> copy(enhUpscale = if (enhUpscale == "anime4k_m") "off" else "anime4k_m")
                         4 -> copy(enhFrc = if (enhFrc == "blend") "off" else "blend")
                         5 -> copy(enhFrc = if (enhFrc == "mc") "off" else "mc")
+                        6 -> copy(enhFrc = if (enhFrc == "mc_fast") "off" else "mc_fast")
+                        7 -> copy(enhFrc = if (enhFrc == "mc_hq") "off" else "mc_hq")
                         else -> copy(enhHdr = if (enhHdr != "off") "off" else "auto")
                     }
                 }
