@@ -41,7 +41,7 @@ import (
 	"mediahub/internal/tlsx"
 )
 
-const version = "1.1.0"
+const version = "1.1.1"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {

@@ -11,7 +11,7 @@ $out = Join-Path $Root "testdata\screens\$Name"
 New-Item -ItemType Directory -Force $out | Out-Null
 Get-ChildItem $out -Filter *.png | Remove-Item -Force
 & $adb shell rm -f /sdcard/rec.mp4
-$rec = Start-Process -FilePath $adb -ArgumentList 'shell', 'screenrecord', '--time-limit', '5', '--size', '540x1200', '/sdcard/rec.mp4' -PassThru -WindowStyle Hidden
+$rec = Start-Process -FilePath $adb -ArgumentList 'shell', 'screenrecord', '--time-limit', '4', '--size', '540x1200', '/sdcard/rec.mp4' -PassThru -WindowStyle Hidden
 Start-Sleep -Milliseconds 800
 switch ($Mode) {
   'swipe' { & $adb shell input swipe 2 1200 650 1200 900 }
@@ -20,7 +20,7 @@ switch ($Mode) {
   }
   'button' { & $adb shell input keyevent KEYCODE_BACK }
 }
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 7
 & $adb pull /sdcard/rec.mp4 (Join-Path $out 'rec.mp4') | Out-Null
 & $ff -y -v error -i (Join-Path $out 'rec.mp4') -vf "fps=$Fps,scale=270:-1,tile=8x3" -frames:v 1 (Join-Path $out 'sheet.png')
 Write-Host "已生成 $out\sheet.png"

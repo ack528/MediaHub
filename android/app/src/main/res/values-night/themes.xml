@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 每个页面是一个 Activity,系统转场动画先显示窗口背景:颜色必须和页面一致,否则切换时会闪一下 -->
-    <style name="Theme.LocalTG" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.LocalTG" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/window_bg</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>

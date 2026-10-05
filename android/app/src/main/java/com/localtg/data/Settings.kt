@@ -25,7 +25,7 @@ data class AppSettings(
     // ---- 外观
     val theme: String = "system",              // system / light / dark
     val chatBackground: String = "gradient",   // gradient / plain
-    val motion: String = "slide",              // 界面动画:slide(滑动+视差) / axis(Material 共享轴) / fade(淡入淡出) / off(关闭)
+    val motion: String = "slide",              // 界面动画:slide(系统风格,默认) / parallax(整屏滑动+视差) / axis(Material 共享轴) / fade(淡入淡出) / off(关闭)
     // ---- 浏览
     val defaultColumns: Int = 3,               // 网格默认列数(各文件夹自己记住的优先)
     val newestAtBottom: Boolean = true,        // 聊天流默认最新在底部

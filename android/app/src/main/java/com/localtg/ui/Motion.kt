@@ -7,6 +7,7 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -34,7 +35,20 @@ object Motion {
     val EmphasizedAccelerate = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
     val Standard = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 
+    /**
+     * AOSP 的 fast_out_extra_slow_in(= Material 3 的 Emphasized 缓动):
+     * M 0,0 C 0.05,0 0.133333,0.06 0.166666,0.4 C 0.208333,0.82 0.25,1 1,1。
+     * 两段三次贝塞尔拼起来:前 1/6 时间先慢慢加速(不是一上来就最大速度),然后长长的减速尾巴 —— 这是系统 Activity 转场的缓动。
+     */
+    val FastOutExtraSlowIn = Easing { f ->
+        if (f < 0.166666f) 0.4f * EmphasizedAccelerate.transform(f / 0.166666f)
+        else 0.4f + 0.6f * EmphasizedDecelerate.transform((f - 0.166666f) / 0.833334f)
+    }
+
+    /** 系统风格(默认):和 Android 系统 Activity 转场同一套参数(见 navMotion)。 */
     const val SLIDE = "slide"
+    /** 整屏滑动 + 视差(Telegram / iOS 式)。 */
+    const val PARALLAX = "parallax"
     const val AXIS = "axis"
     const val FADE = "fade"
     const val OFF = "off"
@@ -65,7 +79,7 @@ private val Linear = androidx.compose.animation.core.LinearEasing
 private fun AnimatedContentTransitionScope<NavBackStackEntry>.poppingViewer() =
     initialState.destination.route?.startsWith("viewer") == true
 
-fun navMotion(style: String): NavMotion = when (style) {
+fun navMotion(style: String, density: Float = 3f): NavMotion = when (style) {
     Motion.OFF -> NavMotion(
         { EnterTransition.None }, { ExitTransition.None }, { EnterTransition.None }, { ExitTransition.None },
         { EnterTransition.None }, { ExitTransition.None },
@@ -88,7 +102,7 @@ fun navMotion(style: String): NavMotion = when (style) {
             },
         )
     }
-    else -> { // 滑动 + 视差(默认):新页面整屏滑入,旧页面退后 1/4 屏
+    Motion.PARALLAX -> { // 整屏滑动 + 视差(Telegram / iOS 式):新页面整屏滑入,旧页面退后 1/4 屏
         val d = 360
         NavMotion(
             { slideInHorizontally(tween(d, easing = Motion.EmphasizedDecelerate)) { it } },
@@ -98,6 +112,30 @@ fun navMotion(style: String): NavMotion = when (style) {
             // 手势:线性、整屏跟手;从右边缘划(RTL / 右手柄)则向左滑出
             { edge -> if (poppingViewer()) EnterTransition.None else slideInHorizontally(tween(d, easing = Linear)) { if (edge == 1) it / 4 else -it / 4 } },
             { edge -> if (poppingViewer()) predictiveViewerOut() else slideOutHorizontally(tween(d, easing = Linear)) { if (edge == 1) -it else it } },
+        )
+    }
+    else -> { // 系统风格(默认):和 Android 系统的 Activity 转场一致 —— Clash Meta / Shizuku 这类多 Activity 应用直接用的就是这套
+        // AOSP activity_open_enter / activity_open_exit / activity_close_enter / activity_close_exit:
+        //   前进:新页面从右侧 96dp 处滑到位 + 83ms 淡入(延迟 50ms);旧页面同时向左 96dp。
+        //   返回:离开的页面向右 96dp + 83ms 淡出(延迟 35ms);回来的页面从左侧 96dp 滑回。
+        //   时长 450ms,缓动 fast_out_extra_slow_in。距离只有 96dp(不是整屏),所以柔和、不生硬。
+        val dur = 450
+        val px = (96 * density).toInt()
+        val e = Motion.FastOutExtraSlowIn
+        NavMotion(
+            { slideInHorizontally(tween(dur, easing = e)) { px } + fadeIn(tween(83, 50, Linear)) },
+            { slideOutHorizontally(tween(dur, easing = e)) { -px } },
+            { slideInHorizontally(tween(dur, easing = e)) { -px } },
+            { slideOutHorizontally(tween(dur, easing = e)) { px } + fadeOut(tween(83, 35, Linear)) },
+            // 手势:仿系统的"跨 Activity 预测性返回" —— 离开的页面缩到 90%、带圆角(见 NavScreen)、朝手指一侧偏移,最后淡出;
+            // 下面的页面带一层变暗的遮罩,随进度变亮。全部用线性缓动,保证跟手。
+            { edge -> if (poppingViewer()) EnterTransition.None else slideInHorizontally(tween(dur, easing = Linear)) { if (edge == 1) px / 2 else -px / 2 } },
+            { edge ->
+                if (poppingViewer()) predictiveViewerOut()
+                else androidx.compose.animation.scaleOut(tween(dur, easing = Linear), targetScale = 0.9f) +
+                    slideOutHorizontally(tween(dur, easing = Linear)) { (it * 0.05f * (if (edge == 1) -1 else 1)).toInt() } +
+                    fadeOut(tween(dur / 3, dur * 2 / 3, Linear))
+            },
         )
     }
 }
