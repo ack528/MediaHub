@@ -19,6 +19,7 @@ import com.localtg.AppLog
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 
@@ -26,8 +27,10 @@ import kotlin.math.min
 data class EnhanceConfig(
     /** off | fsr | anime4k_s | anime4k_m */
     val upscale: String = "off",
-    /** off | blend(帧混合)| mc_fast(运动补偿·轻量)| mc(运动补偿)| mc_hq(运动补偿·高质量) */
+    /** off | blend(帧混合)| mc_fast(运动补偿·轻量)| mc(运动补偿)| mc_hq(运动补偿·高质量)| flow(光流·OpenCV DIS) */
     val frc: String = "off",
+    /** 补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 5 = 固定倍数 */
+    val frcMultiplier: Int = 0,
     /** 补帧跟不上时自动降级:mc_hq → mc → mc_fast → blend */
     val frcAdaptive: Boolean = true,
     /** off | auto(显示器支持 HDR 才启用)| on */
@@ -57,6 +60,10 @@ class VideoRenderer(
     private val refreshRate: Float,
     private val displayIsHdr: Boolean,
     @Volatile private var config: EnhanceConfig,
+    /** 这块屏同分辨率下支持的最高刷新率(补帧时请求系统保持它,省电模式 / 不触摸降帧时不至于掉下去) */
+    private val maxRefreshRate: Float = refreshRate,
+    /** 渲染线程发现需要的刷新率变了(0 = 不再需要)就回调,由界面线程去向系统申请 */
+    private val onRateHint: (Float) -> Unit = {},
     private val onError: (String) -> Unit,
 ) {
     private val thread = HandlerThread("enh-render").apply { start() }
@@ -91,6 +98,8 @@ class VideoRenderer(
     private class Slot(val ts: Long, val img: Gl.Tex, val pyr: LumaPyramid?, var mv: Gl.Tex?, val id: Long) {
         var mvUW = 1   // 运动向量的单位(某一层亮度图的宽高)
         var mvUH = 1
+        var luma: ByteArray? = null   // 光流用:1/4 分辨率亮度(8 位)
+        var mvOwn = false             // mv 是自己上传的光流纹理(不是纹理池里的),释放时要直接删除
     }
     private val ring = ArrayList<Slot>()
     private var nextId = 1L
@@ -107,6 +116,12 @@ class VideoRenderer(
     @Volatile var fpsText = ""; private set
     @Volatile private var frcDemote = 0   // 因性能不够已降了几档
     private var ingestedWin = 0
+    private var flowEngine: DisFlow? = null
+    private var flowTried = false
+    private var lastHint = -1f
+    private var measuredPeriod = 0L       // 实测的 vsync 间隔(省电模式 / 不触摸降帧时会变)
+    private var deviant = 0
+    private var lastVsync = 0L
     private var ingestEma = 0.0
     private var ingestN = 0
     private var degraded = false
@@ -115,7 +130,8 @@ class VideoRenderer(
     private var shown = 0L
     private var lastStatsAt = 0L
 
-    val period: Long get() = (1_000_000_000f / refreshRate.coerceIn(30f, 240f)).toLong()
+    /** 当前屏幕刷新间隔(ns):优先用 Choreographer 实测值 —— 系统会因省电 / 长时间不触摸降低刷新率,启动时读到的值会过时。 */
+    val period: Long get() = if (measuredPeriod > 0) measuredPeriod else (1_000_000_000f / refreshRate.coerceIn(30f, 240f)).toLong()
 
     fun start(): Surface? {
         val latch = CountDownLatch(1)
@@ -146,15 +162,52 @@ class VideoRenderer(
 
     /** 降级后实际使用的补帧方式。 */
     private fun effFrc(cfg: EnhanceConfig): String {
-        val ladder = listOf("mc_hq", "mc", "mc_fast", "blend")
-        val i = ladder.indexOf(cfg.frc)
-        return if (i < 0) cfg.frc else ladder[min(i + frcDemote, ladder.size - 1)]
+        var base = cfg.frc
+        if (base == "flow") {
+            if (!flowTried) { flowTried = true; flowEngine = DisFlow.create { id, f, w, h -> handler.post { attachFlow(id, f, w, h) } } }
+            if (flowEngine == null) base = "mc_hq" // 光流库不可用(架构不支持 / 加载失败):用块匹配的最高档
+        }
+        val ladder = listOf("flow", "mc_hq", "mc", "mc_fast", "blend")
+        val i = ladder.indexOf(base)
+        return if (i < 0) base else ladder[min(i + frcDemote, ladder.size - 1)]
     }
 
-    private fun isMc(m: String) = m == "mc" || m == "mc_fast" || m == "mc_hq"
+    private fun isMc(m: String) = m == "mc" || m == "mc_fast" || m == "mc_hq" || m == "flow"
 
     /** 源帧率已经接近刷新率(例如 60fps 视频在 60Hz 屏上)时不需要插帧,也就不用做运动估计。 */
-    private fun frcNeeded(): Boolean = interval <= 0L || (1e9 / interval) * 1.3 < refreshRate
+    private fun frcNeeded(): Boolean = interval <= 0L || (1e9 / interval) * 1.3 < 1e9 / period
+
+    /** 光流结果回来了(渲染线程):上传成纹理挂到对应的帧上。该帧已经被淘汰就丢掉。 */
+    private fun attachFlow(id: Long, f: FloatArray, w: Int, h: Int) {
+        if (released) return
+        val s = ring.firstOrNull { it.id == id } ?: return
+        val t = IntArray(1)
+        GLES30.glGenTextures(1, t, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0])
+        // RG32F 不可过滤,必须用最近邻(着色器里用 texelFetch)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        val bb = java.nio.ByteBuffer.allocateDirect(f.size * 4).order(java.nio.ByteOrder.nativeOrder())
+        bb.asFloatBuffer().put(f)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RG32F, w, h, 0, GLES30.GL_RG, GLES30.GL_FLOAT, bb)
+        s.mv?.let { old -> if (s.mvOwn) old.delete() else grid.release(old) }
+        s.mv = Gl.Tex(t[0], 0, w, h, true)
+        s.mvOwn = true
+        s.mvUW = w; s.mvUH = h
+        dirty = true
+        if (!choreoPosted) scheduleVsync()
+    }
+
+    /** 读回 1/4 分辨率亮度图,转成 8 位(光流库的输入)。 */
+    private fun readLuma(t: Gl.Tex): ByteArray {
+        val buf = java.nio.ByteBuffer.allocateDirect(t.w * t.h * 16).order(java.nio.ByteOrder.nativeOrder())
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, t.fbo)
+        GLES30.glReadPixels(0, 0, t.w, t.h, GLES30.GL_RGBA, GLES30.GL_FLOAT, buf)
+        val fb = buf.asFloatBuffer()
+        return ByteArray(t.w * t.h) { i -> (fb.get(i * 4).coerceIn(0f, 1f) * 255f + 0.5f).toInt().toByte() }
+    }
     fun onSurfaceSize(w: Int, h: Int) { surfaceW = w; surfaceH = h; poke() }
 
     fun release() {
@@ -249,6 +302,7 @@ class VideoRenderer(
         ring.forEach { retire(it) }
         ring.clear()
         runCatching { me?.destroy() }
+        runCatching { flowEngine?.release() }
         runCatching { st?.release() }
         runCatching { inputSurface?.release() }
         if (dpy != EGL14.EGL_NO_DISPLAY) {
@@ -324,8 +378,9 @@ class VideoRenderer(
         Gl.draw()
 
         val eff = effFrc(cfg)
-        val needMv = isMc(eff) && frcNeeded()
-        val needPyr = (needMv || hdrActive(cfg)) && halfOk
+        val needMv = (eff == "mc" || eff == "mc_fast" || eff == "mc_hq") && frcNeeded()
+        val needFlow = eff == "flow" && frcNeeded() && flowEngine != null
+        val needPyr = (needMv || needFlow || hdrActive(cfg)) && halfOk
         val pyr = if (needPyr) me?.pyramid(src) else null
         var img = src
         if (cfg.upscale != "off" && halfOk && !degraded && h <= cfg.upscaleMaxSrcHeight) {
@@ -342,7 +397,15 @@ class VideoRenderer(
                 slot.mvUW = m.unitW; slot.mvUH = m.unitH
             }
         }
-        if (slot.mv != null && frames % 48L == 0L && AppLog.isDebug()) debugDumpMotion(slot.mv!!)
+        if (needFlow && pyr != null) {
+            // 光流:读回亮度交给 OpenCV(专用线程),结果回来后再挂到这一帧上;还没回来时这对帧用帧混合
+            val l = readLuma(pyr.d2)
+            slot.luma = l
+            val pl = prev?.luma
+            val pp = prev?.pyr
+            if (pl != null && pp != null && pp.d2.w == pyr.d2.w && pp.d2.h == pyr.d2.h) flowEngine?.submit(slot.id, pl, l, pyr.d2.w, pyr.d2.h)
+        }
+        if (slot.mv != null && !slot.mvOwn && frames % 48L == 0L && AppLog.isDebug()) debugDumpMotion(slot.mv!!)
         if (frames % 120L == 0L && AppLog.isDebug()) probeLeft = 12
         if (prev != null) {
             val dt = ts - prev.ts
@@ -407,7 +470,8 @@ class VideoRenderer(
     private fun retire(s: Slot) {
         pool.release(s.img)
         me?.release(s.pyr)
-        grid.release(s.mv)
+        if (s.mvOwn) s.mv?.delete() else grid.release(s.mv)
+        s.luma = null
     }
 
     private fun hdrActive(c: EnhanceConfig) = hdrSurface && c.hdr != "off"
@@ -423,6 +487,17 @@ class VideoRenderer(
     }
 
     private fun draw(vsyncNs: Long) {
+        // 实测 vsync 间隔:省电模式 / 久不触摸系统会把刷新率降下来(例如 120 → 60 → 30Hz),要跟着调整;
+        // 连续 3 次偏离当前值 25% 以上才切换,单次掉帧(间隔变成两倍)不算
+        if (lastVsync != 0L) {
+            val d = vsyncNs - lastVsync
+            if (d in 3_000_000L..60_000_000L) {
+                if (measuredPeriod == 0L) measuredPeriod = d
+                else if (abs(d - measuredPeriod) > measuredPeriod / 4) { if (++deviant >= 3) { measuredPeriod = d; deviant = 0 } }
+                else { deviant = 0; measuredPeriod = (measuredPeriod * 7 + d) / 8 }
+            }
+        }
+        lastVsync = vsyncNs
         val cfg = config
         // 补帧要用到"下一帧",而 ExoPlayer 只会在上屏前 ~50ms 才释放帧,几乎没有前瞻余量;
         // 所以补帧时让画面整体晚一个源帧间隔(最多 50ms)上屏 —— 视频比声音慢 ≤50ms,人感觉不到(ITU 容限是 −45ms 超前 / +125ms 滞后)
@@ -447,9 +522,14 @@ class VideoRenderer(
             if (dt in 4_000_000L..120_000_000L && refreshHz > srcHz * 1.3) {
                 t = ((nowNs - a.ts).toDouble() / dt).toFloat().coerceIn(0f, 1f)
                 mode = if (isMc(effFrc(cfg)) && b.mv != null) 2 else 1
+                if (cfg.frcMultiplier > 0) {
+                    // 固定倍率:每个源帧之间只出 N 个画面(N 不超过 刷新率 / 源帧率),其余刷新重复上一个画面(也省 GPU)
+                    val n = min(cfg.frcMultiplier, max(1, floor(refreshHz / srcHz + 0.1).toInt()))
+                    if (n <= 1) { t = 0f; mode = 0 } else t = floor(t * n + 1e-3f) / n
+                }
             }
         }
-        val key = "${a.id}/${if (mode == 0) 0 else (t * 64).toInt()}/$mode"
+        val key = "${a.id}/${if (mode == 0) 0 else (t * 64).toInt()}/$mode/${b?.mv != null}"
         if (key == lastDrawKey && !dirty) {
             if (ring.isNotEmpty() && (needNext || b != null)) scheduleVsync()
             return
@@ -505,10 +585,19 @@ class VideoRenderer(
                 append(" 补帧(${frcLabel(e)})${if (mode == 0) "·待机" else ""}${if (e != cfg.frc) "·已降级" else ""}")
             }
             if (hdrActive(cfg)) append(" HDR(PQ,${cfg.hdrPeakNits}nit)") else if (cfg.hdr != "off") append(" HDR:显示器/表面不支持")
-            append("\n输出 ${"%.0f".format(fps)}fps  源 ${a.img.w}×${a.img.h}  处理 ${"%.1f".format(ingestEma)}ms")
+            append("\n输出 ${"%.0f".format(fps)}fps  源 ${a.img.w}×${a.img.h}  处理 ${"%.1f".format(ingestEma)}ms  屏幕 ${"%.0f".format(1e9 / period)}Hz")
+            flowEngine?.takeIf { cfg.frc == "flow" }?.let { append("  光流 ${"%.1f".format(it.avgMs)}ms") }
         }
         val srcFps = ingestedWin / secs
         ingestedWin = 0
+        // 向系统申请刷新率:补帧时保持屏幕高刷(固定倍率时申请 源帧率 × 倍率);不补帧时释放
+        val srcHz = if (interval > 0) 1e9 / interval else 0.0
+        val hint = when {
+            cfg.frc == "off" -> 0f
+            cfg.frcMultiplier > 0 && srcHz > 0 -> min(maxRefreshRate, (srcHz * cfg.frcMultiplier).toFloat())
+            else -> maxRefreshRate
+        }
+        if (abs(hint - lastHint) > 1f) { lastHint = hint; onRateHint(hint) }
         fpsText = when {
             cfg.frc == "off" -> ""
             mode == 0 -> "补帧待机 ${"%.0f".format(srcFps)}fps"
@@ -517,7 +606,7 @@ class VideoRenderer(
     }
 
     private fun frcLabel(m: String) = when (m) {
-        "blend" -> "混合"; "mc_fast" -> "运动补偿·轻量"; "mc_hq" -> "运动补偿·高质量"; else -> "运动补偿"
+        "blend" -> "混合"; "mc_fast" -> "运动补偿·轻量"; "mc_hq" -> "运动补偿·高质量"; "flow" -> "光流·DIS"; else -> "运动补偿"
     }
 
     companion object {

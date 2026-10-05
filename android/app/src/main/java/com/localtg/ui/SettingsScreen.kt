@@ -44,6 +44,10 @@ import com.localtg.AppContainer
 import com.localtg.AppLog
 import androidx.compose.foundation.lazy.items
 import com.localtg.data.AppSettings
+import com.localtg.data.AppJson
+import com.localtg.render.HardwareProbe
+import com.localtg.render.HwReport
+import kotlinx.serialization.encodeToString
 import com.localtg.ui.tg.BarIcon
 import com.localtg.ui.tg.LocalTg
 import com.localtg.ui.tg.TgBar
@@ -61,7 +65,7 @@ private val SECTIONS = listOf(
     Triple("image", "图片", "缓存大小、位图、过渡动画"),
     Triple("video", "视频播放", "自动播放、循环、倍速、进度记忆"),
     Triple("codec", "编解码器", "硬解 / 软解、缓冲、分辨率、音轨字幕"),
-    Triple("enhance", "画质增强(实验)", "实时超分、补帧、SDR 转 HDR"),
+    Triple("enhance", "画质增强(实验)", "实时超分、补帧(倍率 / 光流)、SDR 转 HDR、硬件检测"),
     Triple("network", "网络", "连接与读取超时"),
     Triple("storage", "存储与缓存", "清理缓存、记录,恢复默认设置"),
     Triple("account", "服务器管理", "已保存的服务器、切换、添加、退出登录"),
@@ -77,6 +81,8 @@ fun SettingsScreen(c: AppContainer, section: String?, onBack: () -> Unit, onOpen
         null -> "设置"
         "codecs-info" -> "本机解码器"
         "log-view" -> "应用日志"
+        "enhance-hw" -> "硬件支持检测"
+        "lsfg" -> "LSFG-Android(外部补帧)"
         else -> SECTIONS.firstOrNull { it.first == section }?.second ?: "设置"
     }
     Column(Modifier.fillMaxSize()) {
@@ -102,7 +108,9 @@ fun SettingsScreen(c: AppContainer, section: String?, onBack: () -> Unit, onOpen
                     "image" -> ImagePage(s, update)
                     "video" -> VideoPage(s, update)
                     "codec" -> CodecPage(s, update, onOpenCodecs = { onOpen("codecs-info") })
-                    "enhance" -> EnhancePage(s, update)
+                    "enhance" -> EnhancePage(s, update, onOpen)
+                    "enhance-hw" -> HardwarePage(s, update)
+                    "lsfg" -> LsfgPage(s)
                     "network" -> NetworkPage(s, update)
                     "storage" -> StoragePage(c)
                     "account" -> AccountPage(c)
@@ -293,13 +301,15 @@ private fun VideoPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
 }
 
 @Composable
-private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
+private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit, onOpen: (String) -> Unit) {
     Text(
         "开启任意一项后,视频改由本应用自己的 OpenGL 渲染器显示(普通播放不受影响)。全部在手机 GPU 上实时处理," +
             "耗电和发热会增加;处理跟不上时会自动停用超分。HDR 视频本身不处理。播放时在「更多 → 画质增强」里也能快速切换。",
         fontSize = 13.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
     )
+    NavRow("硬件支持检测", "实测这部手机能不能流畅超分 / 补帧,并给出推荐设置") { onOpen("enhance-hw") }
+    NavRow("LSFG-Android(外部补帧)", "Lossless Scaling 的帧生成,独立 App,可以叠加在本应用上") { onOpen("lsfg") }
     Header("实时超分")
     ChoiceRow(
         "超分算法", s.enhUpscale,
@@ -316,9 +326,16 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
         listOf(
             "off" to "关闭", "blend" to "帧混合(最省电,轻微拖影)", "mc_fast" to "运动补偿·轻量(省电,适合 1080p 以上)",
             "mc" to "运动补偿(平衡)", "mc_hq" to "运动补偿·高质量(最顺滑,最费电)",
+            "flow" to "光流·OpenCV DIS(逐像素光流,边缘最干净)",
         ),
         desc = "把 24 / 30 帧视频补到屏幕刷新率(60 / 120 Hz),画面更顺滑(类似电视的“流畅运动”)。运动补偿用 GPU 金字塔块匹配估计运动(和 AMD FSR 3 的光流同一类做法):轻量档只估到 1/4 分辨率、候选少;高质量档多一轮 1/8 像素精修、每个像素比较 9 个相邻块。快速运动和遮挡处可能有瑕疵",
     ) { u { copy(enhFrc = it) } }
+    ChoiceRow(
+        "补帧倍率", s.enhFrcMultiplier,
+        listOf(0 to "自动(补到屏幕刷新率)", 2 to "2 倍", 3 to "3 倍", 4 to "4 倍", 5 to "5 倍"),
+        desc = "固定倍率:24fps 视频 × 3 = 72fps。倍率超过 屏幕刷新率 ÷ 源帧率 时按能显示的最大倍率算;每个源帧之间只生成需要的画面,GPU 压力比“自动”小。" +
+            "补帧时应用会请求系统保持高刷新率(固定倍率时请求 源帧率 × 倍率),屏幕因省电 / 久不触摸降刷新率时会按实测刷新率自动调整",
+    ) { u { copy(enhFrcMultiplier = it) } }
     SwitchRow("补帧跟不上时自动降级", "补帧耗时持续超过帧间隔时,自动降一档(高质量 → 标准 → 轻量 → 帧混合),避免掉帧", s.enhFrcAdaptive) { u { copy(enhFrcAdaptive = it) } }
     SwitchRow("右上角显示帧率", "补帧时在画面右上角用小字显示“源帧率 → 输出帧率”;源帧率已接近屏幕刷新率时显示“补帧待机”", s.enhFpsOverlay) { u { copy(enhFpsOverlay = it) } }
     Header("SDR 转 HDR")
@@ -330,6 +347,109 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
         "HDR 峰值亮度", s.enhPeak, listOf(400 to "400 nit(保守)", 600 to "600 nit", 800 to "800 nit", 1000 to "1000 nit(明显)"),
         desc = "高光最亮扩展到多少。OLED 手机的峰值一般在 1000–2000 nit;过高会显得刺眼",
     ) { u { copy(enhPeak = it) } }
+}
+
+@Composable
+private fun HardwarePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
+    val ctx = LocalContext.current
+    val tg = LocalTg.current
+    var running by remember { mutableStateOf(false) }
+    var step by remember { mutableStateOf("") }
+    val report = remember(s.hwReport) { runCatching { AppJson.decodeFromString<HwReport>(s.hwReport) }.getOrNull() }
+    Text(
+        "实际运行一遍超分和补帧着色器(540p→1080p 超分、1080p 运动估计、OpenCV 光流),量出每帧耗时,再和 30fps / 60fps 的帧间隔比较。" +
+            "检测期间画面可能短暂卡顿,请不要在检测时播放视频。",
+        fontSize = 13.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+    )
+    ActionRow(
+        if (running) "检测中…" else if (report == null) "开始检测" else "重新检测",
+        if (running) step.ifEmpty { "准备中…" } else "约需 5 ~ 15 秒",
+    ) {
+        if (!running) {
+            running = true
+            val r = try { withContext(Dispatchers.Default) { HardwareProbe.run(ctx) { step = it } } } catch (e: Throwable) { null }
+            if (r != null) u { copy(hwReport = AppJson.encodeToString(r)) }
+            running = false
+        }
+    }
+    if (report != null) {
+        Header("检测结果  ·  " + java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA).format(java.util.Date(report.time)))
+        report.lines.forEach { l ->
+            val (label, color) = when (l.level) {
+                2 -> "良好" to tg.ok; 1 -> "勉强" to tg.warn; 0 -> "不支持" to tg.danger; else -> "信息" to tg.neutral
+            }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(l.title, color = tg.name, fontSize = 15.sp, modifier = Modifier.weight(1f, fill = false))
+                    Text(
+                        label, color = Color.White, fontSize = 11.sp,
+                        modifier = Modifier.padding(start = 8.dp).clip(RoundedCornerShape(4.dp)).background(color).padding(horizontal = 6.dp, vertical = 1.dp),
+                    )
+                }
+                Text(l.text, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+            }
+            HorizontalDivider(Modifier.padding(start = 16.dp), color = tg.divider)
+        }
+        Header("推荐")
+        Text(report.note, color = tg.name, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        ActionRow("应用推荐设置", "把超分设为「${upscaleName(report.recUpscale)}」、补帧设为「${frcName(report.recFrc)}」(其它设置不动)") {
+            u { copy(enhUpscale = report.recUpscale, enhFrc = report.recFrc) }
+        }
+    }
+}
+
+private fun upscaleName(v: String) = when (v) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K 小模型"; "anime4k_m" -> "Anime4K 中模型"; else -> "关闭" }
+private fun frcName(v: String) = when (v) {
+    "blend" -> "帧混合"; "mc_fast" -> "运动补偿·轻量"; "mc" -> "运动补偿"; "mc_hq" -> "运动补偿·高质量"; "flow" -> "光流·OpenCV DIS"; else -> "关闭"
+}
+
+@Composable
+private fun LsfgPage(s: AppSettings) {
+    val ctx = LocalContext.current
+    val tg = LocalTg.current
+    val pm = ctx.packageManager
+    val pkg = remember {
+        runCatching {
+            pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                .firstOrNull { it.loadLabel(pm).toString().contains("LSFG", ignoreCase = true) }?.activityInfo?.packageName
+        }.getOrNull()
+    }
+    val report = remember(s.hwReport) { runCatching { AppJson.decodeFromString<HwReport>(s.hwReport) }.getOrNull() }
+    Text(
+        "LSFG-Android 是把 Lossless Scaling 的帧生成(lsfg-vk,Vulkan)搬到安卓的独立 App:用屏幕录制(MediaProjection)抓取画面," +
+            "在上层悬浮窗里显示生成的中间帧,倍率 2× ~ 8×。它是单独的应用,不能作为库嵌进本应用。",
+        fontSize = 13.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+    )
+    Header("本机")
+    InfoRow("是否已安装", if (pkg != null) "已安装($pkg)" else "没有检测到(名称里含 LSFG 的桌面应用)")
+    val ready = report?.lsfgReady
+    InfoRow(
+        "硬件条件",
+        when (ready) {
+            true -> "满足:Android 10+、Vulkan、Adreno 7xx 及更新的 GPU"
+            false -> "不一定满足(它官方只在 Adreno 7xx+ 上验证过),详见「硬件支持检测」"
+            null -> "还没检测,先到「硬件支持检测」里检测一次"
+        },
+    )
+    Header("操作")
+    ActionRow("打开 LSFG-Android", if (pkg != null) "切换到 LSFG-Android 里选择本应用并开始" else "需要先安装 LSFG-Android") {
+        pkg?.let { p -> pm.getLaunchIntentForPackage(p)?.let { ctx.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
+    }
+    ActionRow("项目主页(用浏览器打开)", "github.com/FrankBarretta/LSFG-Android") {
+        runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/FrankBarretta/LSFG-Android")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    }
+    Header("注意")
+    Text(
+        "1. 它需要你自己拥有的 Lossless Scaling(Steam 购买)里的 Lossless.dll,首次使用时在它的界面里选择该文件,它在手机上提取着色器后删除 DLL。" +
+            "这个 DLL 受版权保护,不能随本应用分发,所以本应用无法内置这项技术。\n" +
+            "2. 屏幕捕获 + 悬浮窗会引入约 50 ~ 80ms 的画面延迟,播放视频时声音可能比画面早一点。\n" +
+            "3. 和本应用内置的补帧不要同时开:先把「补帧方式」设为关闭,避免对同一个画面补两次。\n" +
+            "4. 开启防截屏(设置 → 外观 → 禁止截屏和录屏)时它抓到的是黑屏,需要先关掉。\n" +
+            "5. 项目许可:仓库根目录 MIT,App 本体为自定义许可(不上架商店、不商用);lsfg-vk 近期改为 CC BY-NC-ND 4.0。",
+        color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+    )
 }
 
 @Composable
@@ -443,7 +563,7 @@ private fun AccountPage(c: AppContainer) {
                     e.loggedIn -> "已登录" + (if (e.user.isNotEmpty()) "(${e.user})" else "") + (if (e.baseUrl.startsWith("https://")) " · 加密传输" else " · 未加密")
                     else -> "需要重新登录"
                 },
-                color = if (!e.loggedIn) Color(0xFFF59E0B) else tg.message, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
+                color = if (!e.loggedIn) tg.warn else tg.message, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
             )
         }
         HorizontalDivider(Modifier.padding(start = 16.dp), color = tg.divider)
@@ -461,7 +581,7 @@ private fun AccountPage(c: AppContainer) {
                     if (e.id != activeId) TextButton(onClick = { sel = null; scope.launch { c.session.switchTo(e.id) } }, modifier = Modifier.fillMaxWidth()) { Text(if (e.loggedIn) "切换到这个服务器" else "去登录") }
                     TextButton(onClick = { sel = null; renaming = e }, modifier = Modifier.fillMaxWidth()) { Text("重命名") }
                     if (e.loggedIn && !e.isLocal) TextButton(onClick = { sel = null; scope.launch { if (e.id == activeId) c.api.logout(); c.session.forget(e.id) } }, modifier = Modifier.fillMaxWidth()) { Text("退出登录") }
-                    TextButton(onClick = { sel = null; deleting = e }, modifier = Modifier.fillMaxWidth()) { Text("删除", color = Color(0xFFE53935)) }
+                    TextButton(onClick = { sel = null; deleting = e }, modifier = Modifier.fillMaxWidth()) { Text("删除", color = tg.danger) }
                 }
             },
             confirmButton = { TextButton(onClick = { sel = null }) { Text("关闭") } },
@@ -482,7 +602,7 @@ private fun AccountPage(c: AppContainer) {
             onDismissRequest = { deleting = null },
             title = { Text("删除“${e.name}”?") },
             text = { Text("只是从这部手机上移除这条记录和它的登录,服务器上的内容不受影响。") },
-            confirmButton = { TextButton(onClick = { deleting = null; scope.launch { c.session.remove(e.id) } }) { Text("删除", color = Color(0xFFE53935)) } },
+            confirmButton = { TextButton(onClick = { deleting = null; scope.launch { c.session.remove(e.id) } }) { Text("删除", color = tg.danger) } },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } },
         )
     }
@@ -561,8 +681,8 @@ private fun LogViewPage() {
             items(shown.size) { i ->
                 val l = shown[i]
                 val c = when {
-                    l.contains(" E/") -> Color(0xFFE53935)
-                    l.contains(" W/") -> Color(0xFFF59E0B)
+                    l.contains(" E/") -> tg.danger
+                    l.contains(" W/") -> tg.warn
                     else -> tg.name
                 }
                 Text(l, color = c, fontSize = 11.sp, lineHeight = 14.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
@@ -609,7 +729,7 @@ private fun CodecInfoPage() {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
-                            Modifier.clip(RoundedCornerShape(4.dp)).background(if (d.hardware) Color(0xFF4EC95E) else Color(0xFF9AA5B1))
+                            Modifier.clip(RoundedCornerShape(4.dp)).background(if (d.hardware) tg.ok else tg.neutral)
                                 .padding(horizontal = 6.dp, vertical = 1.dp),
                         ) { Text(if (d.hardware) "硬件" else "软件", color = Color.White, fontSize = 11.sp) }
                         Text(d.name, color = tg.name, fontSize = 14.sp, modifier = Modifier.padding(start = 8.dp))
@@ -703,7 +823,7 @@ private fun ActionRow(title: String, desc: String, confirm: String? = null, dang
         Modifier.fillMaxWidth().clickable { if (confirm != null) ask = true else scope.launch { action() } }
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Text(title, color = if (danger) Color(0xFFE53935) else tg.name, fontSize = 16.sp)
+        Text(title, color = if (danger) tg.danger else tg.name, fontSize = 16.sp)
         Text(desc, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
     }
     if (ask) {

@@ -115,7 +115,7 @@ fun SearchScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 query.isBlank() -> Hint("输入文件名的一部分,例如 IMG_0398", tg.message)
-                error != null -> Hint(error!!, MaterialColorError)
+                error != null -> Hint(error!!, tg.danger)
                 loading && results.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 searched && results.isEmpty() -> Hint("没有找到匹配的文件", tg.message)
                 else -> {
@@ -161,7 +161,6 @@ fun SearchScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
     }
 }
 
-private val MaterialColorError = Color(0xFFE53935)
 
 @Composable
 private fun Hint(text: String, color: Color) {

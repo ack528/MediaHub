@@ -99,7 +99,9 @@ data class AppSettings(
     val subtitleLanguage: String = "",
     // ---- 画质增强(实验):用自己的 OpenGL 渲染器显示视频,可实时超分 / 补帧 / SDR→HDR
     val enhUpscale: String = "off",            // off / fsr(通用)/ anime4k_s(动漫,较快)/ anime4k_m(动漫,画质更好)
-    val enhFrc: String = "off",                // off / blend(帧混合)/ mc_fast(运动补偿·轻量)/ mc(运动补偿)/ mc_hq(运动补偿·高质量)
+    val enhFrc: String = "off",                // off / blend(帧混合)/ mc_fast(运动补偿·轻量)/ mc(运动补偿)/ mc_hq(运动补偿·高质量)/ flow(光流·OpenCV DIS)
+    val enhFrcMultiplier: Int = 0,             // 补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 5 = 固定倍数(源 24fps × 3 = 72fps)
+    val hwReport: String = "",                 // 最近一次"硬件支持检测"的结果(JSON)
     val enhFrcAdaptive: Boolean = true,        // 补帧跟不上时自动降一档
     val enhFpsOverlay: Boolean = true,         // 补帧时在画面右上角显示 源帧率 → 输出帧率
     val enhHdr: String = "off",                // off / auto(显示器支持 HDR 才启用)/ on

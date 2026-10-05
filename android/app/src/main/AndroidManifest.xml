@@ -12,6 +12,13 @@
     <!-- Android 17(API 37)起,访问局域网地址(如 192.168.x.x / 10.x.x.x)需要此权限,首次启动时会弹窗申请 -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".App"
         android:allowBackup="false"

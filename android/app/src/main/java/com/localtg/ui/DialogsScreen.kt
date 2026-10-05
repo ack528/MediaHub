@@ -251,7 +251,7 @@ private fun AppDrawer(
         DrawerItem(TgIcons.File, "日志与诊断", onLog)
         DrawerItem(TgIcons.Info, "关于", onAbout)
         Box(Modifier.padding(vertical = 6.dp).fillMaxWidth().height(1.dp).background(tg.divider))
-        DrawerItem(TgIcons.Logout, "退出登录", onLogout, tint = Color(0xFFE53935))
+        DrawerItem(TgIcons.Logout, "退出登录", onLogout, tint = tg.danger)
         Spacer(Modifier.weight(1f))
         Text("版本 $ver", Modifier.padding(18.dp).navigationBarsPadding(), color = tg.message, fontSize = 12.sp)
     }

@@ -1,6 +1,22 @@
 package com.localtg.ui
 
 import android.os.Build
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.sp
+import com.localtg.ui.tg.LocalTg
+import com.localtg.ui.tg.TgBar
+import com.localtg.ui.tg.TgIcons
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -80,54 +96,55 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
             .onFailure { error = friendlyError(it) }
     }
 
-    Column(
-        Modifier.fillMaxSize().safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-    ) {
-        androidx.compose.foundation.Image(
-            androidx.compose.ui.res.painterResource(com.localtg.R.drawable.ic_logo), null,
-            Modifier.size(72.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp)),
-        )
-        Spacer(Modifier.height(16.dp))
-        Text("本地浏览", style = MaterialTheme.typography.headlineLarge)
-        Spacer(Modifier.height(4.dp))
-        Text("连接到你自己的媒体服务器", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(20.dp))
+    val tg = LocalTg.current
+    Column(Modifier.fillMaxSize().imePadding()) {
+    // 蓝色头部:和文件夹列表 / 设置的顶栏同一个 TgBar
+    TgBar {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 22.dp), verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.foundation.Image(
+                androidx.compose.ui.res.painterResource(com.localtg.R.drawable.ic_logo), null,
+                Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)),
+            )
+            Column(Modifier.padding(start = 16.dp)) {
+                Text("本地浏览", color = tg.barText, fontSize = 22.sp, fontWeight = FontWeight.Medium)
+                Text("连接到你自己的媒体服务器", color = tg.barSub, fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp))
+            }
+        }
+    }
+    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 12.dp)) {
 
         if (info == null && saved.isNotEmpty()) {
-            Text("已保存的服务器", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            SectionTitle("已保存的服务器")
             saved.forEach { e ->
-                Column(
-                    Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                Row(
+                    Modifier.fillMaxWidth()
                         .clickable {
                             if (e.loggedIn) scope.launch { c.session.switchTo(e.id) } // 已登录:直接进入(界面会自动跳转)
                             else { address = e.address.ifEmpty { e.baseUrl }; error = null; scope.launch { c.session.switchTo(e.id) } }
                         }
-                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                        .padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(e.name, style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        e.host + if (e.isLocal) "" else if (e.loggedIn) "  ·  已登录" + (if (e.user.isNotEmpty()) "(${e.user})" else "") else "  ·  需要重新登录",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(e.name, color = tg.name, fontSize = 16.sp)
+                        Text(
+                            e.host + if (e.isLocal) "" else if (e.loggedIn) "  ·  已登录" + (if (e.user.isNotEmpty()) "(${e.user})" else "") else "  ·  需要重新登录",
+                            color = if (!e.isLocal && !e.loggedIn) tg.warn else tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                    Icon(TgIcons.ChevronRight, null, tint = tg.message, modifier = Modifier.size(22.dp))
                 }
+                HorizontalDivider(color = tg.divider)
             }
-            Spacer(Modifier.height(16.dp))
-            Text("添加服务器", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(8.dp))
+            SectionTitle("添加服务器")
         }
 
         if (info == null) {
-            OutlinedTextField(
-                value = address, onValueChange = { address = it; error = null },
-                label = { Text("服务器地址") },
-                placeholder = { Text("192.168.1.20:8480") },
-                singleLine = true, modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            )
+            TgField(address, { address = it; error = null }, "服务器地址", "192.168.1.20:8480", keyboardType = KeyboardType.Uri)
             Spacer(Modifier.height(16.dp))
-            Button(
-                enabled = address.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth(),
+            TgButton(
+                "连接", enabled = address.isNotBlank() && !busy, busy = busy,
                 onClick = {
                     busy = true; error = null
                     scope.launch {
@@ -143,30 +160,23 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
                         busy = false
                     }
                 },
-            ) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("连接") }
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                enabled = !busy, modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+            TgButton(
+                "读取本地媒体(不连接服务器)", enabled = !busy, outlined = true,
                 onClick = { if (LocalMedia.hasPermission(ctx)) enterLocal() else permLauncher.launch(LocalMedia.permissions()) },
-            ) { Text("读取本地媒体(不连接服务器)") }
+            )
         } else {
-            Text("已连接:${info!!.name}  v${info!!.version}", style = MaterialTheme.typography.titleMedium)
-            Text(normalized, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SectionTitle("已连接")
+            Text("${info!!.name}  v${info!!.version}", color = tg.name, fontSize = 16.sp)
+            Text(normalized, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
             Spacer(Modifier.height(16.dp))
-            OutlinedTextField(
-                value = user, onValueChange = { user = it; error = null }, label = { Text("账号") },
-                singleLine = true, modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = pass, onValueChange = { pass = it; error = null }, label = { Text("密码") },
-                singleLine = true, modifier = Modifier.fillMaxWidth(),
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            )
+            TgField(user, { user = it; error = null }, "账号")
+            Spacer(Modifier.height(10.dp))
+            TgField(pass, { pass = it; error = null }, "密码", password = true, keyboardType = KeyboardType.Password)
             Spacer(Modifier.height(16.dp))
-            Button(
-                enabled = user.isNotBlank() && pass.isNotEmpty() && !busy, modifier = Modifier.fillMaxWidth(),
+            TgButton(
+                "登录", enabled = user.isNotBlank() && pass.isNotEmpty() && !busy, busy = busy,
                 onClick = {
                     busy = true; error = null
                     scope.launch {
@@ -180,17 +190,17 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
                         busy = false
                     }
                 },
-            ) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("登录") }
+            )
             TextButton(onClick = { info = null; error = null }, modifier = Modifier.fillMaxWidth()) { Text("更换服务器") }
         }
 
         notice?.let {
             Spacer(Modifier.height(12.dp))
-            Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium)
+            Text(it, color = tg.accent, fontSize = 14.sp)
         }
         error?.let {
             Spacer(Modifier.height(12.dp))
-            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+            Text(it, color = tg.danger, fontSize = 14.sp)
         }
         pendingFp?.let { fp ->
             androidx.compose.material3.AlertDialog(
@@ -200,8 +210,8 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
                     Column {
                         Text("这是第一次连接这台服务器(或它的证书变了)。请在电脑的 MediaHub 管理程序「网络」页核对下面的指纹,一致才点“信任并连接”。")
                         Spacer(Modifier.height(10.dp))
-                        Text("SHA-256 指纹", style = MaterialTheme.typography.labelMedium)
-                        Text(fp.chunked(24).joinToString("\n"), style = MaterialTheme.typography.bodySmall, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                        Text("SHA-256 指纹", color = tg.message, fontSize = 12.sp)
+                        Text(fp.chunked(24).joinToString("\n"), color = tg.name, fontSize = 13.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
                     }
                 },
                 confirmButton = {
@@ -215,9 +225,55 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
             )
         }
         Spacer(Modifier.height(24.dp))
-        Text(
-            "本应用只读访问你的媒体,不会修改服务器上的文件。密码不会保存在手机上。",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Text("本应用只读访问你的媒体,不会修改服务器上的文件。密码不会保存在手机上。", color = tg.message, fontSize = 12.sp)
+    }
+    }
+}
+
+/** 小节标题:和设置页的 Header 同样式(15sp、强调色、中等粗细)。 */
+@Composable
+private fun SectionTitle(text: String) {
+    Text(text, color = LocalTg.current.accent, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp, bottom = 6.dp))
+}
+
+/** 输入框:圆角 10dp、强调色焦点、颜色取自主题 —— 不再是 Material 默认的样式。 */
+@Composable
+private fun TgField(
+    value: String, onChange: (String) -> Unit, label: String, placeholderText: String = "",
+    password: Boolean = false, keyboardType: KeyboardType = KeyboardType.Text,
+) {
+    val tg = LocalTg.current
+    OutlinedTextField(
+        value = value, onValueChange = onChange, modifier = Modifier.fillMaxWidth(), singleLine = true,
+        label = { Text(label) },
+        placeholder = { if (placeholderText.isNotEmpty()) Text(placeholderText) },
+        shape = RoundedCornerShape(10.dp),
+        visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = tg.accent, focusedLabelColor = tg.accent, cursorColor = tg.accent,
+            unfocusedBorderColor = tg.divider, unfocusedLabelColor = tg.message,
+            focusedTextColor = tg.name, unfocusedTextColor = tg.name,
+        ),
+    )
+}
+
+/** 主按钮 / 次按钮:高 48dp、圆角 10dp、强调色。 */
+@Composable
+private fun TgButton(text: String, enabled: Boolean, busy: Boolean = false, outlined: Boolean = false, onClick: () -> Unit) {
+    val tg = LocalTg.current
+    val shape = RoundedCornerShape(10.dp)
+    val mod = Modifier.fillMaxWidth().height(48.dp)
+    if (outlined) {
+        OutlinedButton(
+            onClick = onClick, modifier = mod, enabled = enabled, shape = shape,
+            border = BorderStroke(1.dp, if (enabled) tg.accent else tg.divider),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = tg.accent),
+        ) { Text(text, fontSize = 16.sp) }
+    } else {
+        Button(
+            onClick = onClick, modifier = mod, enabled = enabled, shape = shape,
+            colors = ButtonDefaults.buttonColors(containerColor = tg.accent, contentColor = Color.White),
+        ) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White) else Text(text, fontSize = 16.sp) }
     }
 }

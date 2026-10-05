@@ -81,7 +81,15 @@ class EnhancedVideoView(context: Context) : SurfaceView(context), SurfaceHolder.
         val dm = display
         val hdr = if (Build.VERSION.SDK_INT >= 26) dm?.isHdr == true else false
         val rate = dm?.refreshRate ?: 60f
-        val nr = VideoRenderer(holder.surface, width, height, rate, hdr, config) { msg ->
+        // 同分辨率下的最高刷新率:补帧时请求系统保持它
+        val maxRate = runCatching {
+            val m = dm!!.mode
+            dm.supportedModes.filter { it.physicalWidth == m.physicalWidth && it.physicalHeight == m.physicalHeight }.maxOf { it.refreshRate }
+        }.getOrDefault(rate).coerceAtLeast(rate)
+        val nr = VideoRenderer(
+            holder.surface, width, height, rate, hdr, config, maxRefreshRate = maxRate,
+            onRateHint = { hint -> main.post { applyRateHint(hint) } },
+        ) { msg ->
             AppLog.w("enhance", "增强渲染不可用:$msg")
             main.post { onFailure?.invoke(msg) }
         }
@@ -92,7 +100,28 @@ class EnhancedVideoView(context: Context) : SurfaceView(context), SurfaceHolder.
         link()
     }
 
+    /**
+     * 向系统申请刷新率(省电模式 / 久不触摸时系统会自动降刷新率,补帧的节奏就乱了):
+     * 窗口的 preferredRefreshRate + Surface.setFrameRate(Android 11+,Android 12+ 允许无缝切换之外的切换)+ Android 15+ 的"高帧率类别"。
+     * rate = 0 表示不再需要,恢复系统自己决定。
+     */
+    private fun applyRateHint(rate: Float) {
+        AppLog.i("enhance", "申请屏幕刷新率 ${if (rate > 0) "%.0f Hz".format(rate) else "(释放)"}")
+        context.findActivity()?.window?.let { w ->
+            val lp = w.attributes
+            if (lp.preferredRefreshRate != rate) { lp.preferredRefreshRate = rate; w.attributes = lp }
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 31) holder.surface.setFrameRate(rate, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT, Surface.CHANGE_FRAME_RATE_ALWAYS)
+            else if (Build.VERSION.SDK_INT >= 30) holder.surface.setFrameRate(rate, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 35) requestedFrameRate = if (rate > 0) REQUESTED_FRAME_RATE_CATEGORY_HIGH else REQUESTED_FRAME_RATE_CATEGORY_NO_PREFERENCE
+        }
+    }
+
     override fun surfaceDestroyed(holder: SurfaceHolder) {
+        applyRateHint(0f)
         attached?.let { runCatching { it.clearVideoSurface() } }
         renderer?.release()
         renderer = null

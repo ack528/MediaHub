@@ -211,7 +211,7 @@ private fun PhotoInfoDialog(item: Item, onDismiss: () -> Unit) {
     ).filter { it.second.isNotEmpty() }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("图片信息", fontSize = 18.sp) },
+        title = { Text("图片信息") },
         text = {
             Column {
                 rows.forEach { (k, v) ->

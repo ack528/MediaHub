@@ -14,8 +14,10 @@ android {
         applicationId = "com.localtg"
         minSdk = 26
         targetSdk = 37
-        versionCode = 15
-        versionName = "1.6.0"
+        versionCode = 16
+        versionName = "1.7.0"
+        // OpenCV 的原生库每个架构 ~30MB:发布版只带 arm64(真机),调试版再加 x86_64(模拟器)
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
     // 发布签名:密钥库与口令放在项目根目录 signing\(不要外传);没有该文件时 release 用调试签名,方便别人构建
     val signingProps = Properties().apply {
@@ -33,6 +35,9 @@ android {
         }
     }
     buildTypes {
+        debug {
+            ndk { abiFilters += listOf("x86_64") }
+        }
         release {
             // 个人自用,不做代码混淆 / 压缩:崩溃日志里的堆栈直接可读
             isMinifyEnabled = false
@@ -72,6 +77,9 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-compose:3.6.3")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.6.3")
     implementation("me.saket.telephoto:zoomable-image-coil3:0.19.0")
+
+    // 稠密光流(DIS)用 OpenCV 官方 Maven 包(Apache-2.0)
+    implementation("org.opencv:opencv:4.12.0")
 
     implementation("androidx.media3:media3-exoplayer:1.11.1")
     implementation("androidx.media3:media3-ui:1.11.1")

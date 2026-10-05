@@ -2,7 +2,13 @@ package com.localtg.ui.tg
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -25,6 +31,9 @@ data class TgPalette(
     val bg: Color, val name: Color, val message: Color, val date: Color, val divider: Color,
     val badge: Color, val badgeMuted: Color, val accent: Color, val attach: Color,
     val chatTop: Color, val chatBottom: Color, val bubbleIn: Color, val bubbleText: Color, val pill: Color,
+    /** 语义色:危险 / 警告 / 良好 / 中性标签;弹窗 / 菜单的容器色 */
+    val danger: Color = Color(0xFFE53935), val warn: Color = Color(0xFFF59E0B), val ok: Color = Color(0xFF4EC95E),
+    val neutral: Color = Color(0xFF9AA5B1), val sheet: Color = Color.White,
 )
 
 val TgLight = TgPalette(
@@ -33,7 +42,7 @@ val TgLight = TgPalette(
     bg = Color.White, name = Color(0xFF222222), message = Color(0xFF8A8A8A), date = Color(0xFF999999), divider = Color(0xFFDBDBDB),
     badge = Color(0xFF4EC95E), badgeMuted = Color(0xFFC6C9CC), accent = Color(0xFF3390EC), attach = Color(0xFF3C7EB0),
     chatTop = Color(0xFFD8DDB0), chatBottom = Color(0xFF8AB488), bubbleIn = Color.White, bubbleText = Color(0xFF000000),
-    pill = Color(0x66000000),
+    pill = Color(0x66000000), sheet = Color.White,
 )
 
 val TgDark = TgPalette(
@@ -42,7 +51,23 @@ val TgDark = TgPalette(
     bg = Color(0xFF18222D), name = Color.White, message = Color(0xFF7F91A4), date = Color(0xFF6D7F8F), divider = Color(0xFF0F1721),
     badge = Color(0xFF4C8EDA), badgeMuted = Color(0xFF4A5A6B), accent = Color(0xFF6AB3F3), attach = Color(0xFF6AB3F3),
     chatTop = Color(0xFF0E1621), chatBottom = Color(0xFF0B121A), bubbleIn = Color(0xFF182533), bubbleText = Color.White,
-    pill = Color(0x66000000),
+    pill = Color(0x66000000), danger = Color(0xFFFF6B6B), sheet = Color(0xFF212D3B),
+)
+
+/** 全应用统一的字号:弹窗标题 18sp、小节标题 16sp、正文 16 / 14sp(以前各页各写各的,弹窗标题用的是 Material 默认的 24sp)。 */
+private val TgTypography = Typography().let { t ->
+    t.copy(
+        titleLarge = t.titleLarge.copy(fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.Medium),
+        titleMedium = t.titleMedium.copy(fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.Medium),
+        titleSmall = t.titleSmall.copy(fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium),
+        headlineSmall = t.headlineSmall.copy(fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.Medium),
+    )
+}
+
+/** 统一圆角:菜单 8dp、弹窗 14dp(Telegram 的做法,Material 默认的 28dp 太圆)。 */
+private val TgShapes = Shapes(
+    extraSmall = RoundedCornerShape(8.dp), small = RoundedCornerShape(10.dp), medium = RoundedCornerShape(12.dp),
+    large = RoundedCornerShape(14.dp), extraLarge = RoundedCornerShape(14.dp),
 )
 
 val LocalTg = staticCompositionLocalOf { TgLight }
@@ -55,14 +80,16 @@ fun TgTheme(mode: String = "system", content: @Composable () -> Unit) {
     val dark = when (mode) { "dark" -> true; "light" -> false; else -> isSystemInDarkTheme() }
     val p = if (dark) TgDark else TgLight
     val scheme = if (p.dark) {
-        darkColorScheme(primary = p.accent, background = p.bg, surface = p.bg, onSurface = p.name, onBackground = p.name,
-            surfaceVariant = p.bubbleIn, onSurfaceVariant = p.message, outline = p.divider)
+        darkColorScheme(primary = p.accent, onPrimary = Color.White, background = p.bg, surface = p.bg, onSurface = p.name, onBackground = p.name,
+            surfaceVariant = p.bubbleIn, onSurfaceVariant = p.message, outline = p.divider, error = p.danger,
+            surfaceContainer = p.sheet, surfaceContainerHigh = p.sheet, surfaceContainerHighest = p.sheet)
     } else {
-        lightColorScheme(primary = p.accent, background = p.bg, surface = p.bg, onSurface = p.name, onBackground = p.name,
-            surfaceVariant = Color(0xFFF1F1F1), onSurfaceVariant = p.message, outline = p.divider)
+        lightColorScheme(primary = p.accent, onPrimary = Color.White, background = p.bg, surface = p.bg, onSurface = p.name, onBackground = p.name,
+            surfaceVariant = Color(0xFFF1F1F1), onSurfaceVariant = p.message, outline = p.divider, error = p.danger,
+            surfaceContainer = p.sheet, surfaceContainerHigh = p.sheet, surfaceContainerHighest = p.sheet)
     }
     CompositionLocalProvider(LocalTg provides p) {
-        MaterialTheme(colorScheme = scheme) {
+        MaterialTheme(colorScheme = scheme, typography = TgTypography, shapes = TgShapes) {
             Surface(Modifier.fillMaxSize(), color = p.bg, content = content)
         }
     }
