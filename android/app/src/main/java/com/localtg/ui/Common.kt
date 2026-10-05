@@ -2,6 +2,7 @@ package com.localtg.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -59,7 +60,7 @@ fun formatSize(b: Long): String = when {
 fun VideoNameLabel(item: Item, modifier: Modifier = Modifier) {
     if (!com.localtg.ui.tg.LocalSettings.current.showVideoName) return
     Box(
-        modifier.fillMaxWidth().background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Transparent, Color(0x99000000))))
+        modifier.then(Modifier.fillMaxWidth()).background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Transparent, Color(0x99000000))))
             .padding(start = 6.dp, end = 6.dp, top = 12.dp, bottom = 3.dp),
     ) {
         Text(
