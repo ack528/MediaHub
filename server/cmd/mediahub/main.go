@@ -10,6 +10,7 @@
 package main
 
 import (
+	"database/sql"
 	"bufio"
 	"context"
 	"crypto/rand"
@@ -41,7 +42,7 @@ import (
 	"mediahub/internal/tlsx"
 )
 
-const version = "1.2.0"
+const version = "1.2.1"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -92,6 +93,52 @@ func main() {
 	}
 }
 
+// restoreRoots:配置里一个根目录都没有(更新 / 换了程序目录后配置文件丢了),就按数据库里上次使用的恢复,
+// 并写回配置文件 —— 不用每次更新都重新添加媒体根目录。
+// 优先恢复上次还处于启用状态的;没有的话(例如已经用空配置启动过一次,全被停用了),配置文件缺失时恢复所有登记过且路径还在的。
+func restoreRoots(db *sql.DB, cfg *config.Config, log *slog.Logger) {
+	if len(cfg.Roots) > 0 {
+		return
+	}
+	query := func(q string) []config.Root {
+		var out []config.Root
+		rows, err := db.Query(q)
+		if err != nil {
+			return nil
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p, l string
+			if rows.Scan(&p, &l) != nil {
+				continue
+			}
+			if _, err := os.Stat(p); err != nil {
+				continue
+			}
+			out = append(out, config.Root{Path: p, Label: l})
+		}
+		return out
+	}
+	got := query(`SELECT path, label FROM roots WHERE enabled=1 ORDER BY id`)
+	if len(got) == 0 && cfg.RootsUnset {
+		got = query(`SELECT path, label FROM roots ORDER BY id`)
+	}
+	if len(got) == 0 {
+		return
+	}
+	cfg.Roots = got
+	if cfg.Path != "" {
+		if err := config.SaveRoots(cfg.Path, got); err != nil {
+			log.Warn("恢复的根目录写回配置文件失败", "err", err)
+		}
+	}
+	paths := make([]string, len(got))
+	for i, r := range got {
+		paths[i] = r.Path
+	}
+	log.Info("配置里没有根目录(多半是更新后配置丢了),已按上次使用的恢复", "roots", paths)
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "用法: mediahub serve|scan [-config path] | user add|passwd <name> | version")
 }
@@ -133,6 +180,7 @@ func run(args []string, serve bool) int {
 	}
 	defer db.Close()
 
+	restoreRoots(db, cfg, log)
 	ix := index.New(db, cfg, log)
 	roots, err := ix.SyncRoots()
 	if err != nil {

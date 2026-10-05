@@ -57,8 +57,52 @@ fn server_exe() -> PathBuf {
     }
 }
 
-fn config_path() -> PathBuf {
+/// 旧位置:程序目录里。更新安装包 / 换一个便携版文件夹时会跟着丢。
+fn legacy_config_path() -> PathBuf {
     root_dir().join("runtime").join("mediahub").join("config.json")
+}
+
+/// 在其它可能的旧位置里找最近用过的配置(便携版放在不同文件夹、安装版的安装目录)。
+fn find_old_config() -> Option<PathBuf> {
+    let mut cands = vec![legacy_config_path()];
+    let rel = Path::new("runtime").join("mediahub").join("config.json");
+    if let Some(parent) = root_dir().parent() {
+        if let Ok(rd) = fs::read_dir(parent) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().to_lowercase().starts_with("mediahub") {
+                    cands.push(e.path().join(&rel));
+                }
+            }
+        }
+    }
+    if let Ok(la) = std::env::var("LOCALAPPDATA") {
+        for d in ["MediaHub", r"Programs\MediaHub"] {
+            cands.push(Path::new(&la).join(d).join(&rel));
+        }
+    }
+    cands
+        .into_iter()
+        .filter(|p| p.exists())
+        .max_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
+/// 配置文件放在程序目录之外的固定位置(默认 C:\MediaHub\config.json,和数据目录同级),
+/// 更新服务端 / 换便携版文件夹都不会丢媒体根目录等设置。第一次使用时把旧位置的配置搬过来。
+/// 开发环境(设置了 MEDIAHUB_ROOT)仍用项目里的 runtime\mediahub\config.json。
+fn config_path() -> PathBuf {
+    if std::env::var("MEDIAHUB_ROOT").map(|v| !v.is_empty()).unwrap_or(false) {
+        return legacy_config_path();
+    }
+    let p = Path::new(DEFAULT_DATA_DIR).parent().map(|d| d.join("config.json")).unwrap_or_else(legacy_config_path);
+    if !p.exists() {
+        if let Some(old) = find_old_config() {
+            if let Some(dir) = p.parent() {
+                let _ = fs::create_dir_all(dir);
+            }
+            let _ = fs::copy(&old, &p);
+        }
+    }
+    p
 }
 
 fn read_json(path: &Path) -> Value {

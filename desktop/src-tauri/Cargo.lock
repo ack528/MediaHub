@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "mediahub-desktop"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "local-ip-address",
  "serde",

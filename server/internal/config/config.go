@@ -15,6 +15,10 @@ type Root struct {
 }
 
 type Config struct {
+	// Path 是这份配置从哪个文件读来的;RootsUnset:文件不存在或里面根本没有 roots 这一项(多半是更新 / 换目录后配置丢了)
+	Path       string `json:"-"`
+	RootsUnset bool   `json:"-"`
+
 	Listen  string   `json:"listen"`
 	DataDir string   `json:"dataDir"`
 	Roots   []Root   `json:"roots"`
@@ -93,6 +97,27 @@ func Default() *Config {
 	return c
 }
 
+// SaveRoots 只更新配置文件里的 roots 一项(其余设置原样保留),原子写入。
+func SaveRoots(path string, roots []Root) error {
+	m := map[string]any{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal([]byte(strings.TrimPrefix(string(b), "\ufeff")), &m)
+	}
+	m["roots"] = roots
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 // AdminAddr 返回本机管理端口的监听地址(回环)。
 func (c *Config) AdminAddr() string {
 	if c.AdminListen != "" {
@@ -114,10 +139,17 @@ func (c *Config) AdminAddr() string {
 // Load 读取配置文件;文件不存在则返回默认值。root 用于解析 tools 的默认位置(项目根目录)。
 func Load(path, projectRoot string) (*Config, error) {
 	c := Default()
+	c.Path = path
+	c.RootsUnset = true
 	if b, err := os.ReadFile(path); err == nil {
 		b = []byte(strings.TrimPrefix(string(b), "\ufeff"))
 		if err := json.Unmarshal(b, c); err != nil {
 			return nil, fmt.Errorf("config %s: %w", path, err)
+		}
+		var probe map[string]json.RawMessage
+		if json.Unmarshal(b, &probe) == nil {
+			_, has := probe["roots"]
+			c.RootsUnset = !has
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
