@@ -64,7 +64,7 @@ private val SECTIONS = listOf(
     Triple("enhance", "画质增强(实验)", "实时超分、补帧、SDR 转 HDR"),
     Triple("network", "网络", "连接与读取超时"),
     Triple("storage", "存储与缓存", "清理缓存、记录,恢复默认设置"),
-    Triple("account", "服务器与账号", "当前服务器、退出登录"),
+    Triple("account", "服务器管理", "已保存的服务器、切换、添加、退出登录"),
     Triple("log", "日志与诊断", "日志级别、查看、复制、分享给开发者"),
     Triple("about", "关于", "版本信息"),
 )
@@ -406,15 +406,82 @@ private fun AccountPage(c: AppContainer) {
     val session by c.session.session.collectAsState()
     val scope = rememberCoroutineScope()
     val local by c.session.local.collectAsState()
+    val servers by c.session.servers.collectAsState()
+    val activeId by c.session.activeId.collectAsState()
+    var sel by remember { mutableStateOf<com.localtg.data.ServerEntry?>(null) }
+    var renaming by remember { mutableStateOf<com.localtg.data.ServerEntry?>(null) }
+    var deleting by remember { mutableStateOf<com.localtg.data.ServerEntry?>(null) }
+    val tg = LocalTg.current
+
+    Header("已保存的服务器")
+    servers.forEach { e ->
+        Column(Modifier.fillMaxWidth().clickable { sel = e }.padding(horizontal = 16.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(e.name, color = tg.name, fontSize = 16.sp, modifier = Modifier.weight(1f, fill = false))
+                if (e.id == activeId) {
+                    Text(
+                        "当前", color = Color.White, fontSize = 11.sp,
+                        modifier = Modifier.padding(start = 8.dp).clip(RoundedCornerShape(4.dp)).background(tg.accent).padding(horizontal = 6.dp, vertical = 1.dp),
+                    )
+                }
+            }
+            Text(e.host, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+            Text(
+                when {
+                    e.isLocal -> "本地媒体"
+                    e.loggedIn -> "已登录" + (if (e.user.isNotEmpty()) "(${e.user})" else "") + (if (e.baseUrl.startsWith("https://")) " · 加密传输" else " · 未加密")
+                    else -> "需要重新登录"
+                },
+                color = if (!e.loggedIn) Color(0xFFF59E0B) else tg.message, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        HorizontalDivider(Modifier.padding(start = 16.dp), color = tg.divider)
+    }
+    ActionRow("添加服务器", "连接另一台服务器;现有的登录都保留,随时可以在侧边栏顶部点一下切换回来") {
+        c.session.deactivate()
+    }
+
+    sel?.let { e ->
+        AlertDialog(
+            onDismissRequest = { sel = null },
+            title = { Text(e.name) },
+            text = {
+                Column {
+                    if (e.id != activeId) TextButton(onClick = { sel = null; scope.launch { c.session.switchTo(e.id) } }, modifier = Modifier.fillMaxWidth()) { Text(if (e.loggedIn) "切换到这个服务器" else "去登录") }
+                    TextButton(onClick = { sel = null; renaming = e }, modifier = Modifier.fillMaxWidth()) { Text("重命名") }
+                    if (e.loggedIn && !e.isLocal) TextButton(onClick = { sel = null; scope.launch { if (e.id == activeId) c.api.logout(); c.session.forget(e.id) } }, modifier = Modifier.fillMaxWidth()) { Text("退出登录") }
+                    TextButton(onClick = { sel = null; deleting = e }, modifier = Modifier.fillMaxWidth()) { Text("删除", color = Color(0xFFE53935)) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { sel = null }) { Text("关闭") } },
+        )
+    }
+    renaming?.let { e ->
+        var name by remember(e.id) { mutableStateOf(e.name) }
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("重命名") },
+            text = { androidx.compose.material3.OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true) },
+            confirmButton = { TextButton(onClick = { renaming = null; scope.launch { c.session.rename(e.id, name) } }) { Text("确定") } },
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text("取消") } },
+        )
+    }
+    deleting?.let { e ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("删除“${e.name}”?") },
+            text = { Text("只是从这部手机上移除这条记录和它的登录,服务器上的内容不受影响。") },
+            confirmButton = { TextButton(onClick = { deleting = null; scope.launch { c.session.remove(e.id) } }) { Text("删除", color = Color(0xFFE53935)) } },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } },
+        )
+    }
+
     if (local) {
         Header("当前模式")
         InfoRow("模式", "本地媒体(读取这部手机上的照片和视频,一个文件夹一个群组)")
-        Header("账号")
-        ActionRow("返回登录页", "切换到服务器,或重新选择模式", confirm = "返回登录页?", danger = false) {
-            scope.launch { c.session.clearToken() }
-        }
         return
     }
+    if (session == null) return
     Header("当前服务器")
     InfoRow("地址", session?.baseUrl ?: "未登录")
     val pin by c.session.pin.collectAsState()
@@ -425,7 +492,7 @@ private fun AccountPage(c: AppContainer) {
         InfoRow("传输", "未加密(HTTP)——建议在服务端开启加密传输")
     }
     Header("账号")
-    ActionRow("退出登录", "清除这台手机上的登录令牌,服务器地址会保留", confirm = "退出登录?", danger = true) {
+    ActionRow("退出登录", "清除这台服务器在这部手机上的登录令牌,服务器记录会保留", confirm = "退出登录?", danger = true) {
         scope.launch { c.api.logout(); c.session.clearToken() }
     }
 }

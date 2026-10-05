@@ -1,6 +1,7 @@
 package com.localtg.ui
 
 import android.os.Build
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -59,6 +60,8 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var pendingFp by remember { mutableStateOf<String?>(null) } // 等待用户确认的证书指纹
+    var connectedFp by remember { mutableStateOf<String?>(null) } // 本次连接核对过的证书指纹(登录成功后记到这台服务器上)
+    val saved by c.session.servers.collectAsState()
     val notice by c.notice.collectAsState()
 
     LaunchedEffect(Unit) { address = c.session.lastAddress() }
@@ -89,7 +92,30 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
         Text("本地浏览", style = MaterialTheme.typography.headlineLarge)
         Spacer(Modifier.height(4.dp))
         Text("连接到你自己的媒体服务器", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(20.dp))
+
+        if (info == null && saved.isNotEmpty()) {
+            Text("已保存的服务器", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            saved.forEach { e ->
+                Column(
+                    Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                        .clickable {
+                            if (e.loggedIn) scope.launch { c.session.switchTo(e.id) } // 已登录:直接进入(界面会自动跳转)
+                            else { address = e.address.ifEmpty { e.baseUrl }; error = null; scope.launch { c.session.switchTo(e.id) } }
+                        }
+                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                ) {
+                    Text(e.name, style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        e.host + if (e.isLocal) "" else if (e.loggedIn) "  ·  已登录" + (if (e.user.isNotEmpty()) "(${e.user})" else "") else "  ·  需要重新登录",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            Text("添加服务器", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(8.dp))
+        }
 
         if (info == null) {
             OutlinedTextField(
@@ -110,7 +136,8 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
                             // 加密传输:先读取服务器证书指纹;与已信任的一致就直接连,否则让用户核对后再信任
                             val hu = url.toHttpUrl()
                             val fp = runCatching { Tls.probe(hu.host, hu.port) }.getOrElse { error = friendlyError(it); busy = false; return@launch }
-                            if (!fp.equals(c.session.pin.value, ignoreCase = true)) { pendingFp = fp; busy = false; return@launch }
+                            if (!c.session.isTrusted(fp)) { pendingFp = fp; busy = false; return@launch }
+                            connectedFp = fp
                         }
                         connect(url)
                         busy = false
@@ -145,7 +172,7 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
                     scope.launch {
                         runCatching { c.api.login(normalized, user.trim(), pass, "${Build.MANUFACTURER} ${Build.MODEL}") }
                             .onSuccess {
-                                c.session.save(Session(normalized, it.token), address)
+                                c.session.save(Session(normalized, it.token), address, user.trim(), connectedFp)
                                 pass = "" // 密码不保留
                                 onDone()
                             }
@@ -181,7 +208,7 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
                     TextButton(onClick = {
                         val url = normalizeAddress(address)
                         pendingFp = null; busy = true; error = null
-                        scope.launch { c.session.setPin(fp); connect(url); busy = false }
+                        scope.launch { c.session.trust(fp); connectedFp = fp; connect(url); busy = false }
                     }) { Text("信任并连接") }
                 },
                 dismissButton = { TextButton(onClick = { pendingFp = null }) { Text("取消") } },

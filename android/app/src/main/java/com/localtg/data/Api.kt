@@ -26,7 +26,7 @@ val AppJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 /** 给发往已登录服务器的请求加上 Bearer 令牌;收到 401 时回调(令牌失效)。 */
 class AuthInterceptor(
     private val current: () -> Session?,
-    private val onUnauthorized: () -> Unit,
+    private val onUnauthorized: (Session) -> Unit,
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val s = current()
@@ -35,7 +35,7 @@ class AuthInterceptor(
             req = req.newBuilder().header("Authorization", "Bearer ${s.token}").build()
         }
         val resp = chain.proceed(req)
-        if (resp.code == 401 && s != null && !req.url.encodedPath.endsWith("/auth/login")) onUnauthorized()
+        if (resp.code == 401 && s != null && !req.url.encodedPath.endsWith("/auth/login")) onUnauthorized(s)
         return resp
     }
 }
@@ -61,8 +61,8 @@ class LogInterceptor : Interceptor {
     }
 }
 
-fun buildHttpClient(store: SessionStore, local: LocalMedia, connectSec: Int, readSec: Int, onUnauthorized: () -> Unit): OkHttpClient {
-    val (sslCtx, trust) = Tls.pinnedContext { store.pin.value }
+fun buildHttpClient(store: SessionStore, local: LocalMedia, connectSec: Int, readSec: Int, onUnauthorized: (Session) -> Unit): OkHttpClient {
+    val (sslCtx, trust) = Tls.pinnedContext { store.trustedPins() }
     return OkHttpClient.Builder()
         // HTTPS:只接受指纹已被用户确认的自签名证书(不校验主机名,服务器 IP 变了也能连);HTTP 地址不受影响
         .sslSocketFactory(sslCtx.socketFactory, trust)

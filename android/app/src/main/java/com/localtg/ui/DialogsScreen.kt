@@ -100,7 +100,9 @@ class DialogsViewModel(private val c: AppContainer) : ViewModel() {
 fun DialogsScreen(
     c: AppContainer, onOpen: (Dialog) -> Unit, onSettings: () -> Unit, onSearch: () -> Unit, onSection: (String) -> Unit,
 ) {
-    val vm: DialogsViewModel = viewModel(factory = viewModelFactory { initializer { DialogsViewModel(c) } })
+    val activeId by c.session.activeId.collectAsState()
+    // 每台服务器一个独立的列表(切换服务器 = 换一个 ViewModel,重新加载)
+    val vm: DialogsViewModel = viewModel(key = "dialogs-$activeId", factory = viewModelFactory { initializer { DialogsViewModel(c) } })
     val all by vm.dialogs.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
@@ -112,7 +114,7 @@ fun DialogsScreen(
 
     // 盘符 = Telegram 的聊天分组标签
     val labels = remember(all) { all.map { it.rootLabel }.distinct().sorted() }
-    var tab by remember { mutableIntStateOf(0) } // 0 = 全部
+    var tab by remember(activeId) { mutableIntStateOf(0) } // 0 = 全部
     val st = com.localtg.ui.tg.LocalSettings.current
     val inTab = if (tab == 0 || tab > labels.size) all else all.filter { it.rootLabel == labels[tab - 1] }
     val shown = remember(inTab, st.dialogSort, st.dialogMinCount) {
@@ -133,6 +135,9 @@ fun DialogsScreen(
                 c, onSearch = { go(onSearch) }, onRefresh = { go { vm.refresh() } }, onSettings = { go(onSettings) },
                 onLog = { go { onSection("log") } }, onAbout = { go { onSection("about") } },
                 onLogout = { go { confirmLogout = true } },
+                onSwitch = { id -> go { c.scope.launch { c.session.switchTo(id) } } },
+                onAddServer = { go { c.scope.launch { c.session.deactivate() } } },
+                onManage = { go { onSection("account") } },
             )
         },
     ) {
@@ -189,25 +194,57 @@ fun DialogsScreen(
 private fun AppDrawer(
     c: AppContainer, onSearch: () -> Unit, onRefresh: () -> Unit, onSettings: () -> Unit,
     onLog: () -> Unit, onAbout: () -> Unit, onLogout: () -> Unit,
+    onSwitch: (String) -> Unit, onAddServer: () -> Unit, onManage: () -> Unit,
 ) {
     val tg = LocalTg.current
     val session by c.session.session.collectAsState()
-    val host = remember(session) { session?.baseUrl?.substringAfter("://").orEmpty() }
+    val servers by c.session.servers.collectAsState()
+    val activeId by c.session.activeId.collectAsState()
+    val cur = servers.firstOrNull { it.id == activeId }
+    val host = remember(session, cur) { if (cur?.isLocal == true) "本地媒体" else session?.baseUrl?.substringAfter("://").orEmpty() }
+    var expanded by remember { mutableStateOf(false) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val ver = remember { runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull().orEmpty() }
     ModalDrawerSheet(
         drawerContainerColor = tg.bg, modifier = Modifier.width(304.dp),
         windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0), // 状态栏高度由蓝色头部自己处理
     ) {
-        Column(Modifier.fillMaxWidth().background(tg.bar).statusBarsPadding().padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 16.dp)) {
+        Column(Modifier.fillMaxWidth().background(tg.bar).statusBarsPadding().clickable { expanded = !expanded }.padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 16.dp)) {
             androidx.compose.foundation.Image(
                 androidx.compose.ui.res.painterResource(com.localtg.R.drawable.ic_logo), null,
                 Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)),
             )
             Text("本地浏览", Modifier.padding(top = 12.dp), color = tg.barText, fontSize = 18.sp, fontWeight = FontWeight.Medium)
-            Text(host.ifEmpty { "未连接" }, Modifier.padding(top = 2.dp), color = tg.barSub, fontSize = 13.sp, maxLines = 1)
+            Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    (cur?.name?.takeIf { servers.size > 1 || cur.isLocal }?.let { "$it · " } ?: "") + host.ifEmpty { "未连接" },
+                    Modifier.weight(1f), color = tg.barSub, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                Text(if (expanded) "▴" else "▾", color = tg.barSub, fontSize = 14.sp, modifier = Modifier.padding(start = 6.dp))
+            }
         }
         Spacer(Modifier.height(8.dp))
+        if (expanded) {
+            // 服务器切换:点哪台就切到哪台
+            servers.forEach { e ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { if (e.id != activeId) onSwitch(e.id) else expanded = false }.padding(horizontal = 20.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.size(10.dp).clip(RoundedCornerShape(5.dp)).background(if (e.id == activeId) tg.accent else Color.Transparent))
+                    Column(Modifier.weight(1f).padding(start = 18.dp)) {
+                        Text(e.name, color = tg.name, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            e.host + if (!e.loggedIn) "  ·  需要登录" else "", color = tg.message, fontSize = 12.sp, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+            DrawerItem(TgIcons.Refresh, "添加服务器", onAddServer)
+            DrawerItem(TgIcons.Settings, "管理服务器", onManage)
+            Box(Modifier.padding(vertical = 6.dp).fillMaxWidth().height(1.dp).background(tg.divider))
+        }
         DrawerItem(TgIcons.Search, "搜索", onSearch)
         DrawerItem(TgIcons.Refresh, "刷新列表", onRefresh)
         DrawerItem(TgIcons.Settings, "设置", onSettings)

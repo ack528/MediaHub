@@ -21,19 +21,20 @@ object Tls {
     fun fingerprint(cert: X509Certificate): String =
         MessageDigest.getInstance("SHA-256").digest(cert.encoded).joinToString(":") { "%02X".format(it) }
 
-    /** 只接受指纹等于已信任指纹的证书。 */
-    class PinTrustManager(private val pin: () -> String?) : X509TrustManager {
+    /** 只接受指纹在已信任集合里的证书(每台已保存的服务器各有一个指纹)。 */
+    class PinTrustManager(private val pins: () -> Set<String>) : X509TrustManager {
         override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = throw CertificateException("不接受客户端证书")
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
             val leaf = chain?.firstOrNull() ?: throw CertificateException("服务器没有出示证书")
-            val expected = pin() ?: throw CertificateException("尚未信任这个服务器的证书")
-            if (!fingerprint(leaf).equals(expected, ignoreCase = true)) throw CertificateException("证书指纹与已信任的不一致")
+            val trusted = pins()
+            if (trusted.isEmpty()) throw CertificateException("尚未信任这个服务器的证书")
+            if (!trusted.contains(fingerprint(leaf).uppercase())) throw CertificateException("证书指纹与已信任的不一致")
         }
         override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
     }
 
-    fun pinnedContext(pin: () -> String?): Pair<SSLContext, X509TrustManager> {
-        val tm = PinTrustManager(pin)
+    fun pinnedContext(pins: () -> Set<String>): Pair<SSLContext, X509TrustManager> {
+        val tm = PinTrustManager(pins)
         val ctx = SSLContext.getInstance("TLS").apply { init(null, arrayOf(tm), null) }
         return ctx to tm
     }

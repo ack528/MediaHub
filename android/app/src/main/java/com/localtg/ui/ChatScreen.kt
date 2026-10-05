@@ -152,6 +152,7 @@ private data class Query(val sort: String, val dir: String, val types: Set<Strin
 
 class ChatViewModel(private val c: AppContainer, private val dialogId: String) : ViewModel() {
     private val defaultTypes = setOf("photo", "video", "gif")
+    private val ns = c.session.ns() // 打开时是哪台服务器(退出时保存位置要写回它,不是当时的"当前服务器")
     val ready = MutableStateFlow(false)
     // 服务器上的文件夹默认按文件名排序;本地媒体默认按文件时间
     val sortKey = MutableStateFlow(if (c.isLocal) "taken" else "name")
@@ -196,7 +197,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
         }
         if (c.isLocal && st.defaultSort == "auto" && st.defaultSortDir == "auto") ascGrid.value = false
         viewModelScope.launch {
-            (if (st.rememberPosition) c.viewState.load(dialogId) else null)?.let { v ->
+            (if (st.rememberPosition) c.viewState.load(dialogId, ns) else null)?.let { v ->
                 sortKey.value = v.sort; ascChat.value = v.ascChat; ascGrid.value = v.ascGrid
                 grid.value = v.grid; columns.value = v.columns.coerceIn(2, 6)
                 types.value = v.types.toSet().ifEmpty { defaultTypes }
@@ -304,7 +305,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
             sort = sortKey.value, ascChat = ascChat.value, ascGrid = ascGrid.value, grid = grid.value,
             types = types.value.toList(), columns = columns.value,
         )
-        c.scope.launch { c.viewState.save(dialogId, v) }
+        c.scope.launch { c.viewState.save(dialogId, v, ns) }
     }
 }
 

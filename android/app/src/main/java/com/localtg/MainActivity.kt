@@ -97,8 +97,11 @@ abstract class TgActivity : ComponentActivity() {
         val c = container
         val loaded by c.session.loaded.collectAsState()
         val session by c.session.session.collectAsState()
+        val active by c.session.activeId.collectAsState()
+        val opened = androidx.compose.runtime.remember { c.session.activeId.value } // 打开页面时的服务器
         LaunchedEffect(Unit) { if (!c.session.loaded.value) c.session.load() }
-        LaunchedEffect(loaded, session) { if (loaded && session == null) finish() }
+        // 登录失效 / 退出登录 / 切换到别的服务器后,这一页的内容已经不属于当前服务器,自己关掉
+        LaunchedEffect(loaded, session, active) { if (loaded && (session == null || active != opened)) finish() }
     }
 }
 

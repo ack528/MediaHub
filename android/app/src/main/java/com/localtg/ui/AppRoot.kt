@@ -99,7 +99,7 @@ fun AppRoot(c: AppContainer) {
             popEnterTransition = { fadeThroughIn(style) }, popExitTransition = { fadeThroughOut(style) },
         ) {
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-                OnboardingScreen(c) { nav.navigate("dialogs") { popUpTo("onboarding") { inclusive = true } } }
+                OnboardingScreen(c) { nav.navigate("dialogs") { popUpTo("onboarding") { inclusive = true }; launchSingleTop = true } }
             }
         }
         composable(
@@ -119,10 +119,14 @@ fun AppRoot(c: AppContainer) {
         }
     }
 
-    // 令牌失效(401)或退出登录 → 回到登录页(其它 Activity 自己会 finish)
+    // 令牌失效(401)、退出登录、"添加服务器" → 回到登录页(其它 Activity 自己会 finish);
+    // 在登录页点已保存的服务器切换成功 → 进入列表
     LaunchedEffect(session) {
-        if (session == null && nav.currentDestination?.route != "onboarding") {
+        val route = nav.currentDestination?.route
+        if (session == null && route != "onboarding") {
             nav.navigate("onboarding") { popUpTo(0) }
+        } else if (session != null && route == "onboarding") {
+            nav.navigate("dialogs") { popUpTo("onboarding") { inclusive = true }; launchSingleTop = true }
         }
     }
 }

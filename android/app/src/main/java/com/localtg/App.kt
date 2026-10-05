@@ -27,11 +27,11 @@ class AppContainer(app: Application) {
     /** 应用级协程域:界面销毁后仍要完成的保存(例如退出群组时保存浏览位置)用它。 */
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val session = SessionStore(app)
-    val viewState = com.localtg.data.ViewStateStore(app)
+    val viewState = com.localtg.data.ViewStateStore(app) { session.ns() }
     val settings = com.localtg.data.SettingsStore(app, scope)
-    val playback = com.localtg.data.PlaybackStore(app)
+    val playback = com.localtg.data.PlaybackStore(app) { session.ns() }
     val local = com.localtg.data.LocalMedia(app)
-    val http: OkHttpClient = buildHttpClient(session, local, settings.value.connectTimeoutSec, settings.value.readTimeoutSec) { scope.launch { session.clearToken() } }
+    val http: OkHttpClient = buildHttpClient(session, local, settings.value.connectTimeoutSec, settings.value.readTimeoutSec) { s -> scope.launch { session.clearTokenIf(s.baseUrl) } }
     val api = Api(http, session).also { it.serverRenderHeic = settings.value.heicMode == "server" }
     init {
         // 设置改变后立即生效的项

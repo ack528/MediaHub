@@ -29,16 +29,17 @@ data class DialogView(
     val savedAt: Long = 0,
 )
 
-class ViewStateStore(private val ctx: Context) {
-    private fun key(dialogId: String) = stringPreferencesKey("dv_$dialogId")
+class ViewStateStore(private val ctx: Context, private val ns: () -> String = { "" }) {
+    /** 键按服务器分前缀(不同服务器的文件夹 id 可能重复) */
+    private fun key(dialogId: String, prefix: String) = stringPreferencesKey("dv_$prefix$dialogId")
 
-    suspend fun load(dialogId: String): DialogView? = runCatching {
-        ctx.viewDataStore.data.first()[key(dialogId)]?.let { AppJson.decodeFromString<DialogView>(it) }
+    suspend fun load(dialogId: String, prefix: String = ns()): DialogView? = runCatching {
+        ctx.viewDataStore.data.first()[key(dialogId, prefix)]?.let { AppJson.decodeFromString<DialogView>(it) }
     }.getOrNull()
 
-    suspend fun save(dialogId: String, v: DialogView) {
+    suspend fun save(dialogId: String, v: DialogView, prefix: String = ns()) {
         runCatching {
-            ctx.viewDataStore.edit { it[key(dialogId)] = AppJson.encodeToString(v.copy(savedAt = System.currentTimeMillis())) }
+            ctx.viewDataStore.edit { it[key(dialogId, prefix)] = AppJson.encodeToString(v.copy(savedAt = System.currentTimeMillis())) }
         }
     }
 

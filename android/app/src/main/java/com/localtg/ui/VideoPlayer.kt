@@ -185,6 +185,7 @@ fun VideoPage(
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val inPip by c.inPip.collectAsState()
 
+    val ns = remember { c.session.ns() }
     var player by remember { mutableStateOf<ExoPlayer?>(null) }
     var firstFrame by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -221,7 +222,7 @@ fun VideoPage(
 
     // 读取上次播放进度(只在成为当前页时读一次)
     LaunchedEffect(isCurrent, item.id) {
-        if (isCurrent && resumeMs < 0) resumeMs = if (cfg.resume) c.playback.get(item.id) else 0L
+        if (isCurrent && resumeMs < 0) resumeMs = if (cfg.resume) c.playback.get(item.id, ns) else 0L
     }
 
     DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, transcodeHeight, blocked, resumeMs >= 0) {
@@ -323,7 +324,7 @@ fun VideoPage(
                 val pos = pl.currentPosition
                 val dur = pl.duration
                 val keep = pos > 5000 && (dur <= 0 || pos < dur - 5000)
-                if (c.settings.value.resume && firstFrame) c.scope.launch { c.playback.set(item.id, if (keep) pos else 0L) }
+                if (c.settings.value.resume && firstFrame) c.scope.launch { c.playback.set(item.id, if (keep) pos else 0L, ns) }
                 pl.release()
                 if (transcodeHeight != null) c.scope.launch { c.api.stopHls(item, sid) } // 通知服务端结束转码
             }

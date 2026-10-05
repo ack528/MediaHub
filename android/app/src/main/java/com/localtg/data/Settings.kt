@@ -140,13 +140,13 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
 }
 
 /** 每个视频上次播放到哪里(毫秒)。 */
-class PlaybackStore(private val ctx: Context) {
-    private fun k(id: String) = longPreferencesKey("p_$id")
+class PlaybackStore(private val ctx: Context, private val ns: () -> String = { "" }) {
+    private fun k(id: String, prefix: String) = longPreferencesKey("p_$prefix$id")
 
-    suspend fun get(id: String): Long = runCatching { ctx.playbackDataStore.data.first()[k(id)] ?: 0L }.getOrDefault(0L)
+    suspend fun get(id: String, prefix: String = ns()): Long = runCatching { ctx.playbackDataStore.data.first()[k(id, prefix)] ?: 0L }.getOrDefault(0L)
 
-    suspend fun set(id: String, ms: Long) {
-        runCatching { ctx.playbackDataStore.edit { if (ms > 0) it[k(id)] = ms else it.remove(k(id)) } }
+    suspend fun set(id: String, ms: Long, prefix: String = ns()) {
+        runCatching { ctx.playbackDataStore.edit { if (ms > 0) it[k(id, prefix)] = ms else it.remove(k(id, prefix)) } }
     }
 
     suspend fun count(): Int = runCatching { ctx.playbackDataStore.data.first().asMap().size }.getOrDefault(0)
