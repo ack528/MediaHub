@@ -39,6 +39,7 @@ data class AppSettings(
     val defaultSortDir: String = "auto",       // auto / asc(升序) / desc(降序)
     val gridSpacing: Int = 1,                  // 网格间距(dp)
     val gridThumbWidth: Int = 480,             // 网格缩略图宽度(像素),越大越清晰也越费流量
+    val showVideoName: Boolean = true,         // 视频缩略图左下角显示文件名(小字)
     val showDuration: Boolean = true,          // 视频缩略图上显示时长
     val chatSpacing: Int = 3,                  // 聊天流里相邻气泡的间距(dp)
     val bubbleWidth: Int = 72,                 // 聊天流里媒体气泡占屏幕宽度的百分比

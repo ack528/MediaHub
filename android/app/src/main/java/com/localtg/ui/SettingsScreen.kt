@@ -142,7 +142,7 @@ private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) ->
     ) { u { copy(motion = it) } }
     Header("聊天流")
     ChoiceRow("聊天背景", s.chatBackground, listOf("gradient" to "渐变(Telegram 默认)", "plain" to "纯色")) { u { copy(chatBackground = it) } }
-    SwitchRow("显示日期胶囊", "在聊天流里按天分隔,显示“今天 / 昨天 / 日期”", s.showDatePills) { u { copy(showDatePills = it) } }
+    SwitchRow("显示日期胶囊", "在聊天流里按天分隔,显示“今天 / 昨天 / 日期”(只在按时间排序时显示,按名称 / 大小 / 类型排序时没有意义,自动隐藏)", s.showDatePills) { u { copy(showDatePills = it) } }
     Header("隐私")
     SwitchRow(
         "禁止截屏和录屏", "开启后截图、录屏都是黑的,最近任务列表里也不显示画面预览(切换后立即生效)",
@@ -213,6 +213,7 @@ private fun BrowsePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Uni
         "缩略图清晰度", s.gridThumbWidth, listOf(320 to "标准(省流量)", 480 to "高(默认)", 720 to "很高", 960 to "最高"),
         desc = "列数少、屏幕大时调高更清晰",
     ) { u { copy(gridThumbWidth = it) } }
+    SwitchRow("显示视频名称", "视频缩略图左下角用小字显示文件名(不含扩展名),单行、过长省略", s.showVideoName) { u { copy(showVideoName = it) } }
     SwitchRow("显示视频时长", "视频缩略图上显示时长;关闭后只显示一个播放标记", s.showDuration) { u { copy(showDuration = it) } }
     Header("聊天流")
     ChoiceRow("气泡间距", s.chatSpacing, listOf(1 to "紧凑 1 dp", 3 to "标准 3 dp(默认)", 6 to "宽松 6 dp", 12 to "很宽 12 dp")) { u { copy(chatSpacing = it) } }

@@ -450,7 +450,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, onB
                         else (fadeIn(tween(220, 90, Motion.Standard)) + scaleIn(tween(300, easing = Motion.Standard), initialScale = 0.96f)) togetherWith fadeOut(tween(90))
                     },
                 ) { g ->
-                    if (g) MediaGrid(lazyItems, c.api, columns, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest)
+                    if (g) MediaGrid(lazyItems, c.api, columns, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest, sortKey == "taken")
                     else ChatFeed(lazyItems, c.api, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest)
                 }
             }
@@ -501,7 +501,7 @@ private fun PositionMemory(
 @Composable
 private fun ChatFeed(
     items: LazyPagingItems<Item>, api: Api, gen: Int, restoreId: String?, restoreOffset: Int,
-    onOpen: (Item) -> Unit, onRestored: () -> Unit, onPosition: (String, Int, Boolean) -> Unit, fresh: Boolean, onJumpNewest: () -> Unit,
+    onOpen: (Item) -> Unit, onRestored: () -> Unit, onPosition: (String, Int, Boolean) -> Unit, fresh: Boolean, onJumpNewest: () -> Unit, showDates: Boolean,
 ) {
     val state = rememberLazyListState()
     PositionMemory(items, gen, restoreId, restoreOffset, { state.firstVisibleItemIndex }, { state.firstVisibleItemScrollOffset },
@@ -537,7 +537,7 @@ private fun ChatFeed(
                 val older = if (index + 1 < items.itemCount) items.peek(index + 1) else null // 最后一项没有"更早的一条",peek 越界会闪退
                 val showDate = if (older != null) localDate(older.takenAt) != localDate(item.takenAt) else endReached
                 Column(Modifier.fillMaxWidth()) {
-                    if (showDate && cfg.showDatePills) {
+                    if (showDate && cfg.showDatePills && showDates) { // 只有按时间排序时,中间的日期才有意义
                         Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
                             Pill(dateLabel(localDate(item.takenAt)), sizeSp = 14, bold = true)
                         }
@@ -627,6 +627,7 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
                 Icon(TgIcons.Play, null, tint = Color.White, modifier = Modifier.size(28.dp))
             }
             formatDuration(item.durationMs).takeIf { it.isNotEmpty() && LocalSettings.current.showDuration }?.let { Pill(it, Modifier.align(Alignment.TopStart).padding(6.dp), sizeSp = 12) }
+            VideoNameLabel(item, Modifier.align(Alignment.BottomStart))
         }
     }
 }

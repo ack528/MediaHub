@@ -54,6 +54,21 @@ fun formatSize(b: Long): String = when {
     else -> "$b B"
 }
 
+/** 视频缩略图左下角的文件名:小字(10sp)、单行省略、底部渐变压暗,尽量不占画面。 */
+@Composable
+fun VideoNameLabel(item: Item, modifier: Modifier = Modifier) {
+    if (!com.localtg.ui.tg.LocalSettings.current.showVideoName) return
+    Box(
+        modifier.fillMaxWidth().background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Transparent, Color(0x99000000))))
+            .padding(start = 6.dp, end = 6.dp, top = 12.dp, bottom = 3.dp),
+    ) {
+        Text(
+            item.name.substringBeforeLast('.', item.name), color = Color(0xE6FFFFFF), fontSize = 10.sp, lineHeight = 12.sp,
+            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+    }
+}
+
 /** 缩略图的内存缓存键:查看器用它做占位图(见 ViewerScreen / VideoPlayer),点开时不再闪一下。 */
 fun thumbKey(item: Item): String = "mt-${item.id}-${item.v}"
 
@@ -119,8 +134,9 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
             )
         }
         if (item.isVideo) {
+            VideoNameLabel(item, Modifier.align(Alignment.BottomStart))
             Box(
-                Modifier.align(Alignment.BottomStart).padding(4.dp).clip(RoundedCornerShape(4.dp))
+                Modifier.align(Alignment.TopStart).padding(4.dp).clip(RoundedCornerShape(4.dp))
                     .background(Color(0x99000000)).padding(horizontal = 4.dp, vertical = 1.dp),
             ) { Text(if (com.localtg.ui.tg.LocalSettings.current.showDuration) "▶ " + formatDuration(item.durationMs) else "▶", color = Color.White, fontSize = 11.sp) }
         }
