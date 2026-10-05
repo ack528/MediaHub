@@ -2,11 +2,11 @@
 package api
 
 import (
-	"fmt"
 	"context"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,16 +27,19 @@ import (
 const APIVersion = 1
 
 type Server struct {
-	DB      *sql.DB
-	Cfg     *config.Config
-	Auth    *auth.Service
-	Idx     *index.Indexer
-	Cache   *cache.Manager
-	Poster  *Poster
-	Render  *Renderer
-	JF      *jellyfin.Client // 转码引擎(可选)
-	Log     *slog.Logger
-	Version string
+	DB     *sql.DB
+	Cfg    *config.Config
+	Auth   *auth.Service
+	Idx    *index.Indexer
+	Cache  *cache.Manager
+	Poster *Poster
+	Render *Renderer
+	JF     *jellyfin.Client // 转码引擎(可选)
+	HLS    *HLS             // 内置 ffmpeg 转码(没有 Jellyfin 时使用)
+	// TLSFingerprint 非空表示服务通过 HTTPS 提供(自签名证书的 SHA-256 指纹,手机首次连接时核对)
+	TLSFingerprint string
+	Log            *slog.Logger
+	Version        string
 	// Rescan 由 main 提供:异步重新扫描(rootID=0 表示全部)
 	Rescan func(rootID int64)
 	// LoginDelay 登录失败后的延迟(测试里置 0)
@@ -196,7 +199,8 @@ func rfc(ms int64) string { return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 
 func (s *Server) serverInfo(w http.ResponseWriter, r *http.Request) {
 	name := "MediaHub"
-	writeJSON(w, 200, map[string]any{"name": name, "version": s.Version, "apiVersion": APIVersion, "transcode": s.JF != nil})
+	writeJSON(w, 200, map[string]any{"name": name, "version": s.Version, "apiVersion": APIVersion, "transcode": s.JF != nil || s.HLS != nil,
+		"tls": map[string]any{"enabled": s.TLSFingerprint != "", "fingerprint": s.TLSFingerprint}})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -260,8 +264,8 @@ func (s *Server) adminStatus(w http.ResponseWriter, r *http.Request) {
 		dataFree = float64(f) / (1 << 30)
 	}
 	var nMedia, nDialogs int64
-	_ = s.DB.QueryRow(`SELECT count(*) FROM media`).Scan(&nMedia)
-	_ = s.DB.QueryRow(`SELECT count(*) FROM dialogs`).Scan(&nDialogs)
+	_ = s.DB.QueryRow(`SELECT count(*) FROM media WHERE root_id IN (SELECT id FROM roots WHERE enabled=1)`).Scan(&nMedia)
+	_ = s.DB.QueryRow(`SELECT count(*) FROM dialogs WHERE root_id IN (SELECT id FROM roots WHERE enabled=1)`).Scan(&nDialogs)
 	warn := []string{}
 	if dataFree > 0 && dataFree < 10 {
 		warn = append(warn, "数据目录所在盘可用空间不足 10GB")

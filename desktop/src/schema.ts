@@ -122,8 +122,10 @@ export const ITEMS: Item[] = [
   // ---- 视频转码 / 转码
   {
     id: "engine", page: "video", tab: "转码", icon: "server", kind: "select", restart: true,
-    title: "转码引擎", desc: "目前由 Jellyfin 负责转封装和转码;手机能直接播放的视频不经过转码。",
-    ...at("video.engine"), options: [{ value: "jellyfin", label: "Jellyfin" }],
+    title: "转码引擎", desc: "手机解不了的视频由服务端转成 H.264 / AAC 再播放;能直接播放的不经过转码。\"自动\":配置了 Jellyfin 且它已收录该视频就用 Jellyfin,否则用内置 ffmpeg(不需要安装任何东西)。",
+    read: (c) => (c.video.engine === "ffmpeg" ? "ffmpeg" : "auto"),
+    write: (c, v) => setP(c, "video.engine", v),
+    options: [{ value: "auto", label: "自动(Jellyfin 优先,否则内置 ffmpeg)" }, { value: "ffmpeg", label: "只用内置 ffmpeg" }],
   },
   {
     id: "hwaccel", page: "video", tab: "转码", icon: "cpu", kind: "select", restart: true,
@@ -178,6 +180,11 @@ export const ITEMS: Item[] = [
     read: (c) => (hostOf(c.listen) === "127.0.0.1" ? "127.0.0.1" : "0.0.0.0"),
     write: (c, v) => ({ ...c, listen: `${v}:${portOf(c.listen)}` }),
     options: [{ value: "0.0.0.0", label: "局域网(所有网卡)" }, { value: "127.0.0.1", label: "仅本机" }],
+  },
+  {
+    id: "tls", page: "network", tab: "监听与访问", icon: "shield", kind: "switch", restart: true,
+    title: "加密传输(HTTPS)", desc: "手机与服务器之间的所有数据(登录令牌、图片、视频)都加密。使用自签名证书,手机第一次连接时核对证书指纹后即可;TLS 1.3 + HTTP/2,几乎不影响速度。关闭后退回明文 HTTP(不推荐)。",
+    ...at("tls.enabled"),
   },
   {
     id: "port", page: "network", tab: "监听与访问", icon: "link", kind: "number", min: 1024, max: 65535, restart: true,

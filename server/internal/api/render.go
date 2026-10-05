@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"mediahub/internal/winfs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -196,7 +197,7 @@ func (s *Server) mediaRender(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "render.unavailable", "无法转换这张图片")
 		return
 	}
-	f, err := os.Open(path)
+	f, err := winfs.Open(path)
 	if err != nil {
 		writeErr(w, 404, "render.unavailable", "转换结果不可用")
 		return

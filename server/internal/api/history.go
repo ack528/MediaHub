@@ -415,7 +415,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	limit := limitParam(r, 50, 200)
 	offset, _ := strconv.Atoi(q.Get("cursor"))
 	args := []any{}
-	cond := "m.type IN " + inList(types)
+	cond := "m.type IN " + inList(types) + " AND m.root_id IN (SELECT id FROM roots WHERE enabled=1)"
 	if d := q.Get("dialog"); d != "" {
 		did, err := strconv.ParseInt(d, 10, 64)
 		if err != nil {

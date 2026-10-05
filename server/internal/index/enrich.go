@@ -3,7 +3,7 @@ package index
 import (
 	"context"
 	"encoding/json"
-	"os"
+	"mediahub/internal/winfs"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -50,7 +50,7 @@ func (ix *Indexer) Enrich(ctx context.Context, r Root) error {
 				return err
 			}
 			pe.typ = classify.Type(t)
-			pe.path = filepath.Join(r.Path, rel, name)
+			pe.path = winfs.Path(filepath.Join(r.Path, rel, name))
 			batch = append(batch, pe)
 		}
 		rows.Close()
@@ -96,7 +96,7 @@ const (
 
 // failReason 视频解析失败时给出更明确的原因:空文件 / 不完整(下载中断) / 其它损坏。
 func failReason(path string) string {
-	st, err := os.Stat(path)
+	st, err := winfs.Stat(path)
 	if err != nil {
 		return "文件无法读取(可能已被移走,等待重新扫描)"
 	}
@@ -127,7 +127,7 @@ func (ix *Indexer) checkIntegrity(ctx context.Context, r Root) {
 		var x row
 		var rel, name string
 		if rows.Scan(&x.id, &rel, &name, &x.state, &x.fp) == nil {
-			x.path = filepath.Join(r.Path, rel, name)
+			x.path = winfs.Path(filepath.Join(r.Path, rel, name))
 			todo = append(todo, x)
 		}
 	}
@@ -201,7 +201,7 @@ func (ix *Indexer) enrichVideo(ctx context.Context, pe pending) {
 		return
 	}
 	incomplete := ""
-	if st, e := os.Stat(pe.path); e == nil && st.Size() == 0 {
+	if st, e := winfs.Stat(pe.path); e == nil && st.Size() == 0 {
 		incomplete = problemEmpty
 	} else if inc, _ := meta.MP4Incomplete(pe.path); inc && meta.IsISOBMFF(strings.TrimPrefix(filepath.Ext(pe.path), ".")) {
 		incomplete = problemIncomplete

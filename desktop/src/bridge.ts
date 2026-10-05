@@ -88,7 +88,7 @@ const mockBridge: Bridge = {
     const up = Math.floor((Date.now() - mock.startedAt) / 1000);
     return {
       running: true, pids: [4321],
-      info: { name: "MediaHub", version: "1.0.0", apiVersion: 1 },
+      info: { name: "MediaHub", version: "1.0.0", apiVersion: 1, transcode: true, tls: { enabled: true, fingerprint: "3A:9F:0C:5B:E2:71:44:AD:18:C6:20:9B:7E:D3:55:F1:0A:B8:62:CE:91:47:2D:E0:86:1B:F3:A9:5C:70:D4:28" } },
       status: {
         version: "1.0.0", listen: "0.0.0.0:8480", startedAt: new Date(mock.startedAt).toISOString(), uptimeSec: up,
         media: 2_184_330, dialogs: 41_902,

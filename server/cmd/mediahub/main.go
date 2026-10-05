@@ -13,12 +13,14 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,6 +38,7 @@ import (
 	"mediahub/internal/jellyfin"
 	"mediahub/internal/logx"
 	"mediahub/internal/store"
+	"mediahub/internal/tlsx"
 )
 
 const version = "1.0.0"
@@ -208,9 +211,13 @@ func run(args []string, serve bool) int {
 	// first = 本次启动后的第一轮:被中断的扫描续扫,近期已完整扫描过的根目录直接跳过;之后的定时 / 手动扫描总是执行
 	scanOne := func(r index.Root, first bool) {
 		skipAge := time.Duration(cfg.Scan.SkipWithinHours) * time.Hour
-		skipped := first && !ix.ScanDue(r, skipAge)
+		skipped := first && (r.Reused || !ix.ScanDue(r, skipAge))
 		if skipped {
-			log.Info("近期已完整扫描过,启动时不重新扫描(需要时可在管理程序点\"重新扫描\")", "root", r.Path)
+			if r.Reused {
+				log.Info("这个文件夹之前扫描过,直接使用已有索引(需要时可在管理程序点\"重新扫描\")", "root", r.Path)
+			} else {
+				log.Info("近期已完整扫描过,启动时不重新扫描(需要时可在管理程序点\"重新扫描\")", "root", r.Path)
+			}
 		} else {
 			if err := ix.ScanRoot(ctx, r); err != nil {
 				if !errors.Is(err, context.Canceled) {
@@ -289,7 +296,7 @@ func run(args []string, serve bool) int {
 
 	srv := &api.Server{AdminKey: adminKey, StartedAt: time.Now(),
 		DB: db, Cfg: cfg, Auth: auth.New(db, cfg.Auth.TokenDays), Idx: ix, Cache: cm,
-		Poster: poster, Render: api.NewRenderer(db, cfg, cm), JF: jf, Log: log, Version: version, LoginDelay: time.Second,
+		Poster: poster, Render: api.NewRenderer(db, cfg, cm), HLS: api.NewHLS(cfg, log), JF: jf, Log: log, Version: version, LoginDelay: time.Second,
 		Rescan: func(id int64) {
 			for rid, ch := range triggers {
 				if id == 0 || id == rid {
@@ -301,16 +308,49 @@ func run(args []string, serve bool) int {
 			}
 		},
 	}
-	hs := &http.Server{Addr: cfg.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	var certFile, keyFile string
+	if cfg.TLS.Enabled {
+		var fp string
+		certFile, keyFile, fp, err = tlsx.Ensure(cfg.DataDir)
+		if err != nil {
+			log.Error("准备 TLS 证书失败", "err", err)
+			return 1
+		}
+		srv.TLSFingerprint = fp
+	}
+	handler := srv.Handler()
+	hs := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	var adminHS *http.Server
+	if cfg.TLS.Enabled {
+		hs.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		// 桌面管理程序走仅本机的明文端口(回环地址,不出网卡),不必处理自签名证书
+		ln, err := net.Listen("tcp", cfg.AdminAddr())
+		if err != nil {
+			log.Error("本机管理端口无法监听(被占用?可在 config.json 用 adminListen 改)", "addr", cfg.AdminAddr(), "err", err)
+			return 1
+		}
+		adminHS = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+		logx.Go("本机管理端口", func() { _ = adminHS.Serve(ln) })
+	}
 	go func() {
 		<-ctx.Done()
 		sc, c := context.WithTimeout(context.Background(), 5*time.Second)
 		defer c()
 		_ = hs.Shutdown(sc)
+		if adminHS != nil {
+			_ = adminHS.Shutdown(sc)
+		}
 	}()
-	log.Info("MediaHub 启动", "listen", cfg.Listen, "version", version, "roots", len(roots))
-	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Error("HTTP 服务退出", "err", err)
+	log.Info("MediaHub 启动", "listen", cfg.Listen, "version", version, "roots", len(roots), "https", cfg.TLS.Enabled,
+		"fingerprint", srv.TLSFingerprint, "admin", map[bool]string{true: cfg.AdminAddr(), false: ""}[cfg.TLS.Enabled])
+	var serveErr error
+	if cfg.TLS.Enabled {
+		serveErr = hs.ListenAndServeTLS(certFile, keyFile)
+	} else {
+		serveErr = hs.ListenAndServe()
+	}
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		log.Error("HTTP 服务退出", "err", serveErr)
 		return 1
 	}
 	wg.Wait()

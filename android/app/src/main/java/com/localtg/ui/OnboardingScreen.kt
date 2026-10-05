@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +35,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.localtg.AppContainer
 import com.localtg.data.ServerInfo
+import com.localtg.data.Tls
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import com.localtg.data.Session
 import com.localtg.data.friendlyError
 import com.localtg.data.normalizeAddress
@@ -50,8 +53,17 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
     var pass by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var pendingFp by remember { mutableStateOf<String?>(null) } // 等待用户确认的证书指纹
+    val notice by c.notice.collectAsState()
 
     LaunchedEffect(Unit) { address = c.session.lastAddress() }
+
+    /** 验证服务器并进入账号密码步骤。 */
+    suspend fun connect(url: String) {
+        runCatching { c.api.serverInfo(url) }
+            .onSuccess { info = it; normalized = url; c.notice.value = null }
+            .onFailure { error = friendlyError(it) }
+    }
 
     Column(
         Modifier.fillMaxSize().safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
@@ -82,9 +94,13 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
                     busy = true; error = null
                     scope.launch {
                         val url = normalizeAddress(address)
-                        runCatching { c.api.serverInfo(url) }
-                            .onSuccess { info = it; normalized = url }
-                            .onFailure { error = friendlyError(it) }
+                        if (url.startsWith("https://")) {
+                            // 加密传输:先读取服务器证书指纹;与已信任的一致就直接连,否则让用户核对后再信任
+                            val hu = url.toHttpUrl()
+                            val fp = runCatching { Tls.probe(hu.host, hu.port) }.getOrElse { error = friendlyError(it); busy = false; return@launch }
+                            if (!fp.equals(c.session.pin.value, ignoreCase = true)) { pendingFp = fp; busy = false; return@launch }
+                        }
+                        connect(url)
                         busy = false
                     }
                 },
@@ -124,9 +140,35 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
             TextButton(onClick = { info = null; error = null }, modifier = Modifier.fillMaxWidth()) { Text("更换服务器") }
         }
 
+        notice?.let {
+            Spacer(Modifier.height(12.dp))
+            Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium)
+        }
         error?.let {
             Spacer(Modifier.height(12.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+        }
+        pendingFp?.let { fp ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { pendingFp = null },
+                title = { Text("确认服务器证书") },
+                text = {
+                    Column {
+                        Text("这是第一次连接这台服务器(或它的证书变了)。请在电脑的 MediaHub 管理程序「网络」页核对下面的指纹,一致才点“信任并连接”。")
+                        Spacer(Modifier.height(10.dp))
+                        Text("SHA-256 指纹", style = MaterialTheme.typography.labelMedium)
+                        Text(fp.chunked(24).joinToString("\n"), style = MaterialTheme.typography.bodySmall, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val url = normalizeAddress(address)
+                        pendingFp = null; busy = true; error = null
+                        scope.launch { c.session.setPin(fp); connect(url); busy = false }
+                    }) { Text("信任并连接") }
+                },
+                dismissButton = { TextButton(onClick = { pendingFp = null }) { Text("取消") } },
+            )
         }
         Spacer(Modifier.height(24.dp))
         Text(

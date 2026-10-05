@@ -12,6 +12,7 @@ import (
 //	gone    目录在枚举过程中被移走或删除
 //	offline 磁盘 / 网络位置暂时不可用(掉线、休眠没醒、网络共享断开)
 //	io      磁盘读取出错(坏道、数据线或硬盘故障)
+//	name    名称不符合 Windows 规则(结尾的空格 / 点、保留字符等,多半是别的系统创建的),已尝试扩展路径仍无法读取
 //	other   其它
 func ErrKind(err error) (kind string, code int, text string) {
 	var en syscall.Errno
@@ -22,6 +23,8 @@ func ErrKind(err error) (kind string, code int, text string) {
 	switch code {
 	case 5, 32, 33: // ACCESS_DENIED / SHARING_VIOLATION / LOCK_VIOLATION
 		return "denied", code, "没有权限访问(系统保护目录,或被别的程序占用)"
+	case 123, 161, 206: // INVALID_NAME / BAD_PATHNAME / FILENAME_EXCED_RANGE
+		return "name", code, "名称不符合 Windows 规则(如结尾带空格或点、含 ? * : 等字符,多半是 Linux / Mac 创建的),已尝试扩展路径仍无法读取;改一下文件夹名即可"
 	case 2, 3: // FILE_NOT_FOUND / PATH_NOT_FOUND
 		return "gone", code, "目录已被移走或删除"
 	case 21, 53, 59, 64, 67, 1219, 1231: // NOT_READY / BAD_NETPATH / UNEXP_NET_ERR / NETNAME_DELETED / BAD_NET_NAME ...

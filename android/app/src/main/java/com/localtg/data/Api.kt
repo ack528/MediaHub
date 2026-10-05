@@ -61,13 +61,18 @@ class LogInterceptor : Interceptor {
     }
 }
 
-fun buildHttpClient(store: SessionStore, connectSec: Int, readSec: Int, onUnauthorized: () -> Unit): OkHttpClient =
-    OkHttpClient.Builder()
+fun buildHttpClient(store: SessionStore, connectSec: Int, readSec: Int, onUnauthorized: () -> Unit): OkHttpClient {
+    val (sslCtx, trust) = Tls.pinnedContext { store.pin.value }
+    return OkHttpClient.Builder()
+        // HTTPS:只接受指纹已被用户确认的自签名证书(不校验主机名,服务器 IP 变了也能连);HTTP 地址不受影响
+        .sslSocketFactory(sslCtx.socketFactory, trust)
+        .hostnameVerifier { _, _ -> true }
         .connectTimeout(connectSec.toLong(), TimeUnit.SECONDS)
         .readTimeout(readSec.toLong(), TimeUnit.SECONDS)
         .addInterceptor(AuthInterceptor({ store.session.value }, onUnauthorized))
         .addInterceptor(LogInterceptor())
         .build()
+}
 
 private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
     cont.invokeOnCancellation { cancel() }
@@ -144,7 +149,7 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     fun posterUrl(item: Item): String = "$base/api/v1/media/${item.id}/poster?v=${item.v}"
     fun fileUrl(id: String): String = "$base/api/v1/media/$id/file"
 
-    /** 服务端转码(Jellyfin HLS)的播放地址:maxHeight 目标高度,maxBitrate 视频码率(bps),sid 本次播放的会话标识。 */
+    /** 服务端转码(内置 ffmpeg 或 Jellyfin 的 HLS)的播放地址:maxHeight 目标高度,maxBitrate 视频码率(bps),sid 本次播放的会话标识。 */
     fun hlsUrl(item: Item, maxHeight: Int, maxBitrate: Int, sid: String, audioIndex: Int? = null): String =
         "$base/api/v1/media/${item.id}/hls/master.m3u8?maxHeight=$maxHeight&maxBitrate=$maxBitrate&sid=$sid" + (audioIndex?.let { "&audio=$it" } ?: "")
 
@@ -166,10 +171,10 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     fun posterUrl(id: String): String = "$base/api/v1/media/$id/poster"
 }
 
-/** 把用户输入的地址规范成 http(s)://host:port。未写协议补 http://,未写端口补 8480。 */
+/** 把用户输入的地址规范成 http(s)://host:port。未写协议补 https://(加密传输),未写端口补 8480。 */
 fun normalizeAddress(input: String): String {
     var s = input.trim().trimEnd('/')
-    if (!s.startsWith("http://") && !s.startsWith("https://")) s = "http://$s"
+    if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://$s"
     val hostPart = s.substringAfter("://").substringBefore('/')
     if (!hostPart.contains(':') || hostPart.endsWith(']')) s = s.replaceFirst(hostPart, "$hostPart:8480")
     return s
@@ -179,6 +184,11 @@ fun friendlyError(e: Throwable): String = when (e) {
     is ApiException -> if (e.http == 401) "用户名或密码错误" else e.message ?: "服务器错误"
     is java.net.UnknownHostException -> "找不到服务器,请检查地址"
     is java.net.ConnectException, is java.net.SocketTimeoutException -> "无法连接到服务器,请检查地址、端口和网络"
+    is javax.net.ssl.SSLHandshakeException, is java.security.cert.CertificateException ->
+        if (e.message?.contains("指纹") == true || e.cause?.message?.contains("指纹") == true)
+            "服务器证书与之前信任的不一致(服务端重新生成了证书,或连到了别的设备)。请退出登录后重新连接,并核对证书指纹"
+        else "无法建立加密连接:${e.message}。如果服务端关闭了加密传输,请在地址前写 http://"
+    is javax.net.ssl.SSLException -> "无法建立加密连接(服务器可能不是 HTTPS):${e.message}"
     is IOException -> "网络错误:${e.message}"
     is kotlinx.serialization.SerializationException -> "服务器返回的数据不是 MediaHub 的格式"
     else -> e.message ?: e.toString()

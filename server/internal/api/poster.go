@@ -1,7 +1,6 @@
 package api
 
 import (
-	"runtime/debug"
 	"bytes"
 	"context"
 	"database/sql"
@@ -12,9 +11,11 @@ import (
 	"image/jpeg"
 	"mediahub/internal/logx"
 	"mediahub/internal/proc"
+	"mediahub/internal/winfs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -293,5 +294,5 @@ func MediaPath(db *sql.DB, mediaID int64) (string, error) {
 	if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
 		return "", errors.New("path escapes root")
 	}
-	return full, nil
+	return winfs.Path(full), nil // 名称带结尾空格 / 点或超长的路径要用扩展路径,否则 Win32 会改写它
 }

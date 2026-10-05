@@ -1,6 +1,6 @@
 ﻿# 检查视频条目是否已带 ThumbHash(封面预热是后台任务,可重复运行直到全部完成)。
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$B = 'http://127.0.0.1:8480/api/v1'
+$B = 'http://127.0.0.1:8481/api/v1'
 $acct = Get-Content (Join-Path $Root 'runtime\mediahub\dev-account.txt') | ConvertFrom-StringData
 $login = Invoke-RestMethod -Method Post -Uri "$B/auth/login" -ContentType 'application/json' -Body (@{ username = $acct.username; password = $acct.password } | ConvertTo-Json -Compress)
 $Hdr = @{ Authorization = "Bearer $($login.token)" }

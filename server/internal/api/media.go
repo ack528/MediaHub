@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"mediahub/internal/winfs"
 )
 
 // mediaFile 原文件直出,支持 Range / If-Range / HEAD。
@@ -31,7 +33,7 @@ func (s *Server) mediaFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "notfound", "媒体不存在")
 		return
 	}
-	f, err := os.Open(full)
+	f, err := winfs.Open(full)
 	if err != nil {
 		writeErr(w, 404, "gone", "文件已不存在(等待重新扫描)")
 		return

@@ -9,13 +9,15 @@ export interface Config {
   exclude: string[];
   cache: { perDriveQuotaGB: number; fallbackDir: string; minFreeMarginGB: number };
   images: { thumbMode: "off" | "exif"; fallbackConvert: boolean };
-  video: { engine: string; maxTranscodes: number; hwaccel: "qsv" | "none"; softwareFallback: boolean; posterSource: "auto" | "own" };
+  video: { engine: "auto" | "ffmpeg" | string; maxTranscodes: number; hwaccel: "qsv" | "none"; softwareFallback: boolean; posterSource: "auto" | "own" };
   jellyfin: { url: string; apiKey: string };
   auth: { tokenDays: number };
   tools: { ffmpeg: string; ffprobe: string; exiftool: string; vips: string };
   indexOtherFiles: boolean;
   scan: { skipWithinHours: number; intervalHours: number };
   log: { level: "debug" | "info" | "warn" | "error" };
+  /** 局域网加密传输(HTTPS,自签名证书) */
+  tls: { enabled: boolean };
   /** 管理程序自己的设置(服务端忽略) */
   desktop: { autoStartService: boolean };
 }
@@ -28,13 +30,14 @@ export const DEFAULT_CONFIG: Config = {
   exclude: ["$RECYCLE.BIN", "System Volume Information", ".mediahub", "@eaDir", "Thumbs.db", "desktop.ini"],
   cache: { perDriveQuotaGB: 50, fallbackDir: "", minFreeMarginGB: 5 },
   images: { thumbMode: "off", fallbackConvert: true },
-  video: { engine: "jellyfin", maxTranscodes: 2, hwaccel: "qsv", softwareFallback: true, posterSource: "auto" },
+  video: { engine: "auto", maxTranscodes: 2, hwaccel: "qsv", softwareFallback: true, posterSource: "auto" },
   jellyfin: { url: "http://127.0.0.1:8096", apiKey: "" },
   auth: { tokenDays: 180 },
   tools: { ffmpeg: "", ffprobe: "", exiftool: "", vips: "" },
   indexOtherFiles: false,
   scan: { skipWithinHours: 12, intervalHours: 24 },
   log: { level: "info" },
+  tls: { enabled: true },
   desktop: { autoStartService: false },
 };
 
@@ -75,7 +78,7 @@ export interface IndexProgress {
   failedDirs?: DirFailure[];
 }
 
-export interface DirFailure { path: string; kind: "denied" | "gone" | "offline" | "io" | "other"; code?: number; reason: string }
+export interface DirFailure { path: string; kind: "denied" | "gone" | "name" | "offline" | "io" | "other"; code?: number; reason: string }
 
 export interface CrashFile { name: string; size: number; time: number }
 
@@ -93,7 +96,7 @@ export interface AdminStatus {
 
 export interface ServiceStatus {
   running: boolean;
-  info: { name: string; version: string; apiVersion: number } | null;
+  info: { name: string; version: string; apiVersion: number; transcode?: boolean; tls?: { enabled: boolean; fingerprint: string } } | null;
   status: AdminStatus | null;
   pids: number[];
 }

@@ -72,14 +72,19 @@ class SessionStore(private val ctx: Context) {
     private val kUrl = stringPreferencesKey("server_url")
     private val kToken = stringPreferencesKey("token")
     private val kLastAddress = stringPreferencesKey("last_address")
+    private val kPin = stringPreferencesKey("tls_pin")
 
     /** null 表示未登录。 */
     val session = MutableStateFlow<Session?>(null)
     val loaded = MutableStateFlow(false)
 
+    /** 已信任的服务器证书指纹(SHA-256);HTTPS 连接只接受这张证书。 */
+    val pin = MutableStateFlow<String?>(null)
+
     suspend fun load() {
         val p = ctx.dataStore.data.first()
         val url = p[kUrl]
+        pin.value = p[kPin]
         val stored = p[kToken]
         var tok: String? = null
         if (!stored.isNullOrEmpty()) {
@@ -92,6 +97,11 @@ class SessionStore(private val ctx: Context) {
         }
         session.value = if (!url.isNullOrEmpty() && !tok.isNullOrEmpty()) Session(url, tok) else null
         loaded.value = true
+    }
+
+    suspend fun setPin(fp: String) {
+        pin.value = fp
+        ctx.dataStore.edit { it[kPin] = fp }
     }
 
     suspend fun lastAddress(): String = ctx.dataStore.data.first()[kLastAddress].orEmpty()

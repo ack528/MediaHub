@@ -24,10 +24,10 @@ if ($ClearCache) {
 Start-Process -FilePath (Join-Path $Root 'runtime\bin\mediahub.exe') -ArgumentList 'serve' -WindowStyle Hidden `
   -RedirectStandardError (Join-Path $Root 'runtime\data\serve.err') -RedirectStandardOutput (Join-Path $Root 'runtime\data\serve.out')
 
-# 等服务可用
+# 等服务可用(本机管理端口 = 监听端口 + 1,明文 HTTP;对外的 8480 是 HTTPS)
 $ok = $false
 for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
   Start-Sleep -Seconds 1
-  try { $null = Invoke-RestMethod 'http://127.0.0.1:8480/api/v1/server/info' -TimeoutSec 2; $ok = $true } catch {}
+  try { $null = Invoke-RestMethod 'http://127.0.0.1:8481/api/v1/server/info' -TimeoutSec 2; $ok = $true } catch {}
 }
-if ($ok) { Write-Host "MediaHub 已启动: http://127.0.0.1:8480" } else { Write-Warning "服务未能在 30 秒内启动,查看 runtime\data\serve.err" }
+if ($ok) { Write-Host "MediaHub 已启动: http://127.0.0.1:8481" } else { Write-Warning "服务未能在 30 秒内启动,查看 runtime\data\serve.err" }

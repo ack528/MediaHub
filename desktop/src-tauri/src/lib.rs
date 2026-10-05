@@ -113,8 +113,18 @@ fn http_post_empty(url: &str, key: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// 桌面管理程序访问服务的地址:开启 TLS(默认)时对外端口是 HTTPS 自签名证书,管理程序改走仅本机的明文端口
+/// (配置 adminListen,留空 = 监听端口 + 1,只监听回环地址);关闭 TLS 时就是监听端口本身。
 fn base_url(cfg: &Value) -> String {
-    format!("http://127.0.0.1:{}", listen_port(cfg))
+    let tls = cfg["tls"]["enabled"].as_bool().unwrap_or(true);
+    if !tls {
+        return format!("http://127.0.0.1:{}", listen_port(cfg));
+    }
+    if let Some(a) = cfg["adminListen"].as_str().filter(|s| !s.is_empty()) {
+        return format!("http://{a}");
+    }
+    let p = listen_port(cfg);
+    format!("http://127.0.0.1:{}", if p >= 65535 { 65534 } else { p + 1 })
 }
 
 fn ping(cfg: &Value) -> Option<Value> {

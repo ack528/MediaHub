@@ -242,7 +242,7 @@ fun VideoPage(
                         resumeMs = pl.currentPosition
                         useSoftware = true // 触发本 Effect 重建播放器(软解优先)
                     } else if (transcodeHeight == null && cs.autoTranscode && (formatProblem || codecProblem)) {
-                        // 手机解不了:改用服务端转码(Jellyfin → H.264 / AAC 的 HLS)
+                        // 手机解不了:改用服务端转码(服务端 ffmpeg / Jellyfin → H.264 / AAC 的 HLS)
                         val h = if (cs.maxHeight > 0) cs.maxHeight else 1080
                         AppLog.i("player", "自动改用服务端转码 ${h}p(原因 ${e.errorCodeName})")
                         resumeMs = pl.currentPosition
@@ -251,7 +251,7 @@ fun VideoPage(
                         showHud(Hud(TgIcons.Speed, "手机无法直接播放,已改用服务端转码 ${h}p"))
                     } else {
                         error = if (transcodeHeight != null) {
-                            if (e.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) "服务端转码不可用:请确认 Jellyfin 已启动,且已收录这个视频"
+                            if (e.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) "服务端转码失败(多半是服务端的 ffmpeg 无法处理这个文件,详情见服务端日志)"
                             else "转码播放失败:${e.errorCodeName}"
                         } else friendlyPlayerError(e, item)
                     }

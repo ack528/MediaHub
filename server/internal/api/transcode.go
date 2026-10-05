@@ -20,17 +20,14 @@ const jfDeviceID = "mediahub-gateway"
 //
 // 手机访问的始终是 MediaHub(带自己的令牌),Jellyfin 的密钥只在服务端使用。
 func (s *Server) mediaHLS(w http.ResponseWriter, r *http.Request) {
-	if s.JF == nil {
-		writeErr(w, 503, "transcode.disabled", "服务端没有启用转码(未配置 Jellyfin)")
-		return
-	}
 	id, ok := idParam(r, "id")
 	if !ok {
 		writeErr(w, 400, "bad.id", "id 无效")
 		return
 	}
 	var jfid string
-	err := s.DB.QueryRow(`SELECT COALESCE(jf_item_id,'') FROM media WHERE id=? AND type=1`, id).Scan(&jfid)
+	var durMs int64
+	err := s.DB.QueryRow(`SELECT COALESCE(jf_item_id,''), COALESCE(duration_ms,0) FROM media WHERE id=? AND type=1`, id).Scan(&jfid, &durMs)
 	if err == sql.ErrNoRows {
 		writeErr(w, 404, "notfound", "视频不存在")
 		return
@@ -38,13 +35,14 @@ func (s *Server) mediaHLS(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "internal", err.Error())
 		return
 	}
-	if jfid == "" {
-		writeErr(w, 404, "transcode.unmapped", "转码引擎还没有收录这个视频,请稍后再试(服务端扫描完成后会自动同步)")
-		return
-	}
 	rest := strings.Trim(r.PathValue("rest"), "/")
 	if strings.Contains(rest, "..") || rest == "" {
 		writeErr(w, 400, "bad.path", "路径无效")
+		return
+	}
+	// 引擎选择:配置了 Jellyfin 且它已收录这个视频 → 用 Jellyfin;否则(没装 Jellyfin / 还没收录 / 引擎设为 ffmpeg)→ 内置 ffmpeg
+	if s.JF == nil || jfid == "" || s.Cfg.Video.Engine == "ffmpeg" {
+		s.builtinHLS(w, r, id, durMs, rest)
 		return
 	}
 
@@ -119,13 +117,20 @@ func (s *Server) mediaHLS(w http.ResponseWriter, r *http.Request) {
 // mediaHLSStop DELETE /api/v1/media/{id}/hls?sid=xxx —— 手机退出播放时结束对应的转码。
 func (s *Server) mediaHLSStop(w http.ResponseWriter, r *http.Request) {
 	id, ok := idParam(r, "id")
-	if !ok || s.JF == nil {
+	if !ok {
 		w.WriteHeader(204)
 		return
 	}
 	sid := r.URL.Query().Get("sid")
 	if sid == "" {
 		sid = "x"
+	}
+	if s.HLS != nil {
+		s.HLS.Stop(id, sid)
+	}
+	if s.JF == nil {
+		w.WriteHeader(204)
+		return
 	}
 	if err := s.JF.StopEncoding(r.Context(), jfDeviceID, "mh"+strconv.FormatInt(id, 10)+"-"+sid); err != nil {
 		s.Log.Debug("结束转码失败", "id", id, "err", err)

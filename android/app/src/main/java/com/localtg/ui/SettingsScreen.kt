@@ -194,7 +194,7 @@ private fun CodecPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
         desc = "“仅硬件 / 仅软件”不会回退到另一种,遇到不支持的格式会直接报错",
     ) { u { copy(decoderMode = it) } }
     SwitchRow("解码失败自动改软解", "硬件解码器报错时,自动换成软件解码从当前位置重试", s.autoSoftwareFallback) { u { copy(autoSoftwareFallback = it) } }
-    SwitchRow("解不了时自动转码", "手机无法播放(封装 / 编码不支持,软解也失败)时,自动改用服务端转码播放,需要服务端配置了 Jellyfin", s.autoTranscode) { u { copy(autoTranscode = it) } }
+    SwitchRow("解不了时自动转码", "手机无法播放(封装 / 编码不支持,软解也失败)时,自动改用服务端转码播放(服务端内置 ffmpeg,不需要额外安装)", s.autoTranscode) { u { copy(autoTranscode = it) } }
     SwitchRow("允许备用解码器", "首选解码器初始化失败时依次尝试同格式的其他解码器", s.decoderFallback) { u { copy(decoderFallback = it) } }
     ChoiceRow(
         "MediaCodec 异步队列", s.asyncQueueing, listOf("auto" to "自动", "on" to "强制开启", "off" to "强制关闭"),
@@ -271,6 +271,13 @@ private fun AccountPage(c: AppContainer) {
     val scope = rememberCoroutineScope()
     Header("当前服务器")
     InfoRow("地址", session?.baseUrl ?: "未登录")
+    val pin by c.session.pin.collectAsState()
+    if (session?.baseUrl?.startsWith("https://") == true) {
+        InfoRow("传输", "已加密(TLS)")
+        InfoRow("证书指纹", pin ?: "未信任")
+    } else if (session != null) {
+        InfoRow("传输", "未加密(HTTP)——建议在服务端开启加密传输")
+    }
     Header("账号")
     ActionRow("退出登录", "清除这台手机上的登录令牌,服务器地址会保留", confirm = "退出登录?", danger = true) {
         scope.launch { c.api.logout(); c.session.clearToken() }

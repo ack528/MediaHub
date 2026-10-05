@@ -34,14 +34,101 @@ const (
 	offFileName = 104
 )
 
-func longPath(p string) string {
-	if strings.HasPrefix(p, `\?\`) || len(p) < 240 {
+const extPrefix = `\\?\`
+
+// 这些名字在 Win32 里是设备(CON、NUL、COM1……),带不带扩展名都不能当普通文件名用。
+var reserved = map[string]bool{"CON": true, "PRN": true, "AUX": true, "NUL": true}
+
+func isReserved(comp string) bool {
+	base := comp
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.ToUpper(strings.TrimRight(base, " "))
+	if reserved[base] {
+		return true
+	}
+	return len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9'
+}
+
+// NeedExt 判断路径是否必须用扩展路径(\\?\ 前缀)才能访问:超长,或某一级名称以空格 / 点结尾、是 Win32 保留设备名。
+// 普通 Win32 路径会把这些名称"规范化"掉(去掉结尾空格 / 点),于是找不到目录或报 123"文件名、目录名或卷标语法不正确"。
+func NeedExt(p string) bool {
+	if strings.HasPrefix(p, extPrefix) {
+		return false
+	}
+	if len(p) >= 240 {
+		return true
+	}
+	for _, c := range strings.Split(p, `\`) {
+		if c == "" || c == "." || c == ".." || (len(c) == 2 && c[1] == ':') {
+			continue
+		}
+		if strings.HasSuffix(c, " ") || strings.HasSuffix(c, ".") || isReserved(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// ExtPath 返回扩展路径形式(\\?\D:\x 或 \\?\UNC\server\share\x);不是绝对路径时原样返回。
+func ExtPath(p string) string {
+	switch {
+	case strings.HasPrefix(p, extPrefix):
 		return p
+	case strings.HasPrefix(p, `\\`):
+		return extPrefix + `UNC\` + p[2:]
+	case len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/'):
+		return extPrefix + strings.ReplaceAll(p, "/", `\`)
 	}
-	if strings.HasPrefix(p, `\`) {
-		return `\?\UNC\` + p[2:]
+	return p
+}
+
+// Path 给文件系统调用用的路径:正常路径原样返回,只有必须时才换成扩展路径。
+func Path(p string) string {
+	if NeedExt(p) {
+		return ExtPath(p)
 	}
-	return `\?\` + p
+	return p
+}
+
+// retryable:换成扩展路径重试有可能成功的错误(找不到 / 路径不存在 / 名称语法不正确 / 路径名不合法)。
+func retryable(err error) bool {
+	var en syscall.Errno
+	if !errors.As(err, &en) {
+		return false
+	}
+	switch en {
+	case 2, 3, 123, 161:
+		return true
+	}
+	return false
+}
+
+// Open 打开文件;普通路径失败且错误可能是"名称被规范化"引起时,用扩展路径再试一次。
+func Open(p string) (*os.File, error) {
+	f, err := os.Open(Path(p))
+	if err != nil && retryable(err) {
+		if e := ExtPath(p); e != p && e != Path(p) {
+			if f2, err2 := os.Open(e); err2 == nil {
+				return f2, nil
+			}
+		}
+	}
+	return f, err
+}
+
+// Stat 同 Open:必要时用扩展路径。
+func Stat(p string) (os.FileInfo, error) {
+	st, err := os.Stat(Path(p))
+	if err != nil && retryable(err) {
+		if e := ExtPath(p); e != p && e != Path(p) {
+			if st2, err2 := os.Stat(e); err2 == nil {
+				return st2, nil
+			}
+		}
+	}
+	return st, err
 }
 
 func ft(b []byte) time.Time {
@@ -55,7 +142,19 @@ func ft(b []byte) time.Time {
 // ListDir 一次系统调用批量返回目录项及其 NTFS 文件 ID。
 // 取不到(非 NTFS 等)时回退到 os.ReadDir,文件 ID 用路径哈希代替。
 func ListDir(dir string) ([]Entry, error) {
-	p, err := windows.UTF16PtrFromString(longPath(dir))
+	out, err := listDir(Path(dir))
+	if err != nil && retryable(err) {
+		if e := ExtPath(dir); e != dir && e != Path(dir) {
+			if out2, err2 := listDir(e); err2 == nil {
+				return out2, nil
+			}
+		}
+	}
+	return out, err
+}
+
+func listDir(dir string) ([]Entry, error) {
+	p, err := windows.UTF16PtrFromString(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +270,19 @@ func FreeBytes(path string) (int64, error) {
 
 // FileID 返回单个文件/目录的 NTFS 文件 ID(用于单文件校验)。
 func FileID(path string) (uint64, error) {
-	p, err := windows.UTF16PtrFromString(longPath(path))
+	id, err := fileID(Path(path))
+	if err != nil && retryable(err) {
+		if e := ExtPath(path); e != path && e != Path(path) {
+			if id2, err2 := fileID(e); err2 == nil {
+				return id2, nil
+			}
+		}
+	}
+	return id, err
+}
+
+func fileID(path string) (uint64, error) {
+	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return 0, err
 	}

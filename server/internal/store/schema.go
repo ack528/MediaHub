@@ -75,6 +75,12 @@ UPDATE dialogs SET parent_id = NULL, topics = 0;
 ALTER TABLE media ADD COLUMN chk INTEGER NOT NULL DEFAULT 0;
 UPDATE media SET state=0 WHERE state=2;
 `,
+	// v6:旧版本(0.4.0 之前)没有记录扫描状态,升级后会被当成"从没扫描过"而整盘重扫。
+	// 凡是已经有索引数据的根目录,视为"已完整扫描过":直接使用原有数据,之后按定时间隔 / 手动重新扫描更新。
+	`
+UPDATE roots SET scan_state='complete', last_scan=COALESCE(last_scan, CAST(strftime('%s','now') AS INTEGER))
+ WHERE scan_state='' AND EXISTS (SELECT 1 FROM media WHERE media.root_id = roots.id);
+`,
 }
 
 // Migrate 把数据库升级到最新模式。

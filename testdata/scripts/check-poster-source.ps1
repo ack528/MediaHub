@@ -1,7 +1,7 @@
 ﻿# 检查视频封面来自哪里:Jellyfin 已有的(直接转发)还是我们自己生成的(缓存在媒体盘 .mediahub)。
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $acct = Get-Content (Join-Path $Root 'runtime\mediahub\dev-account.txt') | ConvertFrom-StringData
-$B = 'http://127.0.0.1:8480/api/v1'
+$B = 'http://127.0.0.1:8481/api/v1'
 $login = Invoke-RestMethod "$B/auth/login" -Method Post -ContentType 'application/json' -Body (@{ username = $acct.username; password = $acct.password } | ConvertTo-Json -Compress)
 $H = @{ Authorization = "Bearer $($login.token)" }
 $dialogs = (Invoke-RestMethod "$B/dialogs?limit=100" -Headers $H).dialogs

@@ -5,7 +5,7 @@ import { useApp } from "../store";
 const fmtRate = (r?: number) => (r && r > 0 ? (r >= 100 ? Math.round(r).toLocaleString("zh-CN") : r.toFixed(1)) : "0");
 const fmtEta = (sec: number) => (sec >= 3600 ? `${Math.floor(sec / 3600)} 小时 ${Math.floor((sec % 3600) / 60)} 分钟` : sec >= 60 ? `${Math.ceil(sec / 60)} 分钟` : `${sec} 秒`);
 
-const KIND_LABEL: Record<string, string> = { denied: "没有权限", gone: "已不存在", offline: "盘不可用", io: "读取出错", other: "其他" };
+const KIND_LABEL: Record<string, string> = { denied: "没有权限", gone: "已不存在", name: "名称不合法", offline: "盘不可用", io: "读取出错", other: "其他" };
 
 function portOf(listen: string) { return Number(listen.slice(listen.lastIndexOf(":") + 1)) || 8480; }
 
@@ -81,13 +81,13 @@ export function Overview() {
                        <ul>
                          {p.failedDirs!.map((f) => (
                            <li key={f.path}>
-                             <Badge tone={f.kind === "denied" || f.kind === "gone" ? "gray" : "orange"}>{KIND_LABEL[f.kind] ?? "其他"}</Badge>
+                             <Badge tone={f.kind === "denied" || f.kind === "gone" || f.kind === "name" ? "gray" : "orange"}>{KIND_LABEL[f.kind] ?? "其他"}</Badge>
                              <code>{f.path}</code>
                              <span className="why">{f.reason}{f.code ? `(错误码 ${f.code})` : ""}</span>
                            </li>
                          ))}
                        </ul>
-                       <div className="hint">“没有权限”“目录不存在”是正常现象(系统保护目录、被删除的文件夹),已自动跳过;“读取出错”“盘不可用”需要留意:可能是硬盘坏道、移动硬盘断开,或网络盘掉线。</div>
+                       <div className="hint">“没有权限”“已不存在”是正常现象(系统保护目录、被删除的文件夹),已自动跳过;“名称不合法”是文件夹名以空格 / 点结尾或含 Windows 不允许的字符(多半是 Linux / Mac 创建的),已尝试扩展路径读取仍失败,改个名字即可;“读取出错”“盘不可用”需要留意:可能是硬盘坏道、移动硬盘断开,或网络盘掉线。</div>
                      </details>
                    )}
                  </>}>

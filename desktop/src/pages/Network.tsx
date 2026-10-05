@@ -6,7 +6,9 @@ import { useApp } from "../store";
 import { CopyBtn } from "./Overview";
 
 function Listen() {
-  const { ips, config } = useApp();
+  const { ips, config, svc } = useApp();
+  const tls = svc?.info?.tls;
+  const https = config.tls.enabled;
   const port = Number(config.listen.slice(config.listen.lastIndexOf(":") + 1)) || 8480;
   const items = itemsOf("network", "监听与访问");
   return (
@@ -16,10 +18,20 @@ function Listen() {
       </Card>
       <Card icon="link" title="访问地址">
         {ips.map((i) => (
-          <Row key={i.ip} icon="globe" title={`http://${i.ip}:${port}`} desc={i.name}>
-            <CopyBtn text={`http://${i.ip}:${port}`} />
+          <Row key={i.ip} icon="globe" title={`${https ? "https" : "http"}://${i.ip}:${port}`} desc={i.name}>
+            <CopyBtn text={`${i.ip}:${port}`} />
           </Row>
         ))}
+      </Card>
+      <Card icon="shield" title="证书指纹(手机首次连接时核对)">
+        {!https && <Row icon="alert" title="加密传输已关闭" desc="手机与服务器之间是明文 HTTP。建议在上面打开“加密传输”。"><Badge tone="orange">未加密</Badge></Row>}
+        {https && !tls?.fingerprint && <Row icon="clock" title="服务未运行" desc="启动服务后显示证书指纹。" />}
+        {https && tls?.fingerprint && (
+          <Row icon="key" title="SHA-256 指纹"
+               desc={<>手机第一次连接这台服务器时会显示一段指纹,和下面的逐段核对,一致再点“信任并连接”。以后手机只接受这张证书,不依赖 IP 地址。<pre className="code">{tls.fingerprint.replace(/(.{24})/g, "$1\n").trim()}</pre></>}>
+            <CopyBtn text={tls.fingerprint} />
+          </Row>
+        )}
       </Card>
     </>
   );

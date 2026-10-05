@@ -43,12 +43,36 @@ object Motion {
 typealias NavEnter = AnimatedContentTransitionScope<NavBackStackEntry>.() -> EnterTransition
 typealias NavExit = AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition
 
-class NavMotion(val enter: NavEnter, val exit: NavExit, val popEnter: NavEnter, val popExit: NavExit)
+/** 预测性返回(手势)专用:参数是手势起始边(0 = 左边缘,1 = 右边缘)。 */
+typealias NavPredEnter = AnimatedContentTransitionScope<NavBackStackEntry>.(Int) -> EnterTransition
+typealias NavPredExit = AnimatedContentTransitionScope<NavBackStackEntry>.(Int) -> ExitTransition
+
+class NavMotion(
+    val enter: NavEnter, val exit: NavExit, val popEnter: NavEnter, val popExit: NavExit,
+    val predEnter: NavPredEnter, val predExit: NavPredExit,
+)
+
+/**
+ * 预测性返回的动画规格。要点(参考 Telegram 的 ActionBarLayout、Voyager 的预测性返回实现、Android 官方文档):
+ *  1. 手势进度由系统按手指位置给出,导航库把它当作动画的"播放进度"去 seek —— 所以必须用**线性**缓动,
+ *     页面才会 1:1 跟手(用减速曲线会让页面在手指刚动时就跳出一大截);松手后剩余部分按同样的规格播完。
+ *  2. 层级页面(列表 ← 聊天 ← 设置):上层页面整屏跟手滑出,下层页面从 1/4 屏处视差滑回(与按钮返回的方向 / 节奏一致)。
+ *  3. 查看器 → 聊天:不滑动,整页缩小 + 淡出,露出下面的缩略图,松手后由共享元素飞回原位。
+ *  4. 所有页面都有不透明背景(见 NavScreen),被覆盖的页面不会透出来。
+ */
+private val Linear = androidx.compose.animation.core.LinearEasing
+
+private fun AnimatedContentTransitionScope<NavBackStackEntry>.poppingViewer() =
+    initialState.destination.route?.startsWith("viewer") == true
 
 fun navMotion(style: String): NavMotion = when (style) {
-    Motion.OFF -> NavMotion({ EnterTransition.None }, { ExitTransition.None }, { EnterTransition.None }, { ExitTransition.None })
+    Motion.OFF -> NavMotion(
+        { EnterTransition.None }, { ExitTransition.None }, { EnterTransition.None }, { ExitTransition.None },
+        { EnterTransition.None }, { ExitTransition.None },
+    )
     Motion.FADE -> NavMotion(
         { fadeIn(tween(200)) }, { fadeOut(tween(150)) }, { fadeIn(tween(200)) }, { fadeOut(tween(150)) },
+        { fadeIn(tween(200, easing = Linear)) }, { fadeOut(tween(200, easing = Linear)) },
     )
     Motion.AXIS -> { // Material 共享轴 X:位移约 1/10 屏宽 + 淡入淡出
         val d = 300
@@ -57,6 +81,11 @@ fun navMotion(style: String): NavMotion = when (style) {
             { slideOutHorizontally(tween(d, easing = Motion.Standard)) { -it / 10 } + fadeOut(tween(90, easing = Motion.Standard)) },
             { slideInHorizontally(tween(d, easing = Motion.Standard)) { -it / 10 } + fadeIn(tween(210, 90, Motion.Standard)) },
             { slideOutHorizontally(tween(d, easing = Motion.Standard)) { it / 10 } + fadeOut(tween(90, easing = Motion.Standard)) },
+            { edge -> slideInHorizontally(tween(d, easing = Linear)) { if (edge == 1) it / 10 else -it / 10 } + fadeIn(tween(d, easing = Linear)) },
+            { edge ->
+                if (poppingViewer()) predictiveViewerOut()
+                else slideOutHorizontally(tween(d, easing = Linear)) { if (edge == 1) -it / 10 else it / 10 } + fadeOut(tween(d, easing = Linear))
+            },
         )
     }
     else -> { // 滑动 + 视差(默认):新页面整屏滑入,旧页面退后 1/4 屏
@@ -66,9 +95,16 @@ fun navMotion(style: String): NavMotion = when (style) {
             { slideOutHorizontally(tween(d, easing = Motion.EmphasizedDecelerate)) { -it / 4 } },
             { slideInHorizontally(tween(d, easing = Motion.EmphasizedDecelerate)) { -it / 4 } },
             { slideOutHorizontally(tween(d, easing = Motion.EmphasizedDecelerate)) { it } },
+            // 手势:线性、整屏跟手;从右边缘划(RTL / 右手柄)则向左滑出
+            { edge -> if (poppingViewer()) EnterTransition.None else slideInHorizontally(tween(d, easing = Linear)) { if (edge == 1) it / 4 else -it / 4 } },
+            { edge -> if (poppingViewer()) predictiveViewerOut() else slideOutHorizontally(tween(d, easing = Linear)) { if (edge == 1) -it else it } },
         )
     }
 }
+
+/** 查看器的手势返回:整页缩小 + 淡出(线性,跟手),下面的聊天页原地不动,缩略图随之显露。 */
+private fun predictiveViewerOut(): ExitTransition =
+    androidx.compose.animation.scaleOut(tween(300, easing = Linear), targetScale = 0.85f) + fadeOut(tween(300, easing = Linear))
 
 /** fade through:用于互不相关的页面(登录 ↔ 列表)。 */
 fun fadeThroughIn(style: String): EnterTransition = when (style) {

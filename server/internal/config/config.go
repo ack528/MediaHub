@@ -30,7 +30,7 @@ type Config struct {
 		FallbackConvert bool   `json:"fallbackConvert"`
 	} `json:"images"`
 	Video struct {
-		Engine           string `json:"engine"` // jellyfin
+		Engine           string `json:"engine"` // auto(默认:有 Jellyfin 且已收录就用它,否则内置 ffmpeg)| ffmpeg(只用内置)
 		MaxTranscodes    int    `json:"maxTranscodes"`
 		HWAccel          string `json:"hwaccel"`
 		SoftwareFallback bool   `json:"softwareFallback"`
@@ -52,6 +52,12 @@ type Config struct {
 	} `json:"tools"`
 	// IndexOtherFiles:是否把非媒体文件(文档等)也建索引,默认 false
 	IndexOtherFiles bool `json:"indexOtherFiles"`
+	// TLS:局域网内的加密传输(HTTPS,自签名证书 + 手机端证书固定)。默认开启;关闭后退回明文 HTTP。
+	TLS struct {
+		Enabled bool `json:"enabled"`
+	} `json:"tls"`
+	// AdminListen:仅本机的管理端口(明文 HTTP,只监听回环地址,桌面管理程序用它)。留空 = 监听端口 + 1。TLS 关闭时不使用。
+	AdminListen string `json:"adminListen"`
 	// Log.Level:服务端日志级别 debug / info / warn / error,默认 info
 	Log struct {
 		Level string `json:"level"`
@@ -73,7 +79,7 @@ func Default() *Config {
 	c.Cache.MinFreeMarginGB = 5
 	c.Images.ThumbMode = "off"
 	c.Images.FallbackConvert = true
-	c.Video.Engine = "jellyfin"
+	c.Video.Engine = "auto"
 	c.Video.MaxTranscodes = 2
 	c.Video.HWAccel = "qsv"
 	c.Video.SoftwareFallback = true
@@ -81,9 +87,28 @@ func Default() *Config {
 	c.Jellyfin.URL = "http://127.0.0.1:8096"
 	c.Auth.TokenDays = 180
 	c.Log.Level = "info"
+	c.TLS.Enabled = true
 	c.Scan.SkipWithinHours = 12
 	c.Scan.IntervalHours = 24
 	return c
+}
+
+// AdminAddr 返回本机管理端口的监听地址(回环)。
+func (c *Config) AdminAddr() string {
+	if c.AdminListen != "" {
+		return c.AdminListen
+	}
+	i := strings.LastIndex(c.Listen, ":")
+	port := 8480
+	if i >= 0 {
+		fmt.Sscanf(c.Listen[i+1:], "%d", &port)
+	}
+	if port >= 65535 {
+		port = 65534
+	} else {
+		port++
+	}
+	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
 // Load 读取配置文件;文件不存在则返回默认值。root 用于解析 tools 的默认位置(项目根目录)。

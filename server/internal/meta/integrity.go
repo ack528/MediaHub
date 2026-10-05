@@ -2,7 +2,7 @@ package meta
 
 import (
 	"encoding/binary"
-	"os"
+	"mediahub/internal/winfs"
 	"strings"
 )
 
@@ -17,7 +17,7 @@ func IsISOBMFF(ext string) bool { return isoBMFFExts[strings.ToLower(ext)] }
 
 // MP4Incomplete 判断 MP4 / MOV 是否不完整:顶层某个盒子声明的大小超出了文件末尾,或者整个文件里没有 moov。
 func MP4Incomplete(path string) (bool, error) {
-	f, err := os.Open(path)
+	f, err := winfs.Open(path)
 	if err != nil {
 		return false, err
 	}

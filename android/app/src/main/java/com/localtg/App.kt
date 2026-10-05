@@ -16,6 +16,8 @@ import com.localtg.data.buildHttpClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okio.Path.Companion.toOkioPath
@@ -33,9 +35,25 @@ class AppContainer(app: Application) {
     init {
         // 设置改变后立即生效的项
         scope.launch { settings.state.collect { api.serverRenderHeic = it.heicMode == "server" } }
+        // 旧版本登录的是 http:// 地址;服务器升级为 HTTPS 后原地址连不上,提示重新连接(确认证书指纹)
+        scope.launch {
+            session.loaded.first { it }
+            val s = session.session.value ?: return@launch
+            if (!s.baseUrl.startsWith("http://")) return@launch
+            if (runCatching { api.serverInfo(s.baseUrl) }.isSuccess) return@launch
+            val hu = runCatching { s.baseUrl.toHttpUrl() }.getOrNull() ?: return@launch
+            if (runCatching { com.localtg.data.Tls.probe(hu.host, hu.port) }.isSuccess) {
+                AppLog.i("app", "服务器已升级为 HTTPS,旧的 http 登录失效,需要重新连接")
+                notice.value = "服务器已升级为加密传输(HTTPS),请重新连接并核对证书指纹"
+                session.clearToken()
+            }
+        }
     }
 
     /** 聊天页点开查看器时,把当前已加载的条目快照交给查看器。 */
+    /** 登录页顶部的提示(例如服务器升级为加密传输后,旧的 http 登录需要重新连接)。 */
+    val notice = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
     @Volatile var viewerFeed: com.localtg.data.ViewerFeed = com.localtg.data.ViewerFeed(emptyList())
 
     /** 画中画(小窗)状态与播放信息,供 MainActivity 在按 Home 键时判断是否自动进入小窗。 */

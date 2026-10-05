@@ -37,6 +37,8 @@ type Root struct {
 	Path   string
 	Label  string
 	Serial uint32
+	// Reused:这个根目录以前扫描过(曾经添加过、后来从配置里移除又加回来),已有索引数据可直接使用,启动时不必重新扫描
+	Reused bool
 }
 
 // Progress 是某个根目录当前的索引进度(JSON 供管理程序显示)。
@@ -183,8 +185,23 @@ func (ix *Indexer) setState(p *Progress, s, msg string) {
 }
 
 // SyncRoots 把配置里的根目录登记到数据库并返回。
+// 不在配置里的根目录只是"停用"(enabled=0,手机上不再显示),它的索引数据保留;再次添加时直接复用,不必重新扫描。
 func (ix *Indexer) SyncRoots() ([]Root, error) {
 	var out []Root
+	prev := map[string]bool{} // 路径(小写) → 之前是否处于启用状态
+	if rows, err := ix.DB.Query(`SELECT path, enabled FROM roots`); err == nil {
+		for rows.Next() {
+			var p string
+			var en int
+			if rows.Scan(&p, &en) == nil {
+				prev[strings.ToLower(p)] = en == 1
+			}
+		}
+		rows.Close()
+	}
+	if _, err := ix.DB.Exec(`UPDATE roots SET enabled=0`); err != nil {
+		return nil, err
+	}
 	for _, rc := range ix.Cfg.Roots {
 		path := filepath.Clean(rc.Path)
 		if !strings.HasSuffix(path, `\`) && len(path) == 2 && path[1] == ':' {
@@ -195,14 +212,27 @@ func (ix *Indexer) SyncRoots() ([]Root, error) {
 			ix.Log.Warn("根目录不可用,跳过", "path", path, "err", err)
 			continue
 		}
-		var id int64
-		err = ix.DB.QueryRow(`INSERT INTO roots(path,label,volume_serial,volume_guid,enabled) VALUES(?,?,?,?,1)
-			ON CONFLICT(path) DO UPDATE SET label=excluded.label, volume_serial=excluded.volume_serial, volume_guid=excluded.volume_guid
-			RETURNING id`, path, rc.Label, int64(serial), guid).Scan(&id)
+		// 已有记录(路径不区分大小写):盘符没变就复用;盘换了(卷序列号不同)文件 ID 全变,旧数据作废,当新的扫
+		var id, oldSerial int64
+		var state string
+		err = ix.DB.QueryRow(`SELECT id, volume_serial, scan_state FROM roots WHERE path=? COLLATE NOCASE`, path).Scan(&id, &oldSerial, &state)
+		reused := false
+		switch {
+		case err == nil && oldSerial == int64(serial):
+			_, err = ix.DB.Exec(`UPDATE roots SET path=?, label=?, volume_guid=?, enabled=1 WHERE id=?`, path, rc.Label, guid, id)
+			reused = !prev[strings.ToLower(path)] && state == "complete" // 重新添加:之前停用过且扫描完整
+		case err == nil:
+			ix.Log.Warn("根目录所在的磁盘已更换(卷序列号变化),旧索引作废,重新扫描", "path", path)
+			_, err = ix.DB.Exec(`UPDATE roots SET label=?, volume_serial=?, volume_guid=?, enabled=1, scan_state='', scan_gen=0, last_scan=NULL WHERE id=?`,
+				rc.Label, int64(serial), guid, id)
+		default:
+			err = ix.DB.QueryRow(`INSERT INTO roots(path,label,volume_serial,volume_guid,enabled) VALUES(?,?,?,?,1) RETURNING id`,
+				path, rc.Label, int64(serial), guid).Scan(&id)
+		}
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, Root{ID: id, Path: path, Label: rc.Label, Serial: serial})
+		out = append(out, Root{ID: id, Path: path, Label: rc.Label, Serial: serial, Reused: reused})
 	}
 	return out, nil
 }
@@ -502,6 +532,9 @@ func (ix *Indexer) recordDirFailure(p *Progress, path string, err error) {
 	case "gone":
 		atomic.AddInt64(&p.Skipped, 1)
 		ix.Log.Debug("目录在扫描过程中消失", "dir", path)
+	case "name":
+		atomic.AddInt64(&p.Skipped, 1)
+		ix.Log.Warn("目录名称不符合 Windows 规则,已跳过(改名后重新扫描即可)", "dir", path, "code", code, "err", err)
 	default:
 		atomic.AddInt64(&p.Errors, 1)
 		ix.Log.Warn("目录读取失败,已保留其下旧数据", "dir", path, "kind", kind, "code", code, "reason", text, "err", err)

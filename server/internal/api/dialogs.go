@@ -52,7 +52,7 @@ const dialogCols = `d.id, COALESCE(d.parent_id,0), d.root_id, d.title, d.rel_pat
 	d.cnt_photo, d.cnt_video, d.cnt_gif, d.cnt_audio, d.cnt_file, d.cnt_recursive, d.topics,
 	COALESCE(d.last_item_id,0), d.version, COALESCE(ud.pinned,0), COALESCE(ud.archived,0), COALESCE(ud.last_read_taken,0)`
 
-const dialogFrom = `FROM dialogs d JOIN roots ro ON ro.id=d.root_id LEFT JOIN user_dialog ud ON ud.dialog_id=d.id AND ud.user_id=?`
+const dialogFrom = `FROM dialogs d JOIN roots ro ON ro.id=d.root_id AND ro.enabled=1 LEFT JOIN user_dialog ud ON ud.dialog_id=d.id AND ud.user_id=?`
 
 func (s *Server) scanDialog(sc scanner, uid int64) (Dialog, error) {
 	var (

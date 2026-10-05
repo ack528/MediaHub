@@ -1,7 +1,7 @@
 ﻿# M1 验收冒烟测试:对运行中的 MediaHub 逐项调用主要接口并打印结果。
-# 用法:  powershell -File testdata\scripts\smoke.ps1 [-Base http://127.0.0.1:8480]
+# 用法:  powershell -File testdata\scripts\smoke.ps1 [-Base http://127.0.0.1:8481]
 # 账号取自 runtime\mediahub\dev-account.txt(开发用,随机密码)。
-param([string]$Base = 'http://127.0.0.1:8480')
+param([string]$Base = 'http://127.0.0.1:8481')
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $acct = Get-Content (Join-Path $Root 'runtime\mediahub\dev-account.txt') | ConvertFrom-StringData

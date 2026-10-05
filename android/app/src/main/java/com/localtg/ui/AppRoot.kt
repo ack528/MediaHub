@@ -79,6 +79,7 @@ fun AppRoot(c: AppContainer) {
             NavHost(
                 nav, startDestination = if (session != null) "dialogs" else "onboarding",
                 enterTransition = m.enter, exitTransition = m.exit, popEnterTransition = m.popEnter, popExitTransition = m.popExit,
+                predictivePopEnterTransition = m.predEnter, predictivePopExitTransition = m.predExit,
             ) {
                 composable(
                     "onboarding",
