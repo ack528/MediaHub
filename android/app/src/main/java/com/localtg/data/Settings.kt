@@ -26,7 +26,23 @@ data class AppSettings(
     val theme: String = "system",              // system / light / dark
     val chatBackground: String = "gradient",   // gradient / plain
     val motion: String = "slide",              // 界面动画:slide(系统风格,默认) / parallax(整屏滑动+视差) / axis(Material 共享轴) / fade(淡入淡出) / off(关闭)
+    val fontScale: Float = 1f,                 // 界面文字缩放(在系统字号之上再乘)
+    val avatarShape: String = "round",         // 头像形状:round(圆角方形,默认) / circle / square
+    val screenSecure: Boolean = false,         // 禁止截屏 / 录屏,最近任务里不显示画面预览
+    // ---- 文件夹列表
+    val dialogSort: String = "recent",         // recent(服务端顺序:最近更新) / name / count(媒体数量) / path
+    val dialogMinCount: Int = 0,               // 隐藏媒体数少于这个值的文件夹(0 = 不隐藏)
+    val dialogSubtitle: String = "last",       // 每行第二行显示:last(最后一项文件名) / path(所在路径) / none
+    val avatarCover: Boolean = true,           // 头像用文件夹封面;关闭则只显示首字母
     // ---- 浏览
+    val defaultSort: String = "auto",          // 文件夹默认排序:auto(服务器按名称、本地按时间) / name / taken / size / type
+    val defaultSortDir: String = "auto",       // auto / asc(升序) / desc(降序)
+    val gridSpacing: Int = 1,                  // 网格间距(dp)
+    val gridThumbWidth: Int = 480,             // 网格缩略图宽度(像素),越大越清晰也越费流量
+    val showDuration: Boolean = true,          // 视频缩略图上显示时长
+    val chatSpacing: Int = 3,                  // 聊天流里相邻气泡的间距(dp)
+    val bubbleWidth: Int = 72,                 // 聊天流里媒体气泡占屏幕宽度的百分比
+    val chatImageWidth: Int = 960,             // 聊天流里图片的清晰度(像素宽度)
     val defaultColumns: Int = 3,               // 网格默认列数(各文件夹自己记住的优先)
     val newestAtBottom: Boolean = true,        // 聊天流默认最新在底部
     val rememberPosition: Boolean = true,      // 记住每个文件夹的浏览位置
@@ -38,6 +54,10 @@ data class AppSettings(
     val hardwareBitmaps: Boolean = true,
     val crossfade: Boolean = true,
     val heicMode: String = "server",           // HEIC / HEIF / AVIF 的显示方式:server = 服务端转换(推荐) / native = 手机直接解码
+    // ---- 图片查看器
+    val viewerPreload: Int = 1,                // 左右各预加载几页
+    val viewerImageWidth: Int = 2880,          // 全屏查看时加载的图片宽度(像素)
+    val maxZoom: Float = 2f,                   // 双击 / 双指放大的上限
     // ---- 视频播放
     val autoplay: Boolean = true,
     val loop: Boolean = false,
@@ -52,6 +72,15 @@ data class AppSettings(
     val swipeSeek: Boolean = true,             // 视频页水平滑动 = 快进快退(VLC 方式);关闭则水平滑动切换上 / 下一项
     val gestures: Boolean = true,              // 手势:双击快进快退、长按倍速、上下滑动调亮度 / 音量
     val longPressSpeed: Float = 2f,            // 长按画面时的临时倍速
+    val swipeSpanSec: Int = 90,                // 手指横扫整个屏幕宽度对应的快进秒数
+    val gestureSense: Float = 1.3f,            // 上下滑动调亮度 / 音量的灵敏度(滑满屏幕高度变化 N 倍)
+    val resumeRewindSec: Int = 0,              // 续播时往回退几秒,方便接上剧情
+    val pauseOnUnplug: Boolean = true,         // 拔掉耳机 / 蓝牙断开时暂停
+    val autoLandscape: Boolean = false,        // 横向视频自动转横屏
+    val volumeBoostMb: Int = 0,                // 音量增益(毫贝,1000 = +10 dB),0 = 关闭
+    val subtitleScale: Float = 1f,
+    val subtitleStyle: String = "system",      // system / outline(描边) / shadow(阴影) / box(黑底) / yellow(黄字描边)
+    val subtitleBottom: Int = 8,               // 字幕离底部的距离(占画面高度的百分比)
     val autoNext: Boolean = false,             // 播放完自动切到下一项
     val autoPip: Boolean = false,              // 离开应用时自动进入小窗播放
     val showStats: Boolean = false,            // 播放时显示解码器 / 码率等技术信息

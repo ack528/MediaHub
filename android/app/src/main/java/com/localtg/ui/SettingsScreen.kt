@@ -54,8 +54,10 @@ import kotlinx.coroutines.withContext
 
 /** 设置页分类:id → (标题, 简介)。 */
 private val SECTIONS = listOf(
-    Triple("appearance", "外观", "主题、聊天背景"),
-    Triple("browse", "浏览", "网格列数、浏览位置、缩略图加载"),
+    Triple("appearance", "外观", "主题、字体大小、头像形状、动画、隐私"),
+    Triple("folders", "文件夹列表", "排序、隐藏小文件夹、头像与第二行内容"),
+    Triple("browse", "浏览", "默认排序、网格间距与清晰度、聊天流外观"),
+    Triple("viewer", "图片查看器", "预加载、清晰度、放大上限"),
     Triple("image", "图片", "缓存大小、位图、过渡动画"),
     Triple("video", "视频播放", "自动播放、循环、倍速、进度记忆"),
     Triple("codec", "编解码器", "硬解 / 软解、缓冲、分辨率、音轨字幕"),
@@ -94,7 +96,9 @@ fun SettingsScreen(c: AppContainer, section: String?, onBack: () -> Unit, onOpen
                         NavRow(name, desc) { onOpen(id) }
                     }
                     "appearance" -> AppearancePage(s, update)
+                    "folders" -> FoldersPage(s, update)
                     "browse" -> BrowsePage(s, update)
+                    "viewer" -> ViewerPage(s, update)
                     "image" -> ImagePage(s, update)
                     "video" -> VideoPage(s, update)
                     "codec" -> CodecPage(s, update, onOpenCodecs = { onOpen("codecs-info") })
@@ -116,6 +120,12 @@ fun SettingsScreen(c: AppContainer, section: String?, onBack: () -> Unit, onOpen
 private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
     Header("主题")
     ChoiceRow("颜色主题", s.theme, listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色")) { u { copy(theme = it) } }
+    Header("文字与头像")
+    ChoiceRow(
+        "界面文字大小", s.fontScale, listOf(0.85f, 1f, 1.15f, 1.3f, 1.5f).map { it to "${(it * 100).toInt()}%" + if (it == 1f) "(默认)" else "" },
+        desc = "在系统字号的基础上再缩放,只影响本应用",
+    ) { u { copy(fontScale = it) } }
+    ChoiceRow("头像形状", s.avatarShape, listOf("round" to "圆角方形(默认)", "circle" to "圆形", "square" to "方形")) { u { copy(avatarShape = it) } }
     Header("动画")
     ChoiceRow(
         "界面动画", s.motion,
@@ -125,6 +135,48 @@ private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) ->
     Header("聊天流")
     ChoiceRow("聊天背景", s.chatBackground, listOf("gradient" to "渐变(Telegram 默认)", "plain" to "纯色")) { u { copy(chatBackground = it) } }
     SwitchRow("显示日期胶囊", "在聊天流里按天分隔,显示“今天 / 昨天 / 日期”", s.showDatePills) { u { copy(showDatePills = it) } }
+    Header("隐私")
+    SwitchRow(
+        "禁止截屏和录屏", "开启后截图、录屏都是黑的,最近任务列表里也不显示画面预览(切换后立即生效)",
+        s.screenSecure,
+    ) { u { copy(screenSecure = it) } }
+}
+
+@Composable
+private fun FoldersPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
+    Header("排序与过滤")
+    ChoiceRow(
+        "文件夹排序", s.dialogSort,
+        listOf("recent" to "最近更新(默认)", "name" to "名称 A → Z", "count" to "媒体数量(多 → 少)", "path" to "路径"),
+        desc = "只影响首页的文件夹列表;盘符标签页内同样生效",
+    ) { u { copy(dialogSort = it) } }
+    ChoiceRow(
+        "隐藏小文件夹", s.dialogMinCount, listOf(0 to "不隐藏", 2 to "少于 2 个媒体", 5 to "少于 5 个媒体", 10 to "少于 10 个媒体", 30 to "少于 30 个媒体"),
+        desc = "隐藏只有零星几张图的文件夹;搜索不受影响",
+    ) { u { copy(dialogMinCount = it) } }
+    Header("每一行")
+    ChoiceRow(
+        "第二行内容", s.dialogSubtitle, listOf("last" to "最后一项的文件名", "path" to "所在路径", "none" to "不显示"),
+    ) { u { copy(dialogSubtitle = it) } }
+    SwitchRow("头像使用文件夹封面", "关闭后头像只显示首字母,更省流量", s.avatarCover) { u { copy(avatarCover = it) } }
+}
+
+@Composable
+private fun ViewerPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
+    Header("加载")
+    ChoiceRow(
+        "预加载页数", s.viewerPreload, listOf(0 to "不预加载", 1 to "左右各 1 页(默认)", 2 to "左右各 2 页", 3 to "左右各 3 页"),
+        desc = "翻页更快,但更费流量和内存;连续看大图时可以调大",
+    ) { u { copy(viewerPreload = it) } }
+    ChoiceRow(
+        "全屏图片清晰度", s.viewerImageWidth, listOf(1440 to "1440 像素宽(省流量)", 2160 to "2160 像素宽", 2880 to "2880 像素宽(默认)", 4096 to "4096 像素宽(最清晰)"),
+        desc = "放大看细节时越大越清晰;服务端会按这个宽度生成预览图",
+    ) { u { copy(viewerImageWidth = it) } }
+    Header("缩放")
+    ChoiceRow(
+        "放大上限", s.maxZoom, listOf(2f to "2 倍(默认)", 3f to "3 倍", 4f to "4 倍", 6f to "6 倍", 8f to "8 倍"),
+        desc = "双指或双击放大时最多放大到多少",
+    ) { u { copy(maxZoom = it) } }
 }
 
 @Composable
@@ -132,8 +184,29 @@ private fun BrowsePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Uni
     Header("打开文件夹")
     SwitchRow("记住浏览位置", "再次打开同一个文件夹时回到上次退出的位置,并记住排序、网格 / 聊天、过滤", s.rememberPosition) { u { copy(rememberPosition = it) } }
     SwitchRow("最新在底部", "聊天流默认旧 → 新排列,最新一条在最下面(和 Telegram 一样)", s.newestAtBottom) { u { copy(newestAtBottom = it) } }
+    Header("默认排序")
+    ChoiceRow(
+        "排序依据", s.defaultSort,
+        listOf("auto" to "自动(服务器按名称,本地按时间)", "name" to "文件名称", "taken" to "文件时间", "size" to "文件大小", "type" to "文件类型"),
+        desc = "第一次打开的文件夹用这个排序;在文件夹右上角菜单里改过的,以后仍用改过的",
+    ) { u { copy(defaultSort = it) } }
+    ChoiceRow(
+        "排序方向", s.defaultSortDir, listOf("auto" to "自动(名称 / 类型升序,其余新的 / 大的在前)", "asc" to "升序", "desc" to "降序"),
+    ) { u { copy(defaultSortDir = it) } }
     Header("网格")
     ChoiceRow("默认列数", s.defaultColumns, (2..6).map { it to "$it 列" }, desc = "已经设置过的文件夹仍用它自己的列数") { u { copy(defaultColumns = it) } }
+    ChoiceRow("格子间距", s.gridSpacing, listOf(0 to "无", 1 to "1 dp(默认)", 2 to "2 dp", 4 to "4 dp", 8 to "8 dp")) { u { copy(gridSpacing = it) } }
+    ChoiceRow(
+        "缩略图清晰度", s.gridThumbWidth, listOf(320 to "标准(省流量)", 480 to "高(默认)", 720 to "很高", 960 to "最高"),
+        desc = "列数少、屏幕大时调高更清晰",
+    ) { u { copy(gridThumbWidth = it) } }
+    SwitchRow("显示视频时长", "视频缩略图上显示时长;关闭后只显示一个播放标记", s.showDuration) { u { copy(showDuration = it) } }
+    Header("聊天流")
+    ChoiceRow("气泡间距", s.chatSpacing, listOf(1 to "紧凑 1 dp", 3 to "标准 3 dp(默认)", 6 to "宽松 6 dp", 12 to "很宽 12 dp")) { u { copy(chatSpacing = it) } }
+    ChoiceRow("气泡宽度", s.bubbleWidth, listOf(60 to "60%", 72 to "72%(默认)", 85 to "85%", 100 to "撑满")) { u { copy(bubbleWidth = it) } }
+    ChoiceRow(
+        "图片清晰度", s.chatImageWidth, listOf(480 to "标准(省流量)", 720 to "高", 960 to "很高(默认)", 1280 to "最高"),
+    ) { u { copy(chatImageWidth = it) } }
     Header("加载")
     SwitchRow("快速滑动时暂停加载缩略图", "滑得很快时先不请求图片,停下后再加载,省流量也更流畅", s.pauseThumbsWhenFast) { u { copy(pauseThumbsWhenFast = it) } }
 }
@@ -171,9 +244,19 @@ private fun VideoPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
     SwitchRow("默认静音", null, s.muted) { u { copy(muted = it) } }
     ChoiceRow("默认倍速", s.speed, listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).map { it to "${it}x" }) { u { copy(speed = it) } }
     SwitchRow("记住播放进度", "下次打开同一个视频从上次的位置继续;看到结尾附近则从头开始", s.resume) { u { copy(resume = it) } }
+    ChoiceRow("续播时回退", s.resumeRewindSec, listOf(0 to "不回退", 3 to "3 秒", 5 to "5 秒", 10 to "10 秒"), desc = "从上次位置继续时先往回几秒,方便接上剧情") { u { copy(resumeRewindSec = it) } }
+    SwitchRow("横向视频自动横屏", "播放宽大于高的视频时自动转横屏,翻到别的页恢复", s.autoLandscape) { u { copy(autoLandscape = it) } }
     Header("手势与小窗")
     SwitchRow("手势控制", "双击左 / 右侧快退 / 快进,双击中间暂停;长按倍速;左半屏上下滑调亮度,右半屏调音量", s.gestures) { u { copy(gestures = it) } }
     SwitchRow("水平滑动快进快退", "视频里左右滑动调整进度(和 VLC 一样);关闭后左右滑动切换上 / 下一项", s.swipeSeek) { u { copy(swipeSeek = it) } }
+    ChoiceRow(
+        "横扫快进范围", s.swipeSpanSec, listOf(30 to "30 秒", 60 to "60 秒", 90 to "90 秒(默认)", 180 to "3 分钟", 300 to "5 分钟"),
+        desc = "手指从屏幕一侧横扫到另一侧对应的快进 / 快退时长,长视频可以调大",
+    ) { u { copy(swipeSpanSec = it) } }
+    ChoiceRow(
+        "亮度 / 音量滑动灵敏度", s.gestureSense, listOf(0.8f to "低", 1.3f to "标准(默认)", 2f to "高", 3f to "很高"),
+        desc = "竖向滑动时调整的快慢",
+    ) { u { copy(gestureSense = it) } }
     ChoiceRow("长按倍速", s.longPressSpeed, listOf(1.5f, 2f, 3f, 4f).map { it to "${it}x" }, desc = "按住画面时临时加速,松手恢复") { u { copy(longPressSpeed = it) } }
     SwitchRow("播放完自动下一个", "视频播放结束后自动翻到下一项", s.autoNext) { u { copy(autoNext = it) } }
     SwitchRow("离开应用时自动小窗", "正在播放时按 Home 键,自动进入画中画小窗", s.autoPip) { u { copy(autoPip = it) } }
@@ -184,6 +267,23 @@ private fun VideoPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
     ChoiceRow("画面缩放", s.resizeMode, listOf("fit" to "适应屏幕(留黑边)", "zoom" to "裁剪填满", "fill" to "拉伸填满")) { u { copy(resizeMode = it) } }
     ChoiceRow("控制条自动隐藏", s.controllerTimeoutSec, listOf(2, 3, 4, 5, 8, 10).map { it to "$it 秒" }) { u { copy(controllerTimeoutSec = it) } }
     SwitchRow("播放时保持屏幕常亮", null, s.keepScreenOn) { u { copy(keepScreenOn = it) } }
+    Header("音频")
+    ChoiceRow(
+        "音量增益", s.volumeBoostMb, listOf(0 to "关闭", 300 to "+3 dB", 600 to "+6 dB", 1000 to "+10 dB", 1500 to "+15 dB"),
+        desc = "视频声音太小时在系统音量之上再放大;过大可能失真。下一次播放生效",
+    ) { u { copy(volumeBoostMb = it) } }
+    SwitchRow("拔掉耳机时暂停", "耳机拔出或蓝牙断开时自动暂停,避免外放", s.pauseOnUnplug) { u { copy(pauseOnUnplug = it) } }
+    Header("字幕样式")
+    ChoiceRow("字幕大小", s.subtitleScale, listOf(0.75f to "小", 1f to "标准(默认)", 1.25f to "大", 1.5f to "很大", 2f to "特大")) { u { copy(subtitleScale = it) } }
+    ChoiceRow(
+        "字幕样式", s.subtitleStyle,
+        listOf("system" to "跟随系统字幕设置(默认)", "outline" to "白字黑描边", "shadow" to "白字阴影", "box" to "白字黑底", "yellow" to "黄字黑描边"),
+    ) { u { copy(subtitleStyle = it) } }
+    ChoiceRow(
+        "字幕位置", s.subtitleBottom, listOf(4 to "靠近底边", 8 to "默认", 14 to "稍高", 22 to "高"),
+        desc = "字幕离画面底部的距离;字幕是否显示、语言在「编解码器 → 音轨与字幕」里选",
+    ) { u { copy(subtitleBottom = it) } }
+    Header("调试")
     SwitchRow("显示技术信息", "在画面角落显示解码器、格式、码率、丢帧数,排查卡顿时有用", s.showStats) { u { copy(showStats = it) } }
 }
 

@@ -13,6 +13,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import com.localtg.ui.AppRoot
 import com.localtg.ui.SearchScreen
 import com.localtg.ui.SettingsScreen
@@ -59,13 +60,26 @@ abstract class TgActivity : ComponentActivity() {
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         val c = container
         applyWindowBackground(c.settings.value.theme)
+        applySecure(c.settings.value.screenSecure)
         setContent {
             val st by c.settings.state.collectAsState()
             LaunchedEffect(st.theme) { applyWindowBackground(st.theme) }
+            LaunchedEffect(st.screenSecure) { applySecure(st.screenSecure) }
+            val base = androidx.compose.ui.platform.LocalDensity.current
+            val density = remember(base, st.fontScale) { androidx.compose.ui.unit.Density(base.density, base.fontScale * st.fontScale) }
             TgTheme(st.theme) {
-                CompositionLocalProvider(LocalSettings provides st) { Content() }
+                CompositionLocalProvider(
+                    LocalSettings provides st,
+                    androidx.compose.ui.platform.LocalDensity provides density,
+                ) { Content() }
             }
         }
+    }
+
+    /** 隐私:禁止截屏 / 录屏,同时最近任务里不显示画面。 */
+    private fun applySecure(on: Boolean) {
+        if (on) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
     }
 
     private fun applyWindowBackground(theme: String) {

@@ -104,8 +104,26 @@ class ViewerUi {
     var locked by mutableStateOf(false)
     /** 0 = 跟随系统,1 = 横屏,2 = 竖屏 */
     var orientation by mutableIntStateOf(0)
+    /** 当前的横屏是"横向视频自动转横屏"设置触发的(翻页时要恢复) */
+    var autoRotated = false
     /** 睡眠定时:0 = 未设置,-1 = 当前视频播完后停止,>0 = elapsedRealtime 到点停止 */
     var sleepAt by mutableLongStateOf(0L)
+}
+
+/** 按设置给字幕上样式:大小、描边 / 阴影 / 黑底、离底部的距离。 */
+private fun styleSubtitles(v: PlayerView, cfg: com.localtg.data.AppSettings) {
+    val sv = v.subtitleView ?: return
+    if (cfg.subtitleScale == 1f) sv.setUserDefaultTextSize() else sv.setFractionalTextSize(androidx.media3.ui.SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * cfg.subtitleScale)
+    val white = android.graphics.Color.WHITE
+    val clear = android.graphics.Color.TRANSPARENT
+    when (cfg.subtitleStyle) {
+        "outline" -> sv.setStyle(androidx.media3.ui.CaptionStyleCompat(white, clear, clear, androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE, android.graphics.Color.BLACK, null))
+        "shadow" -> sv.setStyle(androidx.media3.ui.CaptionStyleCompat(white, clear, clear, androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW, android.graphics.Color.BLACK, null))
+        "box" -> sv.setStyle(androidx.media3.ui.CaptionStyleCompat(white, 0xB0000000.toInt(), clear, androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_NONE, white, null))
+        "yellow" -> sv.setStyle(androidx.media3.ui.CaptionStyleCompat(0xFFFFE600.toInt(), clear, clear, androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE, android.graphics.Color.BLACK, null))
+        else -> sv.setUserDefaultStyle()
+    }
+    sv.setBottomPaddingFraction(cfg.subtitleBottom / 100f)
 }
 
 internal fun Context.findActivity(): Activity? {
@@ -208,9 +226,21 @@ fun VideoPage(
 
     DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, transcodeHeight, blocked, resumeMs >= 0) {
         var p: ExoPlayer? = null
+        val loudness = arrayOfNulls<android.media.audiofx.LoudnessEnhancer>(1)
         if (isCurrent && resumeMs >= 0 && !blocked) {
             val pl = createPlayer(ctx, c, c.settings.value, useSoftware, modeOverride)
             p = pl
+            pl.addListener(object : Player.Listener {
+                // 音量增益:挂在播放器的音频会话上
+                override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                    val mb = c.settings.value.volumeBoostMb
+                    runCatching { loudness[0]?.release() }
+                    loudness[0] = null
+                    if (mb > 0 && audioSessionId != C.AUDIO_SESSION_ID_UNSET) runCatching {
+                        loudness[0] = android.media.audiofx.LoudnessEnhancer(audioSessionId).apply { setTargetGain(mb); enabled = true }
+                    }.onFailure { AppLog.w("player", "音量增益不可用: ${it.message}") }
+                }
+            })
             pl.playbackParameters = pl.playbackParameters.withSpeed(speed)
             pl.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             pl.addListener(object : Player.Listener {
@@ -227,6 +257,7 @@ fun VideoPage(
                 }
                 override fun onVideoSizeChanged(v: androidx.media3.common.VideoSize) {
                     if (v.height > 0) c.videoAspect = v.width * v.pixelWidthHeightRatio / v.height
+                    if (c.settings.value.autoLandscape && v.width > v.height && ui.orientation == 0) { ui.orientation = 1; ui.autoRotated = true }
                 }
                 override fun onPlayerError(e: PlaybackException) {
                     AppLog.e("player", "播放错误 ${e.errorCodeName} item=${item.name} 软解重试=$useSoftware", e)
@@ -279,13 +310,14 @@ fun VideoPage(
             } else {
                 pl.setMediaItem(MediaItem.fromUri(c.api.fileUrl(item)))
             }
-            if (resumeMs > 0) pl.seekTo(resumeMs)
+            if (resumeMs > 0) pl.seekTo((resumeMs - c.settings.value.resumeRewindSec * 1000L).coerceAtLeast(0L))
             pl.prepare()
             pl.playWhenReady = c.settings.value.autoplay
             player = pl
             AppLog.i("player", "播放 ${item.name} (${item.ext}, ${item.w}x${item.h}) 从 ${resumeMs}ms")
         }
         onDispose {
+            runCatching { loudness[0]?.release() }
             p?.let { pl ->
                 // 保存进度:播放不足 5 秒或快播完时视为没看,清除记录
                 val pos = pl.currentPosition
@@ -437,7 +469,7 @@ fun VideoPage(
             // 字幕:PlayerView(不带画面表面)只负责画字幕
             AndroidView(
                 factory = { ctx2 -> android.view.LayoutInflater.from(ctx2).inflate(com.localtg.R.layout.player_subtitles, null) as PlayerView },
-                update = { it.player = p },
+                update = { it.player = p; styleSubtitles(it, cfg) },
                 modifier = Modifier.fillMaxSize(),
             )
           } else {
@@ -449,6 +481,7 @@ fun VideoPage(
                 update = {
                     it.videoSurfaceView?.visibility = if (snap != null) android.view.View.INVISIBLE else android.view.View.VISIBLE
                     it.player = p
+                    styleSubtitles(it, cfg)
                     it.keepScreenOn = cfg.keepScreenOn
                     it.resizeMode = when (resize) {
                         "fill" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
@@ -521,7 +554,7 @@ fun VideoPage(
                         },
                     )
                 }
-                .pointerInput(gestures, cfg.swipeSeek) {
+                .pointerInput(gestures, cfg.swipeSeek, cfg.swipeSpanSec, cfg.gestureSense) {
                     if (!gestures) return@pointerInput
                     // VLC:左半屏上下 = 亮度,右半屏上下 = 音量,水平滑动 = 快进快退
                     var axis = 0 // 0 未定,1 水平,2 垂直
@@ -539,7 +572,7 @@ fun VideoPage(
                         onDragEnd = {
                             if (axis == 1 && cfg.swipeSeek) pl?.let { p ->
                                 val dur = p.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
-                                p.seekTo((startPos + (dx / size.width * 90_000f).toLong()).coerceIn(0, dur))
+                                p.seekTo((startPos + (dx / size.width * cfg.swipeSpanSec * 1000f).toLong()).coerceIn(0, dur))
                             }
                             hud = null; axis = 0
                         },
@@ -555,14 +588,14 @@ fun VideoPage(
                             if (cfg.swipeSeek) {
                                 dx += d.x
                                 val dur = pl?.duration ?: 0L
-                                val target = (startPos + (dx / size.width * 90_000f).toLong()).coerceIn(0, if (dur > 0) dur else Long.MAX_VALUE)
+                                val target = (startPos + (dx / size.width * cfg.swipeSpanSec * 1000f).toLong()).coerceIn(0, if (dur > 0) dur else Long.MAX_VALUE)
                                 val delta = target - startPos
                                 showHud(Hud(null, (if (delta >= 0) "+" else "−") + fmt(abs(delta)) + "   " + fmt(target) + " / " + fmt(dur)))
                                 hudTick = Int.MAX_VALUE / 2 - 1
                             }
                         } else {
                             acc -= d.y
-                            val v = (startVal + acc / size.height * 1.3f).coerceIn(0f, 1f)
+                            val v = (startVal + acc / size.height * cfg.gestureSense).coerceIn(0f, 1f)
                             if (left) {
                                 act?.window?.let { w -> w.attributes = w.attributes.also { it.screenBrightness = v.coerceAtLeast(0.01f) } }
                                 showHud(Hud(TgIcons.Brightness, "亮度 ${(v * 100).roundToInt()}%", v))
@@ -709,6 +742,7 @@ fun VideoPage(
                         Row {
                             CtrlIcon(TgIcons.Rotate, "屏幕方向") {
                                 ui.orientation = (ui.orientation + 1) % 3
+                                ui.autoRotated = false
                                 showHud(Hud(TgIcons.Rotate, listOf("方向:自动", "方向:横屏", "方向:竖屏")[ui.orientation]))
                             }
                             CtrlIcon(TgIcons.AspectRatio, "画面比例") {

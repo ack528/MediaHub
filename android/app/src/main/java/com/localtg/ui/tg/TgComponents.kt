@@ -65,12 +65,14 @@ fun Last.toItem(dialogId: String) = Item(
 @Composable
 fun TgAvatar(title: String, key: String, size: Dp, cover: Item?, api: Api) {
     val color = Color(avatarColors[(key.hashCode() and 0x7fffffff) % avatarColors.size])
-    Box(Modifier.size(size).clip(RoundedCornerShape(size * 0.18f)).background(color), contentAlignment = Alignment.Center) {
+    val cfg = com.localtg.ui.tg.LocalSettings.current
+    val shape = when (cfg.avatarShape) { "circle" -> CircleShape; "square" -> androidx.compose.ui.graphics.RectangleShape; else -> RoundedCornerShape(size * 0.18f) }
+    Box(Modifier.size(size).clip(shape).background(color), contentAlignment = Alignment.Center) {
         Text(
             title.trim().firstOrNull()?.uppercase() ?: "#", color = Color.White,
             fontSize = (size.value * 0.42f).sp, fontWeight = FontWeight.Medium,
         )
-        if (cover != null && cover.canShowNatively()) {
+        if (cfg.avatarCover && cover != null && cover.canShowNatively()) {
             val url = if (cover.isVideo) api.posterUrl(cover.id) else api.imageUrl(cover, 480)
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current).data(url).build(),

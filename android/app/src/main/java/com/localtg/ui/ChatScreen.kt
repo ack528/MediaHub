@@ -187,6 +187,14 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
         AppLog.i("chat", "打开 dialog=$dialogId rememberPosition=${st.rememberPosition}")
         columns.value = st.defaultColumns.coerceIn(2, 6)
         ascChat.value = st.newestAtBottom
+        // 设置里的默认排序 / 方向(各文件夹记住的视图优先)
+        if (st.defaultSort != "auto") sortKey.value = st.defaultSort
+        ascGrid.value = sortKey.value == "name" || sortKey.value == "type"
+        when (st.defaultSortDir) {
+            "asc" -> { ascChat.value = true; ascGrid.value = true }
+            "desc" -> { ascChat.value = false; ascGrid.value = false }
+        }
+        if (c.isLocal && st.defaultSort == "auto" && st.defaultSortDir == "auto") ascGrid.value = false
         viewModelScope.launch {
             (if (st.rememberPosition) c.viewState.load(dialogId) else null)?.let { v ->
                 sortKey.value = v.sort; ascChat.value = v.ascChat; ascGrid.value = v.ascGrid
@@ -498,12 +506,12 @@ private fun ChatFeed(
     val cfg = LocalSettings.current
     BoxWithConstraints(Modifier.fillMaxSize()) {
         // 媒体气泡最大宽度约为屏幕的 72%(Telegram 约 0.7)
-        val maxW = maxWidth * 0.72f
+        val maxW = maxWidth * (LocalSettings.current.bubbleWidth / 100f)
         val maxH = maxWidth * 0.95f
         val endReached = items.loadState.append.endOfPaginationReached
         LazyColumn(
             state = state, reverseLayout = true, modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp),
+            contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(LocalSettings.current.chatSpacing.dp),
         ) {
             items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
                 val item = items[index] ?: return@items
@@ -572,7 +580,7 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
     var h = w / aspect
     if (h > maxH) { h = maxH; w = h * aspect }
     Box(Modifier.padding(start = 8.dp).width(w).height(h).mediaShared(item.id, shape).clip(shape).background(Color(0x33808080)).clickable(onClick = onClick)) {
-        val url = if (item.isVideo) api.posterUrl(item) else api.imageUrl(item, 960)
+        val url = if (item.isVideo) api.posterUrl(item) else api.imageUrl(item, LocalSettings.current.chatImageWidth)
         var failed by remember(item.id) { mutableStateOf(false) }
         LaunchedEffect(loadEnabled) { if (loadEnabled) failed = false } // 快速滑动时被暂停的请求不算失败
         if (item.brokenLabel() != null) {
@@ -596,7 +604,7 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
             Box(Modifier.align(Alignment.Center).size(48.dp).clip(CircleShape).background(Color(0x80000000)), contentAlignment = Alignment.Center) {
                 Icon(TgIcons.Play, null, tint = Color.White, modifier = Modifier.size(28.dp))
             }
-            formatDuration(item.durationMs).takeIf { it.isNotEmpty() }?.let { Pill(it, Modifier.align(Alignment.TopStart).padding(6.dp), sizeSp = 12) }
+            formatDuration(item.durationMs).takeIf { it.isNotEmpty() && LocalSettings.current.showDuration }?.let { Pill(it, Modifier.align(Alignment.TopStart).padding(6.dp), sizeSp = 12) }
         }
     }
 }
@@ -630,7 +638,7 @@ private fun MediaGrid(
     Box(Modifier.fillMaxSize()) {
     LazyVerticalGrid(
         state = state, columns = GridCells.Fixed(columns), modifier = Modifier.fillMaxSize(),
-        horizontalArrangement = Arrangement.spacedBy(1.dp), verticalArrangement = Arrangement.spacedBy(1.dp),
+        horizontalArrangement = Arrangement.spacedBy(LocalSettings.current.gridSpacing.dp), verticalArrangement = Arrangement.spacedBy(LocalSettings.current.gridSpacing.dp),
     ) {
         items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
             val item = items[index]

@@ -96,7 +96,7 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
         } else {
             var failed by androidx.compose.runtime.remember(item.id) { androidx.compose.runtime.mutableStateOf(false) }
             androidx.compose.runtime.LaunchedEffect(loadEnabled) { if (loadEnabled) failed = false } // 快速滑动时被暂停的请求不算失败
-            val url = if (item.isVideo) api.posterUrl(item) else api.imageUrl(item, 480)
+            val url = if (item.isVideo) api.posterUrl(item) else api.imageUrl(item, com.localtg.ui.tg.LocalSettings.current.gridThumbWidth)
             val req = ImageRequest.Builder(LocalContext.current)
                 .data(url)
                 .networkCachePolicy(if (loadEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED)
@@ -118,7 +118,7 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
             Box(
                 Modifier.align(Alignment.BottomStart).padding(4.dp).clip(RoundedCornerShape(4.dp))
                     .background(Color(0x99000000)).padding(horizontal = 4.dp, vertical = 1.dp),
-            ) { Text("▶ " + formatDuration(item.durationMs), color = Color.White, fontSize = 11.sp) }
+            ) { Text(if (com.localtg.ui.tg.LocalSettings.current.showDuration) "▶ " + formatDuration(item.durationMs) else "▶", color = Color.White, fontSize = 11.sp) }
         }
     }
 }

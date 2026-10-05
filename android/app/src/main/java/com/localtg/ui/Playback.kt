@@ -69,7 +69,7 @@ fun createPlayer(ctx: Context, c: AppContainer, s: AppSettings, forceSoftware: B
         .setSeekBackIncrementMs(s.seekBackSec * 1000L)
         .setSeekForwardIncrementMs(s.seekForwardSec * 1000L)
         .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
-        .setHandleAudioBecomingNoisy(true)
+        .setHandleAudioBecomingNoisy(s.pauseOnUnplug)
         .build()
     player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().apply {
         if (s.maxHeight > 0) setMaxVideoSize(Int.MAX_VALUE, s.maxHeight)

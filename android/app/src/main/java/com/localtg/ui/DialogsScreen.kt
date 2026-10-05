@@ -113,7 +113,17 @@ fun DialogsScreen(
     // 盘符 = Telegram 的聊天分组标签
     val labels = remember(all) { all.map { it.rootLabel }.distinct().sorted() }
     var tab by remember { mutableIntStateOf(0) } // 0 = 全部
-    val shown = if (tab == 0 || tab > labels.size) all else all.filter { it.rootLabel == labels[tab - 1] }
+    val st = com.localtg.ui.tg.LocalSettings.current
+    val inTab = if (tab == 0 || tab > labels.size) all else all.filter { it.rootLabel == labels[tab - 1] }
+    val shown = remember(inTab, st.dialogSort, st.dialogMinCount) {
+        val f = if (st.dialogMinCount > 0) inTab.filter { it.mediaCount >= st.dialogMinCount } else inTab
+        when (st.dialogSort) {
+            "name" -> f.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
+            "path" -> f.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.pathDisplay })
+            "count" -> f.sortedByDescending { it.mediaCount }
+            else -> f
+        }
+    }
 
     fun go(f: () -> Unit) { scope.launch { drawer.close(); f() } }
     ModalNavigationDrawer(
@@ -253,7 +263,12 @@ private fun DialogRow(d: Dialog, c: AppContainer, onClick: () -> Unit) {
             }
             Row(Modifier.padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                 val last = d.last
-                if (last != null) {
+                val sub = com.localtg.ui.tg.LocalSettings.current.dialogSubtitle
+                if (sub == "path") {
+                    Text(d.pathDisplay, Modifier.weight(1f), color = tg.message, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                } else if (sub == "none") {
+                    Box(Modifier.weight(1f))
+                } else if (last != null) {
                     val kind = when (last.type) { "video" -> "视频"; "gif" -> "GIF"; "audio" -> "音频"; else -> "照片" }
                     Text(
                         buildAnnotatedString {

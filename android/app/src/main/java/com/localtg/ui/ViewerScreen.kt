@@ -75,6 +75,8 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
             act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
+    // 横屏视频自动转横屏:翻到别的页时恢复
+    LaunchedEffect(cur.id) { if (ui.autoRotated) { ui.autoRotated = false; ui.orientation = 0 } }
     // 屏幕方向(0 自动 / 1 横屏 / 2 竖屏)
     DisposableEffect(ui.orientation) {
         act?.requestedOrientation = when (ui.orientation) {
@@ -90,7 +92,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(
-            pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1, key = { items[it].id },
+            pager, Modifier.fillMaxSize(), beyondViewportPageCount = cfg.viewerPreload, key = { items[it].id },
             userScrollEnabled = !ui.locked && !videoSwipeSeek,
         ) { page ->
             val item = items[page]
@@ -141,9 +143,13 @@ private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean
         }
         return
     }
+    val cfg = LocalSettings.current
     ZoomableAsyncImage(
-        model = ImageRequest.Builder(LocalContext.current).data(c.api.imageUrl(item, 2880)).build(),
+        model = ImageRequest.Builder(LocalContext.current).data(c.api.imageUrl(item, cfg.viewerImageWidth)).build(),
         contentDescription = item.name,
+        state = me.saket.telephoto.zoomable.rememberZoomableImageState(
+            me.saket.telephoto.zoomable.rememberZoomableState(zoomSpec = me.saket.telephoto.zoomable.ZoomSpec(maxZoomFactor = cfg.maxZoom)),
+        ),
         modifier = Modifier.fillMaxSize().then(if (shared) Modifier.mediaShared(item.id, RectangleShape) else Modifier),
         onClick = { ui.chrome = !ui.chrome },
     )
