@@ -110,6 +110,9 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     }
 
     // ---- 登录后 ----
+    /** 单个文件夹(群)的信息:标题、数量、封面。 */
+    suspend fun dialog(id: String): Dialog = call(Request.Builder().url("$base/api/v1/dialogs/$id").build())
+
     suspend fun dialogs(group: String = "all", sort: String = "last", cursor: String? = null, limit: Int = 100): DialogsResp {
         val url = "$base/api/v1/dialogs".toHttpUrl().newBuilder()
             .addQueryParameter("group", group).addQueryParameter("sort", sort).addQueryParameter("limit", limit.toString())

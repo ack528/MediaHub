@@ -85,6 +85,7 @@ class DialogsViewModel(private val c: AppContainer) : ViewModel() {
                     val r = c.api.dialogs(cursor = cursor, limit = 100)
                     all += r.dialogs
                     dialogs.value = all.toList() // 每取到一页就更新,列表渐进出现
+                    c.dialogCache = c.dialogCache + r.dialogs.associateBy { it.id } // 缓存也同步更新:加载没完就点进去,标题也要能取到
                     cursor = r.nextCursor
                 } while (cursor != null)
             }.onFailure { error.value = friendlyError(it) }

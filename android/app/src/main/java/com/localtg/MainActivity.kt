@@ -118,13 +118,15 @@ class ChatActivity : TgActivity() {
         val id = intent.getStringExtra(EXTRA_ID)
         if (id == null) { LaunchedEffect(Unit) { finish() }; return }
         ViewerNavHost(container) { openViewer ->
-            ChatScreen(container, dialogId = id, onBack = { finish() }, onOpenViewer = openViewer)
+            ChatScreen(container, dialogId = id, titleHint = intent.getStringExtra(EXTRA_TITLE), onBack = { finish() }, onOpenViewer = openViewer)
         }
     }
 
     companion object {
         private const val EXTRA_ID = "id"
-        fun start(ctx: Context, dialogId: String) = ctx.startActivity(Intent(ctx, ChatActivity::class.java).putExtra(EXTRA_ID, dialogId))
+        private const val EXTRA_TITLE = "title"
+        fun start(ctx: Context, dialogId: String, title: String? = null) =
+            ctx.startActivity(Intent(ctx, ChatActivity::class.java).putExtra(EXTRA_ID, dialogId).putExtra(EXTRA_TITLE, title))
     }
 }
 

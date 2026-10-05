@@ -110,7 +110,7 @@ fun AppRoot(c: AppContainer) {
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                 DialogsScreen(
                     c,
-                    onOpen = { ChatActivity.start(ctx, it.id) },
+                    onOpen = { ChatActivity.start(ctx, it.id, it.title) },
                     onSettings = { SettingsActivity.start(ctx, null) },
                     onSearch = { SearchActivity.start(ctx) },
                     onSection = { SettingsActivity.start(ctx, it) },

@@ -324,7 +324,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(c: AppContainer, dialogId: String, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
+fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
     val vm: ChatViewModel = viewModel(key = "chat-$dialogId", factory = viewModelFactory { initializer { ChatViewModel(c, dialogId) } })
     val lazyItems = vm.items.collectAsLazyPagingItems()
     val tg = LocalTg.current
@@ -342,7 +342,11 @@ fun ChatScreen(c: AppContainer, dialogId: String, onBack: () -> Unit, onOpenView
     var datePicker by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
-    val dialog = c.dialogCache[dialogId]
+    // 群信息:先取列表缓存;缓存里没有(列表还没加载完 / 进程重启后直接回到这里)就单独向服务器取一次,标题先用点开时带来的
+    var dialog by remember(dialogId) { mutableStateOf(c.dialogCache[dialogId]) }
+    LaunchedEffect(dialogId) {
+        if (dialog == null) dialog = c.dialogCache[dialogId] ?: runCatching { c.api.dialog(dialogId) }.getOrNull()
+    }
     // 本次 Pager 对应的要恢复的位置(恢复完成后 VM 会清空锚点)
     val restoreId = remember(gen) { vm.anchorId }
     val restoreOffset = remember(gen) { vm.anchorOffset }
@@ -359,9 +363,9 @@ fun ChatScreen(c: AppContainer, dialogId: String, onBack: () -> Unit, onOpenView
         TgBar {
             Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
                 BarIcon(TgIcons.Back, "返回", onBack)
-                TgAvatar(dialog?.title ?: "#", dialogId, 40.dp, dialog?.last?.toItem(dialogId), c.api)
+                TgAvatar(dialog?.title ?: titleHint ?: "#", dialogId, 40.dp, dialog?.last?.toItem(dialogId), c.api)
                 Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                    Text(dialog?.title ?: "文件夹", color = tg.barText, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(dialog?.title ?: titleHint ?: "文件夹", color = tg.barText, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val sub = dialog?.counts?.let { k ->
                         listOfNotNull(
                             k.photo.takeIf { it > 0 }?.let { "$it 张照片" },
