@@ -1,4 +1,4 @@
-# 录屏 + 抽帧,检查返回动画。先让手机停在要测试的页面,再运行:
+﻿# 录屏 + 抽帧,检查返回动画。先让手机停在要测试的页面,再运行:
 #   powershell -File testdata\scripts\rec-back.ps1 -Mode swipe|button|cancel -Name back1 [-Fps 12]
 # swipe  = 从左边缘慢拖到约 60% 宽度后松手(预测性返回,会提交)
 # cancel = 从左边缘拖到约 25% 宽度,停一下再拖回去松手(取消)

@@ -33,6 +33,10 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.foundation.background
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
@@ -186,6 +190,18 @@ private fun CrashNotice() {
 @Composable
 private fun NavScreen(scope: AnimatedVisibilityScope, bg: Color? = null, content: @Composable () -> Unit) {
     CompositionLocalProvider(LocalNavScope provides scope) {
-        Box(Modifier.fillMaxSize().background(bg ?: MaterialTheme.colorScheme.background)) { content() }
+        Box(
+            Modifier.fillMaxSize()
+                .drawWithContent {
+                    drawContent()
+                    // 左边缘的投影(Telegram / iOS 的做法):上层页面滑动时和下层页面之间有层次;画在页面范围之外,不动时看不见
+                    val w = 14.dp.toPx()
+                    drawRect(
+                        Brush.horizontalGradient(listOf(Color.Transparent, Color(0x2E000000)), startX = -w, endX = 0f),
+                        topLeft = Offset(-w, 0f), size = Size(w, size.height),
+                    )
+                }
+                .background(bg ?: MaterialTheme.colorScheme.background),
+        ) { content() }
     }
 }

@@ -79,7 +79,7 @@ const delay = <T,>(v: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(v
 
 const mockBridge: Bridge = {
   isMock: true,
-  env: () => delay({ root: "D:\\Project\\Claude\\本地浏览", serverExe: "D:\\Project\\Claude\\本地浏览\\runtime\\bin\\mediahub.exe", serverExists: true, appVersion: "1.0.0", configPath: "D:\\Project\\Claude\\本地浏览\\runtime\\mediahub\\config.json", configExists: true }),
+  env: () => delay({ root: "D:\\Project\\Claude\\本地浏览", serverExe: "D:\\Project\\Claude\\本地浏览\\runtime\\bin\\mediahub.exe", serverExists: true, appVersion: "1.1.0", configPath: "D:\\Project\\Claude\\本地浏览\\runtime\\mediahub\\config.json", configExists: true }),
   readConfig: () => delay(mock.config),
   writeConfig: async (cfg) => { mock.config = cfg; save(); },
   localIps: () => delay([{ name: "以太网", ip: "192.168.1.20", private: true }, { name: "WLAN", ip: "192.168.1.31", private: true }]),
@@ -88,9 +88,9 @@ const mockBridge: Bridge = {
     const up = Math.floor((Date.now() - mock.startedAt) / 1000);
     return {
       running: true, pids: [4321],
-      info: { name: "MediaHub", version: "1.0.0", apiVersion: 1, transcode: true, tls: { enabled: true, fingerprint: "3A:9F:0C:5B:E2:71:44:AD:18:C6:20:9B:7E:D3:55:F1:0A:B8:62:CE:91:47:2D:E0:86:1B:F3:A9:5C:70:D4:28" } },
+      info: { name: "MediaHub", version: "1.1.0", apiVersion: 1, transcode: true, tls: { enabled: true, fingerprint: "3A:9F:0C:5B:E2:71:44:AD:18:C6:20:9B:7E:D3:55:F1:0A:B8:62:CE:91:47:2D:E0:86:1B:F3:A9:5C:70:D4:28" } },
       status: {
-        version: "1.0.0", listen: "0.0.0.0:8480", startedAt: new Date(mock.startedAt).toISOString(), uptimeSec: up,
+        version: "1.1.0", listen: "0.0.0.0:8480", startedAt: new Date(mock.startedAt).toISOString(), uptimeSec: up,
         media: 2_184_330, dialogs: 41_902,
         index: [
           { rootId: 1, label: "D:", state: "idle", dirs: 18234, files: 612044, enriched: 612044, errors: 0 },

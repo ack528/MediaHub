@@ -1,4 +1,4 @@
-# 检查 QSV / libx264 编码时,强制关键帧是否让分段严格按 4 秒切分(内置转码依赖这一点)。
+﻿# 检查 QSV / libx264 编码时,强制关键帧是否让分段严格按 4 秒切分(内置转码依赖这一点)。
 #   powershell -File testdata\scripts\qsv-seg-test.ps1 [-Enc h264_qsv|libx264] [-Extra "-g 96"]
 param([string]$Enc = 'h264_qsv', [string]$Extra = '-g 96 -bf 2', [string]$Pix = 'nv12')
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)

@@ -68,6 +68,12 @@ data class AppSettings(
     val audioLanguage: String = "",            // "" = 跟随系统
     val showSubtitles: Boolean = false,
     val subtitleLanguage: String = "",
+    // ---- 画质增强(实验):用自己的 OpenGL 渲染器显示视频,可实时超分 / 补帧 / SDR→HDR
+    val enhUpscale: String = "off",            // off / fsr(通用)/ anime4k_s(动漫,较快)/ anime4k_m(动漫,画质更好)
+    val enhFrc: String = "off",                // off / blend(帧混合)/ mc(运动补偿)
+    val enhHdr: String = "off",                // off / auto(显示器支持 HDR 才启用)/ on
+    val enhPeak: Int = 600,                    // SDR→HDR 的高光峰值亮度(nit)
+    val enhMaxH: Int = 900,                    // 视频高度超过这个值不做超分
     // ---- 日志
     val logLevel: String = "info",             // off / warn / info / debug
     // ---- 网络(重启生效)

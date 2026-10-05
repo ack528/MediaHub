@@ -59,6 +59,7 @@ private val SECTIONS = listOf(
     Triple("image", "图片", "缓存大小、位图、过渡动画"),
     Triple("video", "视频播放", "自动播放、循环、倍速、进度记忆"),
     Triple("codec", "编解码器", "硬解 / 软解、缓冲、分辨率、音轨字幕"),
+    Triple("enhance", "画质增强(实验)", "实时超分、补帧、SDR 转 HDR"),
     Triple("network", "网络", "连接与读取超时"),
     Triple("storage", "存储与缓存", "清理缓存、记录,恢复默认设置"),
     Triple("account", "服务器与账号", "当前服务器、退出登录"),
@@ -97,6 +98,7 @@ fun SettingsScreen(c: AppContainer, section: String?, onBack: () -> Unit, onOpen
                     "image" -> ImagePage(s, update)
                     "video" -> VideoPage(s, update)
                     "codec" -> CodecPage(s, update, onOpenCodecs = { onOpen("codecs-info") })
+                    "enhance" -> EnhancePage(s, update)
                     "network" -> NetworkPage(s, update)
                     "storage" -> StoragePage(c)
                     "account" -> AccountPage(c)
@@ -183,6 +185,40 @@ private fun VideoPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
     ChoiceRow("控制条自动隐藏", s.controllerTimeoutSec, listOf(2, 3, 4, 5, 8, 10).map { it to "$it 秒" }) { u { copy(controllerTimeoutSec = it) } }
     SwitchRow("播放时保持屏幕常亮", null, s.keepScreenOn) { u { copy(keepScreenOn = it) } }
     SwitchRow("显示技术信息", "在画面角落显示解码器、格式、码率、丢帧数,排查卡顿时有用", s.showStats) { u { copy(showStats = it) } }
+}
+
+@Composable
+private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
+    Text(
+        "开启任意一项后,视频改由本应用自己的 OpenGL 渲染器显示(普通播放不受影响)。全部在手机 GPU 上实时处理," +
+            "耗电和发热会增加;处理跟不上时会自动停用超分。HDR 视频本身不处理。播放时在「更多 → 画质增强」里也能快速切换。",
+        fontSize = 13.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+    )
+    Header("实时超分")
+    ChoiceRow(
+        "超分算法", s.enhUpscale,
+        listOf("off" to "关闭", "fsr" to "FSR 1.0(通用,很快)", "anime4k_s" to "Anime4K 小模型(动漫,较快)", "anime4k_m" to "Anime4K 中模型(动漫,画质更好)"),
+        desc = "FSR:AMD 的边缘自适应放大 + 锐化,适合真人 / 影视;Anime4K:卷积神经网络,线条更干净,适合动画。视频已经比屏幕大时不处理",
+    ) { u { copy(enhUpscale = it) } }
+    ChoiceRow(
+        "只对低于此分辨率的视频超分", s.enhMaxH, listOf(540 to "540p", 720 to "720p", 900 to "900p", 1080 to "1080p"),
+        desc = "高分辨率视频超分计算量很大;超过这个高度的视频直接显示",
+    ) { u { copy(enhMaxH = it) } }
+    Header("补帧")
+    ChoiceRow(
+        "补帧方式", s.enhFrc, listOf("off" to "关闭", "blend" to "帧混合(省电,轻微拖影)", "mc" to "运动补偿(更流畅,实验)"),
+        desc = "把 24 / 30 帧视频补到屏幕刷新率(60 / 120 Hz),画面更顺滑(类似电视的“流畅运动”)。运动补偿用 GPU 块匹配估计运动;快速运动和遮挡处可能有瑕疵",
+    ) { u { copy(enhFrc = it) } }
+    Header("SDR 转 HDR")
+    ChoiceRow(
+        "SDR→HDR", s.enhHdr, listOf("off" to "关闭", "auto" to "自动(屏幕支持 HDR 时开启)", "on" to "总是开启"),
+        desc = "把普通视频的高光扩展到 HDR 亮度,输出 BT.2020 PQ。需要支持 HDR 的屏幕;阴影和中间调保持不变,大面积亮区会自动少扩展",
+    ) { u { copy(enhHdr = it) } }
+    ChoiceRow(
+        "HDR 峰值亮度", s.enhPeak, listOf(400 to "400 nit(保守)", 600 to "600 nit", 800 to "800 nit", 1000 to "1000 nit(明显)"),
+        desc = "高光最亮扩展到多少。OLED 手机的峰值一般在 1000–2000 nit;过高会显得刺眼",
+    ) { u { copy(enhPeak = it) } }
 }
 
 @Composable

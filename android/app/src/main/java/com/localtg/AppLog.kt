@@ -52,6 +52,8 @@ object AppLog {
         level = LEVELS.firstOrNull { it.first == name }?.second ?: INFO
     }
 
+    /** 日志级别设为调试时才为 true;渲染器据此决定是否做耗时的调试读回(运动场 / 插帧探针)。 */
+    fun isDebug() = level >= DEBUG
     fun d(tag: String, msg: String) = log(DEBUG, 'D', tag, msg, null)
     fun i(tag: String, msg: String) = log(INFO, 'I', tag, msg, null)
     fun w(tag: String, msg: String, t: Throwable? = null) = log(WARN, 'W', tag, msg, t)

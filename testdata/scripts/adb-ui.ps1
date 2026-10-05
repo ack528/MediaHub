@@ -1,4 +1,4 @@
-# adb 界面自动化小工具(点 / 输入都先用 uiautomator 找控件坐标,避免键盘弹出后布局移位点偏)。
+﻿# adb 界面自动化小工具(点 / 输入都先用 uiautomator 找控件坐标,避免键盘弹出后布局移位点偏)。
 #   . .\testdata\scripts\adb-ui.ps1
 $script:Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $script:adb = Join-Path $script:Root 'tools\android-sdk\platform-tools\adb.exe'
@@ -29,4 +29,10 @@ function Set-Field([int]$index, [string]$value) {
 function Shot([string]$name) {
   & $script:adb shell screencap -p /sdcard/s.png
   & $script:adb pull /sdcard/s.png (Join-Path $script:Root "testdata\screens\$name.png") | Out-Null
+}
+
+function Tap-Like([string]$part) {
+  $n = Get-Nodes | Where-Object { $_.text -like "*$part*" } | Select-Object -First 1
+  if (-not $n) { throw "找不到包含该文字的控件: $part" }
+  $c = Get-Center $n; & $script:adb shell input tap $c[0] $c[1]
 }

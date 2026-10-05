@@ -8,6 +8,8 @@ import android.media.AudioManager
 import android.provider.Settings
 import android.util.Rational
 import android.widget.Toast
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -176,6 +178,8 @@ fun VideoPage(
     val sid = remember(item.id) { java.util.UUID.randomUUID().toString().take(8) }
     var resumeMs by remember(item.id) { mutableLongStateOf(-1L) }        // -1 = 还没读取保存的进度
     var stats by remember { mutableStateOf("") }
+    var enhStats by remember { mutableStateOf("") }
+    var enhView by remember { mutableStateOf<com.localtg.render.EnhancedVideoView?>(null) }
     val decoderName = remember { arrayOf("") }
     val dropped = remember { longArrayOf(0) }
 
@@ -342,6 +346,11 @@ fun VideoPage(
         }
     }
 
+    // 增强渲染的实时信息(输出帧率 / 处理耗时 / 是否已因性能停用超分)
+    LaunchedEffect(enhView, cfg.showStats) {
+        while (true) { enhStats = if (cfg.showStats) enhView?.stats.orEmpty() else ""; delay(1000) }
+    }
+
     // 画中画:更新自动小窗所需信息
     LaunchedEffect(isCurrent) { if (!isCurrent) c.videoPlaying = false }
 
@@ -380,11 +389,65 @@ fun VideoPage(
     }
 
     val showControls = ui.chrome && !inPip
+    // ---- 退出动画:SurfaceView 不会跟着页面一起缩放 / 淡出(它在窗口后面"挖洞"显示),
+    // 所以页面开始退出(返回手势一开始 / 点返回)时,把当前画面截成一张位图盖在上面,再把 SurfaceView 藏起来,
+    // 缩放和淡出就作用在这张位图上,效果和别的页面一致。手势取消时恢复。
+    val navScope = com.localtg.ui.LocalNavScope.current
+    val exiting = navScope?.transition?.targetState == androidx.compose.animation.EnterExitState.PostExit
+    var snap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var snapRect by remember { mutableStateOf(android.graphics.Rect()) }
+    var surfaceView by remember { mutableStateOf<android.view.SurfaceView?>(null) }
+    LaunchedEffect(exiting) {
+        if (!exiting) { snap = null; return@LaunchedEffect }
+        val sv = surfaceView ?: return@LaunchedEffect
+        if (snap != null || sv.width <= 0 || sv.height <= 0 || !sv.holder.surface.isValid) return@LaunchedEffect
+        val bmp = android.graphics.Bitmap.createBitmap(maxOf(sv.width / 2, 1), maxOf(sv.height / 2, 1), android.graphics.Bitmap.Config.ARGB_8888)
+        val ok = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { cont ->
+            runCatching {
+                android.view.PixelCopy.request(sv, bmp, { r -> if (cont.isActive) cont.resumeWith(Result.success(r == android.view.PixelCopy.SUCCESS)) }, android.os.Handler(android.os.Looper.getMainLooper()))
+            }.onFailure { if (cont.isActive) cont.resumeWith(Result.success(false)) }
+        }
+        if (ok) {
+            snapRect = android.graphics.Rect(sv.left, sv.top, sv.right, sv.bottom)
+            snap = bmp
+        }
+    }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
+        val enh = com.localtg.render.EnhanceConfig(cfg.enhUpscale, cfg.enhFrc, cfg.enhHdr, cfg.enhPeak, cfg.enhMaxH)
+        var enhFailed by remember(item.id) { mutableStateOf(false) }
+        // HDR 片源本身不处理;转码播放的是 H.264 SDR,可以处理
+        val useEnh = enh.active && !enhFailed && item.video?.hdr.isNullOrEmpty() && android.os.Build.VERSION.SDK_INT >= 26
         pl?.let { p ->
+          if (useEnh) {
             AndroidView(
-                factory = { PlayerView(it).apply { useController = false; setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER) } },
+                factory = { com.localtg.render.EnhancedVideoView(it).apply {
+                    onFailure = { enhFailed = true; showHud(Hud(TgIcons.Warning, "画质增强不可用,已改回普通播放")) }
+                    enhView = this
+                    surfaceView = this
+                } },
+                update = { v ->
+                    v.visibility = if (snap != null) android.view.View.INVISIBLE else android.view.View.VISIBLE
+                    v.keepScreenOn = cfg.keepScreenOn
+                    v.setEnhance(enh, resize)
+                    v.setPlayer(p)
+                },
+                onRelease = { v -> v.release() },
+                modifier = Modifier.fillMaxSize(),
+            )
+            // 字幕:PlayerView(不带画面表面)只负责画字幕
+            AndroidView(
+                factory = { ctx2 -> android.view.LayoutInflater.from(ctx2).inflate(com.localtg.R.layout.player_subtitles, null) as PlayerView },
+                update = { it.player = p },
+                modifier = Modifier.fillMaxSize(),
+            )
+          } else {
+            AndroidView(
+                factory = { PlayerView(it).apply {
+                    useController = false; setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                    surfaceView = videoSurfaceView as? android.view.SurfaceView
+                } },
                 update = {
+                    it.videoSurfaceView?.visibility = if (snap != null) android.view.View.INVISIBLE else android.view.View.VISIBLE
                     it.player = p
                     it.keepScreenOn = cfg.keepScreenOn
                     it.resizeMode = when (resize) {
@@ -394,6 +457,17 @@ fun VideoPage(
                     }
                 },
                 modifier = Modifier.fillMaxSize(),
+            )
+          }
+        }
+        snap?.let { b ->
+            val d = androidx.compose.ui.platform.LocalDensity.current
+            androidx.compose.foundation.Image(
+                b.asImageBitmap(), null,
+                contentScale = androidx.compose.ui.layout.ContentScale.FillBounds,
+                modifier = Modifier
+                    .offset { androidx.compose.ui.unit.IntOffset(snapRect.left, snapRect.top) }
+                    .size(with(d) { snapRect.width().toDp() }, with(d) { snapRect.height().toDp() }),
             )
         }
         if (!firstFrame) { // 封面先显示,首帧到达后消失
@@ -584,6 +658,7 @@ fun VideoPage(
                         CtrlIcon(TgIcons.More, "更多") { menu = true }
                         DropdownMenu(menu, { menu = false }) {
                             DropdownMenuItem(text = { Text("画质 / 转码  " + (transcodeHeight?.let { "${it}p" } ?: "原画")) }, onClick = { menu = false; dialog = "quality" })
+                            DropdownMenuItem(text = { Text("画质增强(超分 / 补帧 / HDR)" + if (cfg.enhUpscale != "off" || cfg.enhFrc != "off" || cfg.enhHdr != "off") "  ✓" else "") }, onClick = { menu = false; dialog = "enhance" })
                             DropdownMenuItem(text = { Text("播放速度  ${"%.2f".format(speed).trimEnd('0').trimEnd('.')}x") }, onClick = { menu = false; dialog = "speed" })
                             DropdownMenuItem(text = { Text("跳转到指定时间") }, onClick = { menu = false; dialog = "jump" })
                             DropdownMenuItem(text = { Text(when { abA == null -> "A-B 循环:设置起点 A"; abB == null -> "A-B 循环:设置终点 B"; else -> "A-B 循环:取消" }) }, onClick = {
@@ -650,9 +725,9 @@ fun VideoPage(
             RoundBtn(TgIcons.LockOpen, "解锁", 52.dp, Modifier.align(Alignment.CenterStart).padding(start = 16.dp)) { ui.locked = false; ui.chrome = true }
         }
 
-        if (stats.isNotEmpty() && !inPip) {
+        if ((stats.isNotEmpty() || enhStats.isNotEmpty()) && !inPip) {
             Text(
-                stats, color = Color(0xFFB9F6CA), fontSize = 11.sp, lineHeight = 14.sp,
+                listOf(stats, enhStats).filter { it.isNotEmpty() }.joinToString("\n"), color = Color(0xFFB9F6CA), fontSize = 11.sp, lineHeight = 14.sp,
                 modifier = Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(start = 8.dp, bottom = 140.dp)
                     .background(Color(0x99000000)).padding(6.dp),
             )
@@ -711,6 +786,33 @@ fun VideoPage(
                     transcodeHeight = heights[i]
                     AppLog.i("player", "手动切换画质:" + (heights[i]?.let { "转码 ${it}p" } ?: "原画"))
                 }
+            }
+        }
+        "enhance" -> {
+            val s = c.settings.value
+            val rows = listOf(
+                "关闭全部增强" to (s.enhUpscale == "off" && s.enhFrc == "off" && s.enhHdr == "off"),
+                "超分:FSR(通用,很快)" to (s.enhUpscale == "fsr"),
+                "超分:Anime4K 小模型(动漫)" to (s.enhUpscale == "anime4k_s"),
+                "超分:Anime4K 中模型(动漫,更好)" to (s.enhUpscale == "anime4k_m"),
+                "补帧:帧混合" to (s.enhFrc == "blend"),
+                "补帧:运动补偿(实验)" to (s.enhFrc == "mc"),
+                "SDR→HDR" to (s.enhHdr != "off"),
+            )
+            PickDialog("画质增强(点选后立即生效;再点一次取消)", rows, { dialog = "" }) { i ->
+                dialog = ""
+                c.settings.update {
+                    when (i) {
+                        0 -> copy(enhUpscale = "off", enhFrc = "off", enhHdr = "off")
+                        1 -> copy(enhUpscale = if (enhUpscale == "fsr") "off" else "fsr")
+                        2 -> copy(enhUpscale = if (enhUpscale == "anime4k_s") "off" else "anime4k_s")
+                        3 -> copy(enhUpscale = if (enhUpscale == "anime4k_m") "off" else "anime4k_m")
+                        4 -> copy(enhFrc = if (enhFrc == "blend") "off" else "blend")
+                        5 -> copy(enhFrc = if (enhFrc == "mc") "off" else "mc")
+                        else -> copy(enhHdr = if (enhHdr != "off") "off" else "auto")
+                    }
+                }
+                showHud(Hud(TgIcons.Speed, "画质增强设置已更新"))
             }
         }
         "speed" -> SpeedDialog(speed, { dialog = "" }) { v ->

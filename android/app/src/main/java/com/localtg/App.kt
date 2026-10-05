@@ -72,6 +72,7 @@ class App : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
+        com.localtg.render.Assets.app = applicationContext
         AppLog.init(this, container.settings.value.logLevel)
         AppLog.installCrashHandler()
         AppLog.i("app", "启动\n" + AppLog.deviceInfo().trimEnd() + "\n设置: " + container.settings.value)

@@ -1,0 +1,552 @@
+package com.localtg.render
+
+import android.graphics.SurfaceTexture
+import android.opengl.EGL14
+import android.opengl.EGLConfig
+import android.opengl.EGLContext
+import android.opengl.EGLDisplay
+import android.opengl.EGLExt
+import android.opengl.EGLSurface
+import android.opengl.GLES11Ext
+import android.opengl.GLES20
+import android.opengl.GLES30
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.SystemClock
+import android.view.Choreographer
+import android.view.Surface
+import com.localtg.AppLog
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+
+/** 增强渲染的配置。 */
+data class EnhanceConfig(
+    /** off | fsr | anime4k_s | anime4k_m */
+    val upscale: String = "off",
+    /** off | blend | mc */
+    val frc: String = "off",
+    /** off | auto(显示器支持 HDR 才启用)| on */
+    val hdr: String = "off",
+    val hdrPeakNits: Int = 600,
+    /** 视频高度超过这个值就不做超分(1080p 以上本来就够清晰,且计算量大) */
+    val upscaleMaxSrcHeight: Int = 900,
+) {
+    val active get() = upscale != "off" || frc != "off" || hdr != "off"
+}
+
+/**
+ * 增强渲染器:ExoPlayer 解码到 SurfaceTexture,在这里用 OpenGL ES 3 处理后显示到 SurfaceView。
+ *
+ * 处理流程:
+ *   每个源帧到达时(onFrameAvailable)  OES → RGBA16F → [mpv 着色器链:FSR / Anime4K 超分] → 帧环形缓冲(+亮度金字塔+运动估计)
+ *   每个屏幕刷新时(Choreographer vsync) 取 ExoPlayer 给出的"上屏时间"附近的两帧 → [运动补偿插帧] → [SDR→HDR 逆色调映射] → 窗口表面
+ *
+ * 帧上屏时间:ExoPlayer 用 releaseOutputBuffer(index, releaseTimeNs) 释放解码帧,SurfaceTexture.getTimestamp() 就是这个时间
+ * (System.nanoTime 时钟),而且帧会比上屏时间早到几帧 —— 所以不用额外延迟就能在两个真实帧之间插值。
+ * 如果时间戳不在这个时钟里(个别解码器),退回到"到达时间 + 延迟一帧"。
+ */
+class VideoRenderer(
+    private val surface: Surface,
+    private var surfaceW: Int,
+    private var surfaceH: Int,
+    private val refreshRate: Float,
+    private val displayIsHdr: Boolean,
+    @Volatile private var config: EnhanceConfig,
+    private val onError: (String) -> Unit,
+) {
+    private val thread = HandlerThread("enh-render").apply { start() }
+    private val handler = Handler(thread.looper)
+
+    // EGL
+    private var dpy: EGLDisplay = EGL14.EGL_NO_DISPLAY
+    private var ctx: EGLContext = EGL14.EGL_NO_CONTEXT
+    private var win: EGLSurface = EGL14.EGL_NO_SURFACE
+    var hdrSurface = false; private set
+    private var halfOk = false
+
+    // 输入
+    private var oesTex = 0
+    private var st: SurfaceTexture? = null
+    @Volatile var inputSurface: Surface? = null; private set
+    private val stMatrix = FloatArray(16)
+
+    // 程序
+    private var pOes = 0; private var pLuma = 0; private var pMerge = 0; private var pFinal = 0
+    private lateinit var pool: Gl.Pool
+    private lateinit var grid: GridPool
+    private var me: MotionEstimator? = null
+    private val chains = HashMap<String, ShaderChain?>()
+
+    // 视频信息(由播放器回调设置)
+    @Volatile private var vw = 0
+    @Volatile private var vh = 0
+    @Volatile private var vpar = 1f
+    @Volatile private var resizeMode = "fit"
+
+    private class Slot(val ts: Long, val img: Gl.Tex, val pyr: LumaPyramid?, var mv: Gl.Tex?, val id: Long)
+    private val ring = ArrayList<Slot>()
+    private var nextId = 1L
+    private var tsInDisplayClock: Boolean? = null
+    private var interval = 0L           // 估计的源帧间隔(ns)
+    private var lastDrawKey = ""
+    private var dirty = true
+    @Volatile private var released = false
+    private var choreoPosted = false
+
+    // 统计 / 自适应
+    @Volatile var stats = ""; private set
+    private var ingestEma = 0.0
+    private var ingestN = 0
+    private var degraded = false
+    private var overBudget = 0
+    private var frames = 0L
+    private var shown = 0L
+    private var lastStatsAt = 0L
+
+    val period: Long get() = (1_000_000_000f / refreshRate.coerceIn(30f, 240f)).toLong()
+
+    fun start(): Surface? {
+        val latch = CountDownLatch(1)
+        var err: String? = null
+        handler.post {
+            try { init() } catch (e: Throwable) {
+                AppLog.e("enhance", "增强渲染初始化失败", e); err = e.message ?: e.javaClass.simpleName
+            }
+            latch.countDown()
+        }
+        if (!latch.await(4, TimeUnit.SECONDS) || err != null) {
+            release()
+            onError(err ?: "初始化超时")
+            return null
+        }
+        return inputSurface
+    }
+
+    // ---------------------------------------------------------------- 对外接口
+
+    private fun poke() { handler.post { dirty = true; if (!released && !choreoPosted && ring.isNotEmpty()) scheduleVsync() } }
+    fun setVideoSize(w: Int, h: Int, par: Float) { vw = w; vh = h; vpar = if (par > 0f) par else 1f; poke() }
+    fun setResizeMode(m: String) { resizeMode = m; poke() }
+    fun setConfig(c: EnhanceConfig) { config = c; poke() }
+    fun onSurfaceSize(w: Int, h: Int) { surfaceW = w; surfaceH = h; poke() }
+
+    fun release() {
+        if (released) return
+        released = true
+        handler.post {
+            try { teardown() } catch (e: Throwable) { AppLog.w("enhance", "释放渲染器时出错", e) }
+            thread.quitSafely()
+        }
+    }
+
+    // ---------------------------------------------------------------- EGL / GL 初始化
+
+    private fun init() {
+        dpy = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+        val ver = IntArray(2)
+        check(EGL14.eglInitialize(dpy, ver, 0, ver, 1)) { "eglInitialize 失败" }
+        val ext = EGL14.eglQueryString(dpy, EGL14.EGL_EXTENSIONS) ?: ""
+        val wantHdr = config.hdr != "off" && (config.hdr == "on" || displayIsHdr) && ext.contains("EGL_EXT_gl_colorspace_bt2020_pq")
+        var cfg: EGLConfig? = null
+        if (wantHdr) cfg = chooseConfig(10, 2)
+        if (cfg == null) cfg = chooseConfig(8, 8) ?: throw IllegalStateException("没有可用的 EGL 配置")
+        val c3 = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE)
+        ctx = EGL14.eglCreateContext(dpy, cfg, EGL14.EGL_NO_CONTEXT, c3, 0)
+        check(ctx != EGL14.EGL_NO_CONTEXT) { "无法创建 OpenGL ES 3 上下文" }
+        // HDR:带 BT.2020 PQ 色彩空间的 10 位表面(SurfaceFlinger 会按显示器能力做色调映射);失败就退回普通 SDR 表面
+        if (cfg === hdrConfigTried) {
+            val a = intArrayOf(0x309D /* EGL_GL_COLORSPACE_KHR */, 0x3340 /* EGL_GL_COLORSPACE_BT2020_PQ_EXT */, EGL14.EGL_NONE)
+            win = EGL14.eglCreateWindowSurface(dpy, cfg, surface, a, 0)
+            hdrSurface = win != EGL14.EGL_NO_SURFACE
+            if (!hdrSurface) AppLog.w("enhance", "HDR 表面创建失败(0x${Integer.toHexString(EGL14.eglGetError())}),改用 SDR")
+        }
+        if (win == EGL14.EGL_NO_SURFACE) {
+            val cfg8 = if (cfg === hdrConfigTried) chooseConfig(8, 8)!! else cfg
+            win = EGL14.eglCreateWindowSurface(dpy, cfg8, surface, intArrayOf(EGL14.EGL_NONE), 0)
+            if (cfg8 !== cfg) { // 上下文要和表面配置兼容:重建上下文
+                EGL14.eglDestroyContext(dpy, ctx)
+                ctx = EGL14.eglCreateContext(dpy, cfg8, EGL14.EGL_NO_CONTEXT, c3, 0)
+            }
+        }
+        check(win != EGL14.EGL_NO_SURFACE) { "无法创建窗口表面" }
+        check(EGL14.eglMakeCurrent(dpy, win, win, ctx)) { "eglMakeCurrent 失败" }
+        EGL14.eglSwapInterval(dpy, 1)
+
+        val glExt = GLES30.glGetString(GLES30.GL_EXTENSIONS) ?: ""
+        halfOk = glExt.contains("GL_EXT_color_buffer_float") || glExt.contains("GL_EXT_color_buffer_half_float")
+        AppLog.i("enhance", "GL: ${GLES30.glGetString(GLES30.GL_RENDERER)} / ${GLES30.glGetString(GLES30.GL_VERSION)};浮点渲染=$halfOk HDR 表面=$hdrSurface")
+        pool = Gl.Pool(halfOk)
+        grid = GridPool()
+
+        pOes = Gl.program(OES_FRAG)
+        pLuma = Gl.program(ChainShaders.LUMA)
+        pMerge = Gl.program(ChainShaders.MERGE)
+        pFinal = Gl.program(FINAL_FRAG)
+        me = MotionEstimator(pool)
+
+        val t = IntArray(1)
+        GLES30.glGenTextures(1, t, 0)
+        oesTex = t[0]
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        val s = SurfaceTexture(oesTex)
+        s.setOnFrameAvailableListener({ if (!released) ingest() }, handler)
+        st = s
+        inputSurface = Surface(s)
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glViewport(0, 0, surfaceW, surfaceH)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        EGL14.eglSwapBuffers(dpy, win)
+        scheduleVsync()
+    }
+
+    private var hdrConfigTried: EGLConfig? = null
+    private fun chooseConfig(rgb: Int, alpha: Int): EGLConfig? {
+        val attrs = intArrayOf(
+            EGL14.EGL_RED_SIZE, rgb, EGL14.EGL_GREEN_SIZE, rgb, EGL14.EGL_BLUE_SIZE, rgb, EGL14.EGL_ALPHA_SIZE, alpha,
+            EGL14.EGL_RENDERABLE_TYPE, 0x0040 /* EGL_OPENGL_ES3_BIT_KHR */, EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT, EGL14.EGL_NONE,
+        )
+        val cfgs = arrayOfNulls<EGLConfig>(1)
+        val n = IntArray(1)
+        if (!EGL14.eglChooseConfig(dpy, attrs, 0, cfgs, 0, 1, n, 0) || n[0] == 0) return null
+        if (rgb == 10) hdrConfigTried = cfgs[0]
+        return cfgs[0]
+    }
+
+    private fun teardown() {
+        chains.clear()
+        ring.forEach { retire(it) }
+        ring.clear()
+        runCatching { me?.destroy() }
+        runCatching { st?.release() }
+        runCatching { inputSurface?.release() }
+        if (dpy != EGL14.EGL_NO_DISPLAY) {
+            EGL14.eglMakeCurrent(dpy, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+            if (win != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(dpy, win)
+            if (ctx != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(dpy, ctx)
+            EGL14.eglTerminate(dpy)
+        }
+        dpy = EGL14.EGL_NO_DISPLAY
+    }
+
+    // ---------------------------------------------------------------- 目标矩形
+
+    private data class Rect(val x: Int, val y: Int, val w: Int, val h: Int)
+
+    private fun destRect(): Rect {
+        val w = surfaceW; val h = surfaceH
+        if (vw <= 0 || vh <= 0 || w <= 0 || h <= 0) return Rect(0, 0, w, h)
+        val ar = vw * vpar / vh
+        return when (resizeMode) {
+            "fill" -> Rect(0, 0, w, h)
+            "zoom" -> { val s = max(w / (vw * vpar), h.toFloat() / vh); val dw = (vw * vpar * s).toInt(); val dh = (vh * s).toInt(); Rect((w - dw) / 2, (h - dh) / 2, dw, dh) }
+            else -> { val s = min(w / (vw * vpar), h.toFloat() / vh); val dw = (vw * vpar * s).toInt(); val dh = (vh * s).toInt(); Rect((w - dw) / 2, (h - dh) / 2, max(dw, 1), max(dh, 1)) }
+        }.also { if (ar <= 0f) return Rect(0, 0, w, h) }
+    }
+
+    // ---------------------------------------------------------------- 源帧到达
+
+    private fun chain(name: String): ShaderChain? = chains.getOrPut(name) {
+        val files = when (name) {
+            "fsr" -> listOf("FSR.glsl")
+            "anime4k_s" -> listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_S.glsl", "Anime4K_Upscale_CNN_x2_S.glsl", "Anime4K_AutoDownscalePre_x2.glsl")
+            "anime4k_m" -> listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_M.glsl", "Anime4K_Upscale_CNN_x2_M.glsl", "Anime4K_AutoDownscalePre_x2.glsl", "Anime4K_Upscale_CNN_x2_S.glsl")
+            else -> return@getOrPut null
+        }
+        try {
+            val passes = files.flatMap { f -> MpvShaderParser.parse(Assets.read("shaders/$f")) }
+            ShaderChain(name, passes, pool, pLuma, pMerge)
+        } catch (e: Exception) {
+            AppLog.w("enhance", "加载着色器 $name 失败:${e.message}"); null
+        }
+    }
+
+    private fun ingest() {
+        val s = st ?: return
+        val t0 = SystemClock.elapsedRealtimeNanos()
+        try {
+            s.updateTexImage()
+        } catch (e: Exception) {
+            AppLog.w("enhance", "updateTexImage 失败", e); return
+        }
+        s.getTransformMatrix(stMatrix)
+        var ts = s.timestamp
+        val now = System.nanoTime()
+        if (tsInDisplayClock == null) {
+            tsInDisplayClock = abs(ts - now) < 3_000_000_000L
+            AppLog.i("enhance", "帧时间戳时钟:${if (tsInDisplayClock == true) "上屏时间(可前瞻插帧)" else "解码时间戳(退回到达时间 + 延迟一帧)"}")
+        }
+        if (tsInDisplayClock != true) ts = now
+        val w = vw; val h = vh
+        if (w <= 0 || h <= 0) return
+        val cfg = config
+        frames++
+
+        val src = pool.acquire(w, h)
+        Gl.target(src)
+        Gl.use(pOes)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
+        GLES20.glUniform1i(Gl.loc(pOes, "uTex"), 0)
+        GLES20.glUniformMatrix4fv(Gl.loc(pOes, "uMat"), 1, false, stMatrix, 0)
+        Gl.draw()
+
+        val needPyr = (cfg.frc == "mc" || hdrActive(cfg)) && halfOk
+        val pyr = if (needPyr) me?.pyramid(src) else null
+        var img = src
+        if (cfg.upscale != "off" && halfOk && !degraded && h <= cfg.upscaleMaxSrcHeight) {
+            val d = destRect()
+            val up = chain(cfg.upscale)?.run(src, d.w, d.h)
+            if (up != null) { img = up; pool.release(src) }
+        }
+        val slot = Slot(ts, img, pyr, null, nextId++)
+        val prev = ring.lastOrNull()
+        if (cfg.frc == "mc" && prev?.pyr != null && pyr != null && halfOk) {
+            slot.mv = me?.estimate(prev.pyr, pyr, grid)
+        }
+        if (slot.mv != null && frames % 48L == 0L && AppLog.isDebug()) debugDumpMotion(slot.mv!!)
+        if (frames % 120L == 0L && AppLog.isDebug()) probeLeft = 12
+        if (prev != null) {
+            val dt = ts - prev.ts
+            if (dt in 4_000_000L..200_000_000L) interval = if (interval == 0L) dt else (interval * 7 + dt) / 8
+        }
+        ring.add(slot)
+        while (ring.size > 5) retire(ring.removeAt(0))
+
+        // 自适应:每 8 帧测一次处理耗时(glFinish 才能量出 GPU 时间);连续超过帧间隔的 85% 就停用超分
+        if (frames % 8L == 0L) {
+            GLES30.glFinish()
+            val ms = (SystemClock.elapsedRealtimeNanos() - t0) / 1e6
+            ingestEma = if (ingestN == 0) ms else ingestEma * 0.8 + ms * 0.2
+            ingestN++
+            val budget = (if (interval > 0) interval else 41_000_000L) / 1e6
+            // 连续 6 次采样(约 2 秒)都超过帧间隔的 90% 才算跟不上,偶发的卡一下(换页、系统繁忙)不算
+            overBudget = if (ms > budget * 0.9) overBudget + 1 else 0
+            if (overBudget >= 6 && cfg.upscale != "off" && !degraded) {
+                degraded = true
+                AppLog.w("enhance", "超分耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms,自动停用超分")
+            }
+        }
+        if (!choreoPosted) scheduleVsync()
+    }
+
+    /** 调试:读回运动场,统计向量分布(只在日志级别为"调试"时每 48 帧一次)。 */
+    private fun debugDumpMotion(t: Gl.Tex) {
+        val buf = java.nio.ByteBuffer.allocateDirect(t.w * t.h * 16).order(java.nio.ByteOrder.nativeOrder())
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, t.fbo)
+        GLES30.glReadPixels(0, 0, t.w, t.h, GLES30.GL_RGBA, GLES30.GL_FLOAT, buf)
+        val f = buf.asFloatBuffer()
+        val hist = java.util.TreeMap<Int, Int>()
+        var big = 0
+        for (i in 0 until t.w * t.h) {
+            val vx = Math.round(f.get(i * 4)); val vy = Math.round(f.get(i * 4 + 1))
+            if (vx != 0 || vy != 0) { hist.merge(vx, 1, Int::plus); big++ }
+        }
+        AppLog.d("enhance", "运动场 ${t.w}x${t.h} 非零块 $big;vx 分布 ${hist.entries.sortedByDescending { it.value }.take(6).joinToString { "${it.key}:${it.value}" }}")
+    }
+
+    private var probeLeft = 0
+
+    /** 调试:读回屏幕中间一行,找白色方块的位置(用 movebox 测试片),打印 模式 / 插值系数 / 方块位置。 */
+    private fun debugProbe(a: Slot, mode: Int, t: Float, d: Rect) {
+        probeLeft--
+        val row = java.nio.ByteBuffer.allocateDirect(d.w * 4)
+        GLES30.glReadPixels(d.x, d.y + d.h / 2, d.w, 1, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, row)
+        var sum = 0L; var cnt = 0
+        for (x in 0 until d.w) {
+            val r = row.get(x * 4).toInt() and 255; val g = row.get(x * 4 + 1).toInt() and 255
+            if (r > 200 && g > 200) { sum += x; cnt++ }
+        }
+        val cx = if (cnt > 20) sum.toFloat() / cnt / d.w * 480f else -1f
+        AppLog.d("enhance", "探针 帧${a.id} 模式$mode t=${"%.2f".format(t)} 方块x=${"%.1f".format(cx)}(源像素)")
+    }
+
+    private fun retire(s: Slot) {
+        pool.release(s.img)
+        me?.release(s.pyr)
+        grid.release(s.mv)
+    }
+
+    private fun hdrActive(c: EnhanceConfig) = hdrSurface && c.hdr != "off"
+
+    // ---------------------------------------------------------------- 屏幕刷新:插帧 + HDR + 上屏
+
+    private val frameCb = Choreographer.FrameCallback { vsync -> choreoPosted = false; if (!released) draw(vsync) }
+
+    private fun scheduleVsync() {
+        if (released) return
+        choreoPosted = true
+        handler.post { if (!released) Choreographer.getInstance().postFrameCallback(frameCb) }
+    }
+
+    private fun draw(vsyncNs: Long) {
+        val cfg = config
+        // 补帧要用到"下一帧",而 ExoPlayer 只会在上屏前 ~50ms 才释放帧,几乎没有前瞻余量;
+        // 所以补帧时让画面整体晚一个源帧间隔(最多 50ms)上屏 —— 视频比声音慢 ≤50ms,人感觉不到(ITU 容限是 −45ms 超前 / +125ms 滞后)
+        val frcDelay = if (cfg.frc != "off") min(if (interval > 0) interval else 41_000_000L, 50_000_000L) else 0L
+        val presentAt = vsyncNs + period + (if (tsInDisplayClock == true) 0L else -interval) // 到达时间时钟下,显示"前一帧间隔"的画面
+        val nowNs = presentAt - frcDelay
+        // A = 上屏时间之前(含)的最后一帧;B = 之后的第一帧
+        var ai = -1
+        for (i in ring.indices) if (ring[i].ts <= nowNs) ai = i
+        val needNext = cfg.frc != "off"
+        val a = ring.getOrNull(ai)
+        val b = ring.getOrNull(ai + 1)
+        if (a == null) { if (ring.isNotEmpty()) scheduleVsync(); return }
+
+        // 插帧系数
+        var t = 0f
+        var mode = 0
+        if (needNext && b != null && interval > 0 && b.ts > a.ts) {
+            val dt = b.ts - a.ts
+            val refreshHz = 1e9 / period
+            val srcHz = 1e9 / dt
+            if (dt in 4_000_000L..120_000_000L && refreshHz > srcHz * 1.3) {
+                t = ((nowNs - a.ts).toDouble() / dt).toFloat().coerceIn(0f, 1f)
+                mode = if (cfg.frc == "mc" && b.mv != null) 2 else 1
+            }
+        }
+        val key = "${a.id}/${if (mode == 0) 0 else (t * 64).toInt()}/$mode"
+        if (key == lastDrawKey && !dirty) {
+            if (ring.isNotEmpty() && (needNext || b != null)) scheduleVsync()
+            return
+        }
+        lastDrawKey = key
+        dirty = false
+
+        val d = destRect()
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glViewport(0, 0, surfaceW, surfaceH)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        GLES30.glViewport(d.x, d.y, d.w, d.h)
+        Gl.use(pFinal)
+        Gl.bindTex(0, a.img.id); GLES20.glUniform1i(Gl.loc(pFinal, "uA"), 0)
+        val bi = if (mode != 0) b!!.img.id else a.img.id
+        Gl.bindTex(1, bi); GLES20.glUniform1i(Gl.loc(pFinal, "uB"), 1)
+        val mvTex = if (mode == 2) b!!.mv!! else null
+        Gl.bindTex(2, mvTex?.id ?: a.img.id); GLES20.glUniform1i(Gl.loc(pFinal, "uMV"), 2)
+        // 局部平均亮度(1/8 分辨率亮度)用来在大面积亮区压低 HDR 增益
+        val la = a.pyr?.d3; val lb = if (mode != 0) b!!.pyr?.d3 else la
+        Gl.bindTex(3, la?.id ?: a.img.id); GLES20.glUniform1i(Gl.loc(pFinal, "uLA"), 3)
+        Gl.bindTex(4, lb?.id ?: a.img.id); GLES20.glUniform1i(Gl.loc(pFinal, "uLB"), 4)
+        GLES20.glUniform1f(Gl.loc(pFinal, "uT"), t)
+        GLES20.glUniform1i(Gl.loc(pFinal, "uMode"), mode)
+        val d1 = a.pyr?.d1
+        GLES20.glUniform2f(Gl.loc(pFinal, "uD1Size"), (d1?.w ?: 1).toFloat(), (d1?.h ?: 1).toFloat())
+        GLES20.glUniform1i(Gl.loc(pFinal, "uHasArea"), if (la != null) 1 else 0)
+        GLES20.glUniform1i(Gl.loc(pFinal, "uHdr"), if (hdrActive(cfg)) 1 else 0)
+        GLES20.glUniform1f(Gl.loc(pFinal, "uPeak"), cfg.hdrPeakNits.toFloat())
+        Gl.draw()
+        if (probeLeft > 0) debugProbe(a, mode, t, d)
+        EGL14.eglSwapBuffers(dpy, win)
+        shown++
+        updateStats(cfg, mode, a)
+        if (ring.isNotEmpty() && (needNext || b != null)) scheduleVsync()
+    }
+
+    private fun updateStats(cfg: EnhanceConfig, mode: Int, a: Slot) {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (nowMs - lastStatsAt < 1000) return
+        val secs = if (lastStatsAt == 0L) 1.0 else (nowMs - lastStatsAt) / 1000.0
+        lastStatsAt = nowMs
+        val fps = shown / secs
+        shown = 0
+        stats = buildString {
+            append("增强渲染:")
+            append(
+                when (cfg.upscale) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K-S"; "anime4k_m" -> "Anime4K-M"; else -> "" }.let { if (it.isNotEmpty() && degraded) "$it(已因性能停用)" else it }
+            )
+            if (cfg.frc != "off") append(" 补帧${if (cfg.frc == "mc") "(运动补偿)" else "(混合)"}${if (mode == 0) "·待机" else ""}")
+            if (hdrActive(cfg)) append(" HDR(PQ,${cfg.hdrPeakNits}nit)") else if (cfg.hdr != "off") append(" HDR:显示器/表面不支持")
+            append("\n输出 ${"%.0f".format(fps)}fps  源 ${a.img.w}×${a.img.h}  处理 ${"%.1f".format(ingestEma)}ms")
+        }
+    }
+
+    companion object {
+        private const val OES_FRAG = """#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision highp float;
+uniform samplerExternalOES uTex;
+uniform mat4 uMat;
+in vec2 vPos;
+out vec4 outColor;
+void main() {
+    vec2 uv = (uMat * vec4(vPos, 0.0, 1.0)).xy;
+    outColor = vec4(texture(uTex, uv).rgb, 1.0);
+}
+"""
+
+        /** 上屏:插帧(运动补偿 / 混合)→ SDR→HDR 逆色调映射(PQ,BT.2020)→ 输出。 */
+        private const val FINAL_FRAG = """#version 300 es
+precision highp float;
+precision highp sampler2D;
+uniform sampler2D uA;
+uniform sampler2D uB;
+uniform sampler2D uMV;
+uniform sampler2D uLA;
+uniform sampler2D uLB;
+uniform float uT;
+uniform int uMode;       // 0 单帧 1 混合 2 运动补偿
+uniform vec2 uD1Size;
+uniform int uHasArea;
+uniform int uHdr;
+uniform float uPeak;
+in vec2 vPos;
+out vec4 outColor;
+
+vec3 pq(vec3 nits) {
+    vec3 y = pow(clamp(nits / 10000.0, 0.0, 1.0), vec3(0.1593017578125));
+    return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), vec3(78.84375));
+}
+
+vec3 interp() {
+    if (uMode == 0) return texture(uA, vPos).rgb;
+    vec3 a0 = texture(uA, vPos).rgb;
+    vec3 b0 = texture(uB, vPos).rgb;
+    vec3 z = mix(a0, b0, uT);
+    if (uMode == 1) return z;
+    // 运动补偿:A 沿运动场前移 t,B 后移 (1-t)。物体边缘处自己那个块的向量常常不准(块里一半是背景),
+    // 所以在自己与上下左右 4 个相邻块的向量里,逐像素挑"A、B 对得最齐"的那一个。
+    ivec2 msz = textureSize(uMV, 0);
+    ivec2 c0 = ivec2(floor(vPos * vec2(msz)));
+    ivec2 offs[5] = ivec2[5](ivec2(0, 0), ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+    float dMC = 1e9; vec3 a = a0; vec3 b = b0;
+    for (int k = 0; k < 5; k++) {
+        vec2 v = texelFetch(uMV, clamp(c0 + offs[k], ivec2(0), msz - 1), 0).xy / uD1Size;
+        vec3 ca = texture(uA, vPos - uT * v).rgb;
+        vec3 cb = texture(uB, vPos + (1.0 - uT) * v).rgb;
+        float d = dot(abs(ca - cb), vec3(1.0)) + (k == 0 ? 0.0 : 0.01);
+        if (d < dMC) { dMC = d; a = ca; b = cb; }
+    }
+    float dZ = dot(abs(a0 - b0), vec3(1.0));
+    vec3 mc = mix(a, b, uT);
+    vec3 hold = uT < 0.5 ? a0 : b0;
+    // 补偿后的匹配比不补偿更差 → 退回混合;两种都差(遮挡 / 场景切换)→ 直接保持最近的帧,避免重影
+    vec3 r = mix(mc, z, smoothstep(0.02, 0.12, dMC - dZ));
+    return mix(r, hold, smoothstep(0.20, 0.45, min(dMC, dZ)));
+}
+
+void main() {
+    vec3 c = interp();
+    if (uHdr == 0) { outColor = vec4(c, 1.0); return; }
+    // SDR → HDR:解码 gamma 得到相对亮度,对高光做扩展(阴影和中间调不动),大面积亮区少扩展(避免整屏刺眼),BT.709→BT.2020,PQ 编码
+    vec3 lin = pow(max(c, 0.0), vec3(2.4));
+    float L = dot(lin, vec3(0.2126, 0.7152, 0.0722));
+    float area = uHasArea == 1 ? mix(texture(uLA, vPos).r, texture(uLB, vPos).r, uT) : L;
+    float areaLin = pow(max(area, 0.0), 2.4);
+    float k = max(uPeak / 203.0 - 1.0, 0.0);
+    float gain = 1.0 + k * pow(clamp(L, 0.0, 1.0), 4.0) * (1.0 - smoothstep(0.35, 0.75, areaLin));
+    vec3 hdrLin = lin * gain * 203.0; // 参考白 203 nit
+    const mat3 M709to2020 = mat3(0.6274, 0.0691, 0.0164, 0.3293, 0.9195, 0.0880, 0.0433, 0.0114, 0.8956);
+    outColor = vec4(pq(M709to2020 * hdrLin), 1.0);
+}
+"""
+    }
+}
