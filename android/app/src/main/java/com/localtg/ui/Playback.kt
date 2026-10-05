@@ -40,6 +40,9 @@ fun codecSelector(mode: String): MediaCodecSelector = MediaCodecSelector { mime,
     }
 }
 
+/** 后向缓冲时长(毫秒):和进度条上"已缓冲"区域的起点估算一致。 */
+fun backBufferMs(mode: String): Long = when (mode) { "small" -> 0L; "large" -> 60_000L; else -> 20_000L }
+
 /** 按设置创建播放器。forceSoftware = 上一次硬解失败后的自动重试。 */
 fun createPlayer(ctx: Context, c: AppContainer, s: AppSettings, forceSoftware: Boolean, modeOverride: String? = null): ExoPlayer {
     val renderers = DefaultRenderersFactory(ctx).apply {
@@ -58,7 +61,9 @@ fun createPlayer(ctx: Context, c: AppContainer, s: AppSettings, forceSoftware: B
         "large" -> listOf(30_000, 120_000, 2500, 5000)
         else -> listOf(15_000, 50_000, 2500, 5000)
     }
-    val load = DefaultLoadControl.Builder().setBufferDurationsMs(minMs, maxMs, startMs, rebufMs).build()
+    // 后向缓冲:已经播过的这么多秒留在内存里,往回拖(进度条上"已缓冲"区域)不用重新下载
+    val load = DefaultLoadControl.Builder().setBufferDurationsMs(minMs, maxMs, startMs, rebufMs)
+        .setBackBuffer(backBufferMs(s.bufferMode).toInt(), true).build()
     val selector = DefaultTrackSelector(ctx).apply {
         parameters = buildUponParameters().setTunnelingEnabled(s.tunneling).build()
     }

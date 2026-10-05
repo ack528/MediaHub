@@ -16,6 +16,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -752,7 +754,7 @@ fun VideoPage(
                     .navigationBarsPadding().padding(horizontal = 12.dp).padding(top = 24.dp, bottom = 6.dp),
             ) {
                 if (!locked) {
-                    pl?.let { SeekBar(it, remaining) { remaining = !remaining } }
+                    pl?.let { SeekBar(it, remaining, backBufferMs(cfg.bufferMode)) { remaining = !remaining } }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         CtrlIcon(TgIcons.Lock, "锁定控制") { ui.locked = true; ui.chrome = false; showHud(Hud(TgIcons.Lock, "已锁定,点击屏幕解锁")) }
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -965,34 +967,125 @@ private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.
     ) { Icon(icon, desc, tint = Color.White, modifier = Modifier.size(size * 0.55f)) }
 }
 
+/**
+ * 进度条(重做):
+ *  - 三层轨道:底(白 24%)/ **已缓冲**(白 55%,从"还留在缓冲里的最早位置"到 ExoPlayer 的 bufferedPosition)/ 已播放(强调色),
+ *    圆角、拖动时变粗、滑块变大;
+ *  - 点一下轨道任意位置直接跳过去;按住滑块左右拖动:**落在已缓冲区域里时边拖边跳(画面实时跟手,不用等网络)**,
+ *    拖到没缓冲的位置只在松手时才请求,不会每动一下就发一次网络请求;
+ *  - 拖动时上方浮出时间气泡("目标时间 / 总时长",带相对当前位置的 ±偏移);
+ *  - 左边已播放时间,右边总时长(点一下切换成剩余时间)。
+ *
+ * 已缓冲区域:ExoPlayer 只告诉我们"当前位置往后缓冲到哪",往回还保留多少取决于后向缓冲(见 createPlayer 的 setBackBuffer),
+ * 所以这里自己记一个"缓冲起点":连续播放时起点跟着往前挪(只保留 backMs 的后向缓冲);用户跳到缓冲之外时,起点重置为新位置。
+ */
 @Composable
-private fun SeekBar(player: ExoPlayer, remaining: Boolean, onToggleRemaining: () -> Unit) {
+private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggleRemaining: () -> Unit) {
+    val accent = com.localtg.ui.tg.LocalTg.current.accent
     var pos by remember { mutableLongStateOf(0L) }
     var dur by remember { mutableLongStateOf(0L) }
+    var buf by remember { mutableLongStateOf(0L) }
+    var bufStart by remember { mutableLongStateOf(0L) }
     var dragging by remember { mutableStateOf(false) }
     var dragFrac by remember { mutableFloatStateOf(0f) }
+    var lastLiveSeek by remember { mutableLongStateOf(0L) }
+    var widthPx by remember { mutableFloatStateOf(1f) }
+
     LaunchedEffect(player) {
+        var lastBuf = 0L
         while (true) {
-            if (!dragging) pos = player.currentPosition
-            dur = player.duration.coerceAtLeast(0)
-            delay(250)
+            val p = player.currentPosition
+            val d = player.duration.coerceAtLeast(0)
+            val b = maxOf(player.bufferedPosition, p)
+            if (!dragging) pos = p
+            dur = d
+            buf = b
+            // 缓冲起点:跳到缓冲之外(向前超过已缓冲的末尾,或向后超过起点)就重置;否则只保留 backMs 的后向缓冲
+            bufStart = if (p > lastBuf + 1500 || p < bufStart - 500) p else maxOf(bufStart, p - backMs).coerceAtLeast(0)
+            lastBuf = b
+            delay(100)
         }
     }
+
+    fun fracAt(x: Float, pad: Float): Float = ((x - pad) / (widthPx - 2 * pad).coerceAtLeast(1f)).coerceIn(0f, 1f)
     val shown = if (dragging) (dragFrac * dur).toLong() else pos
     val frac = if (dur > 0) (if (dragging) dragFrac else pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
+    val trackH by androidx.compose.animation.core.animateDpAsState(if (dragging) 8.dp else 4.dp, label = "trackH")
+    val thumbR by androidx.compose.animation.core.animateDpAsState(if (dragging) 10.dp else 6.dp, label = "thumbR")
+
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(fmt(shown), color = Color.White, fontSize = 13.sp, modifier = Modifier.width(52.dp))
-        Slider(
-            value = frac,
-            onValueChange = { dragging = true; dragFrac = it },
-            onValueChangeFinished = { player.seekTo((dragFrac * dur).toLong()); dragging = false },
-            modifier = Modifier.weight(1f).height(32.dp),
-            colors = SliderDefaults.colors(
-                thumbColor = Color(0xFFFF8800), activeTrackColor = Color(0xFFFF8800), inactiveTrackColor = Color(0x55FFFFFF),
-            ),
-        )
+        Text(fmt(shown), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.width(52.dp))
+        Box(Modifier.weight(1f).height(40.dp)) {
+            val padPx = with(androidx.compose.ui.platform.LocalDensity.current) { 12.dp.toPx() }
+            androidx.compose.foundation.Canvas(
+                Modifier.fillMaxSize()
+                    .onSizeChanged { widthPx = it.width.toFloat() }
+                    // 点一下:直接跳到那个位置
+                    .pointerInput(dur) {
+                        detectTapGestures { off ->
+                            if (dur > 0) {
+                                val t = (fracAt(off.x, padPx) * dur).toLong()
+                                player.seekTo(t)
+                                pos = t
+                            }
+                        }
+                    }
+                    // 拖动:在已缓冲区域里边拖边跳;缓冲之外只在松手时跳
+                    .pointerInput(dur) { // 不能把 bufStart / buf 当 key:它们每 100ms 变一次,会把正在进行的拖动打断
+                        detectHorizontalDragGestures(
+                            onDragStart = { off -> if (dur > 0) { dragging = true; dragFrac = fracAt(off.x, padPx) } },
+                            onDragEnd = {
+                                if (dragging) { val t = (dragFrac * dur).toLong(); player.seekTo(t); pos = t }
+                                dragging = false
+                            },
+                            onDragCancel = { dragging = false },
+                        ) { change, _ ->
+                            change.consume()
+                            dragFrac = fracAt(change.position.x, padPx)
+                            val t = (dragFrac * dur).toLong()
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (t in bufStart..buf && now - lastLiveSeek > 70) { lastLiveSeek = now; player.seekTo(t) }
+                        }
+                    },
+            ) {
+                val cy = size.height / 2
+                val x0 = padPx
+                val x1 = size.width - padPx
+                val w = (x1 - x0).coerceAtLeast(1f)
+                val th = trackH.toPx()
+                val r = androidx.compose.ui.geometry.CornerRadius(th / 2, th / 2)
+                fun xs(ms: Long) = x0 + w * (if (dur > 0) (ms.toFloat() / dur).coerceIn(0f, 1f) else 0f)
+                fun bar(a: Float, b: Float, c: Color) {
+                    if (b > a) drawRoundRect(c, androidx.compose.ui.geometry.Offset(a, cy - th / 2), androidx.compose.ui.geometry.Size(b - a, th), r)
+                }
+                bar(x0, x1, Color(0x3DFFFFFF))                                   // 底
+                if (dur > 0) bar(xs(bufStart), xs(maxOf(buf, bufStart)), Color(0x8CFFFFFF)) // 已缓冲
+                val px = x0 + w * frac
+                bar(x0, px, accent)                                              // 已播放
+                val tr = thumbR.toPx()
+                drawCircle(Color(0x40000000), tr + 2.dp.toPx(), androidx.compose.ui.geometry.Offset(px, cy))  // 滑块的软阴影
+                drawCircle(Color.White, tr, androidx.compose.ui.geometry.Offset(px, cy))
+                drawCircle(accent, tr * 0.45f, androidx.compose.ui.geometry.Offset(px, cy))
+            }
+            if (dragging && dur > 0) {
+                val delta = shown - pos
+                Row(
+                    Modifier.align(Alignment.TopCenter).offset(y = (-38).dp)
+                        .background(Color(0xCC000000), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(fmt(shown), color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        "  " + (if (delta >= 0) "+" else "−") + fmt(kotlin.math.abs(delta)),
+                        color = if (delta >= 0) Color(0xFF9FE3A8) else Color(0xFFFFB4A9), fontSize = 12.sp,
+                    )
+                    if (shown !in bufStart..buf) Text("  需要加载", color = Color(0xB3FFFFFF), fontSize = 12.sp)
+                }
+            }
+        }
         Text(
-            if (remaining) "-" + fmt(dur - shown) else fmt(dur), color = Color.White, fontSize = 13.sp,
+            if (remaining) "-" + fmt(dur - shown) else fmt(dur), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium,
             modifier = Modifier.width(60.dp).clickable(onClick = onToggleRemaining), textAlign = androidx.compose.ui.text.style.TextAlign.End,
         )
     }
