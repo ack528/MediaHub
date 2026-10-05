@@ -232,10 +232,15 @@ fun VideoPage(
     // 读取上次播放进度(只在成为当前页时读一次)
     LaunchedEffect(isCurrent, item.id) {
         if (isCurrent && resumeMs < 0) {
-            // 先问服务器(换设备接着看),没有记录或连不上再用本机保存的
+            // 服务器和本机各有一份进度时,以"最后更新的时间"为准(哪个终端最后看的就接着哪个);没有记录或连不上就用本机的
             resumeMs = if (!cfg.resume) 0L else {
-                val remote = if (c.isLocal) null else kotlinx.coroutines.withTimeoutOrNull(2000) { c.api.getPlayback(item.id) }
-                remote ?: c.playback.get(item.id, ns)
+                val (lp, lt) = c.playback.getWithTime(item.id, ns)
+                val remote = if (c.isLocal) null else kotlinx.coroutines.withTimeoutOrNull(2000) { c.api.getPlaybackRemote(item.id) }
+                when {
+                    remote != null && remote.savedAt >= lt -> remote.posMs
+                    remote != null -> { c.scope.launch { runCatching { c.api.putPlayback(item.id, lp, lt) } }; lp } // 本机的更新 → 同步上去
+                    else -> lp
+                }
             }
         }
     }
@@ -340,8 +345,9 @@ fun VideoPage(
                 val keep = pos > 5000 && (dur <= 0 || pos < dur - 5000)
                 if (c.settings.value.resume && firstFrame) c.scope.launch {
                     val v = if (keep) pos else 0L
-                    c.playback.set(item.id, v, ns)
-                    if (!c.isLocal && c.session.session.value?.baseUrl == base0) runCatching { c.api.putPlayback(item.id, v) }
+                    val now = System.currentTimeMillis()
+                    c.playback.set(item.id, v, ns, now)
+                    if (!c.isLocal && c.session.session.value?.baseUrl == base0) runCatching { c.api.putPlayback(item.id, v, now) }
                 }
                 pl.release()
                 if (transcodeBitrate != null) c.scope.launch { c.api.stopHls(item, sid) } // 通知服务端结束转码

@@ -148,14 +148,22 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
 /** 每个视频上次播放到哪里(毫秒)。 */
 class PlaybackStore(private val ctx: Context, private val ns: () -> String = { "" }) {
     private fun k(id: String, prefix: String) = longPreferencesKey("p_$prefix$id")
+    private fun kt(id: String, prefix: String) = longPreferencesKey("pt_$prefix$id") // 这条记录的更新时间,和服务器上的比较谁更新
 
     suspend fun get(id: String, prefix: String = ns()): Long = runCatching { ctx.playbackDataStore.data.first()[k(id, prefix)] ?: 0L }.getOrDefault(0L)
 
-    suspend fun set(id: String, ms: Long, prefix: String = ns()) {
-        runCatching { ctx.playbackDataStore.edit { if (ms > 0) it[k(id, prefix)] = ms else it.remove(k(id, prefix)) } }
+    /** (进度毫秒, 更新时间毫秒);没有记录是 (0, 0)。 */
+    suspend fun getWithTime(id: String, prefix: String = ns()): Pair<Long, Long> = runCatching {
+        val d = ctx.playbackDataStore.data.first()
+        (d[k(id, prefix)] ?: 0L) to (d[kt(id, prefix)] ?: 0L)
+    }.getOrDefault(0L to 0L)
+
+    suspend fun set(id: String, ms: Long, prefix: String = ns(), at: Long = System.currentTimeMillis()) {
+        // 进度为 0(看完 / 重新开始)也要记下来并带上时间,换设备时才知道"这是最新的状态"
+        runCatching { ctx.playbackDataStore.edit { it[k(id, prefix)] = ms; it[kt(id, prefix)] = at } }
     }
 
-    suspend fun count(): Int = runCatching { ctx.playbackDataStore.data.first().asMap().size }.getOrDefault(0)
+    suspend fun count(): Int = runCatching { ctx.playbackDataStore.data.first().asMap().keys.count { it.name.startsWith("p_") } }.getOrDefault(0)
 
     suspend fun clearAll() {
         runCatching { ctx.playbackDataStore.edit { it.clear() } }

@@ -66,6 +66,9 @@ class AppContainer(app: Application) {
     @Volatile var videoAspect: Float = 0f
 
     /** 对话列表缓存,聊天页用来取标题。 */
+    /** 已经提示过"服务端版本太旧,不支持同步"(每次启动只提示一次) */
+    @Volatile var syncWarned: Boolean = false
+
     @Volatile var dialogCache: Map<String, com.localtg.data.Dialog> = emptyMap()
 }
 

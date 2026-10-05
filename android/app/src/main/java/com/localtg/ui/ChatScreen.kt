@@ -156,6 +156,8 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     private val startBase = c.session.session.value?.baseUrl
     private var serverJob: Job? = null
     val ready = MutableStateFlow(false)
+    /** 这次恢复的记录来自另一台设备(显示设备名,界面提示一次) */
+    val restoredFrom = MutableStateFlow<String?>(null)
     // 服务器上的文件夹默认按文件名排序;本地媒体默认按文件时间
     val sortKey = MutableStateFlow(if (c.isLocal) "taken" else "name")
     /** 聊天流从上到下是否为正序(时间:旧→新,最新在最底部,和 Telegram 一样)。 */
@@ -199,10 +201,22 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
         }
         if (c.isLocal && st.defaultSort == "auto" && st.defaultSortDir == "auto") ascGrid.value = false
         viewModelScope.launch {
-            // 先问服务器(换设备也回到上次的位置),没有记录或连不上再用本机保存的
+            // 服务器和本机各有一份记录时,以"最后更新的时间"为准:哪个终端最后改的(排序方式、网格 / 聊天、列数、浏览位置),就用哪个
+            val local = if (st.rememberPosition) c.viewState.load(dialogId, ns) else null
             val remote = if (st.rememberPosition && !c.isLocal)
-                kotlinx.coroutines.withTimeoutOrNull(2500) { c.api.getDialogView(dialogId) } else null
-            (if (st.rememberPosition) remote ?: c.viewState.load(dialogId, ns) else null)?.let { v ->
+                kotlinx.coroutines.withTimeoutOrNull(2500) { c.api.getDialogViewRemote(dialogId) } else null
+            val chosen = when {
+                remote != null && (local == null || remote.savedAt >= local.savedAt) -> remote.view
+                else -> local
+            }
+            if (remote != null && local != null && local.savedAt > remote.savedAt) {
+                // 本机的更新(例如离线时看的)→ 同步到服务器,别的终端打开就是最新的
+                c.scope.launch { runCatching { c.api.putDialogView(dialogId, local, local.savedAt) } }
+            }
+            if (remote != null && chosen === remote.view && remote.view.device.isNotEmpty() && remote.view.device != android.os.Build.MODEL) {
+                restoredFrom.value = remote.view.device
+            }
+            chosen?.let { v ->
                 sortKey.value = v.sort; ascChat.value = v.ascChat; ascGrid.value = v.ascGrid
                 grid.value = v.grid; columns.value = v.columns.coerceIn(2, 6)
                 types.value = v.types.toSet().ifEmpty { defaultTypes }
@@ -308,7 +322,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
         val v = DialogView(
             itemId = if (p != null) p.first else anchorId, offsetPx = p?.second ?: anchorOffset,
             sort = sortKey.value, ascChat = ascChat.value, ascGrid = ascGrid.value, grid = grid.value,
-            types = types.value.toList(), columns = columns.value,
+            types = types.value.toList(), columns = columns.value, device = android.os.Build.MODEL,
         )
         c.scope.launch { c.viewState.save(dialogId, v, ns) }
         // 同步到服务器:滚动时 3 秒去抖,离开页面时立即发;还是打开时那台服务器才发
@@ -342,6 +356,18 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, onB
     var datePicker by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
+    // 同步状态提示:服务端太旧不支持同步(只提示一次);这次恢复的记录来自另一台设备
+    val syncUnsupported by c.api.syncUnsupported.collectAsState()
+    LaunchedEffect(syncUnsupported) {
+        if (syncUnsupported && !c.syncWarned) {
+            c.syncWarned = true
+            android.widget.Toast.makeText(ctx, "服务端版本太旧,浏览位置和播放进度没有同步,请把服务端更新到 1.3.0 以上", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+    val restoredFrom by vm.restoredFrom.collectAsState()
+    LaunchedEffect(restoredFrom) {
+        restoredFrom?.let { android.widget.Toast.makeText(ctx, "已接着「$it」上次的浏览位置", android.widget.Toast.LENGTH_SHORT).show() }
+    }
     // 群信息:先取列表缓存;缓存里没有(列表还没加载完 / 进程重启后直接回到这里)就单独向服务器取一次,标题先用点开时带来的
     var dialog by remember(dialogId) { mutableStateOf(c.dialogCache[dialogId]) }
     LaunchedEffect(dialogId) {

@@ -27,6 +27,8 @@ data class DialogView(
     val types: List<String> = listOf("photo", "video", "gif"),
     val columns: Int = 3,
     val savedAt: Long = 0,
+    /** 写入这条记录的设备(用来提示"已接着 xx 上次的位置") */
+    val device: String = "",
 )
 
 class ViewStateStore(private val ctx: Context, private val ns: () -> String = { "" }) {

@@ -172,24 +172,56 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
         }
     }
 
-    /** 服务器上这个群的浏览记录;没有记录(404)或出错返回 null。 */
-    suspend fun getDialogView(dialogId: String): DialogView? = runCatching {
-        call<ViewResp>(Request.Builder().url("$base/api/v1/dialogs/$dialogId/view").build()).json
-    }.getOrNull()
+    /** 服务器上的记录 + 它最后更新的时间(毫秒时间戳,谁最后写入就是谁的)。 */
+    class RemoteView(val view: DialogView, val savedAt: Long)
+    class RemotePlay(val posMs: Long, val savedAt: Long)
 
-    suspend fun putDialogView(dialogId: String, v: DialogView) {
-        val body = AppJson.encodeToString(v.copy(savedAt = System.currentTimeMillis()))
-        send(Request.Builder().url("$base/api/v1/dialogs/$dialogId/view").put(body.toRequestBody(json)).build())
+    /**
+     * 服务器不认识同步接口(服务端版本太旧,路由不存在返回的是普通 404,而"没有记录"返回的 404 带 code=notfound):
+     * 界面据此提示一次"请更新服务端",而不是悄悄失败。任何一次同步成功就清除。
+     */
+    val syncUnsupported = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    private fun noteSync(e: Throwable?) {
+        if (e == null) syncUnsupported.value = false
+        else if (e is ApiException && e.http == 404 && e.code != "notfound") {
+            if (!syncUnsupported.value) com.localtg.AppLog.w("sync", "服务器不支持浏览记录 / 播放进度同步(版本太旧?):${e.message}")
+            syncUnsupported.value = true
+        } else com.localtg.AppLog.d("sync", "同步失败:${e.javaClass.simpleName} ${e.message}")
     }
 
-    /** 服务器上这个视频的播放进度(毫秒,0 = 看完 / 重新开始);没有记录或出错返回 null。 */
-    suspend fun getPlayback(mediaId: String): Long? = runCatching {
-        call<PlayResp>(Request.Builder().url("$base/api/v1/media/$mediaId/playback").build()).posMs
-    }.getOrNull()
+    /** 服务器上这个群的浏览记录;没有记录或出错返回 null。 */
+    suspend fun getDialogViewRemote(dialogId: String): RemoteView? = try {
+        val r = call<ViewResp>(Request.Builder().url("$base/api/v1/dialogs/$dialogId/view").build())
+        noteSync(null)
+        RemoteView(r.json, r.savedAt)
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e
+    } catch (e: Exception) { noteSync(e); null }
 
-    suspend fun putPlayback(mediaId: String, posMs: Long) {
-        val body = AppJson.encodeToString(mapOf("posMs" to posMs, "savedAt" to System.currentTimeMillis()))
-        send(Request.Builder().url("$base/api/v1/media/$mediaId/playback").put(body.toRequestBody(json)).build())
+    suspend fun putDialogView(dialogId: String, v: DialogView, savedAt: Long = System.currentTimeMillis()) {
+        val body = AppJson.encodeToString(v.copy(savedAt = savedAt))
+        try {
+            send(Request.Builder().url("$base/api/v1/dialogs/$dialogId/view").put(body.toRequestBody(json)).build())
+            noteSync(null)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: Exception) { noteSync(e); throw e }
+    }
+
+    /** 服务器上这个视频的播放进度(毫秒,0 = 看完 / 重新开始)和更新时间;没有记录或出错返回 null。 */
+    suspend fun getPlaybackRemote(mediaId: String): RemotePlay? = try {
+        val r = call<PlayResp>(Request.Builder().url("$base/api/v1/media/$mediaId/playback").build())
+        noteSync(null)
+        RemotePlay(r.posMs, r.savedAt)
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e
+    } catch (e: Exception) { noteSync(e); null }
+
+    suspend fun putPlayback(mediaId: String, posMs: Long, savedAt: Long = System.currentTimeMillis()) {
+        val body = AppJson.encodeToString(mapOf("posMs" to posMs, "savedAt" to savedAt))
+        try {
+            send(Request.Builder().url("$base/api/v1/media/$mediaId/playback").put(body.toRequestBody(json)).build())
+            noteSync(null)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: Exception) { noteSync(e); throw e }
     }
 
     suspend fun clearSyncedViews() = send(Request.Builder().url("$base/api/v1/state/views").delete().build())
