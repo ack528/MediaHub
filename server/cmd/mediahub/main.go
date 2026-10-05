@@ -18,12 +18,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -34,10 +34,11 @@ import (
 	"mediahub/internal/config"
 	"mediahub/internal/index"
 	"mediahub/internal/jellyfin"
+	"mediahub/internal/logx"
 	"mediahub/internal/store"
 )
 
-const version = "0.4.0"
+const version = "1.0.0"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -57,6 +58,18 @@ func projectRoot() string {
 }
 
 func main() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			if lm := logx.Default(); lm != nil {
+				lm.Log.Error("主流程崩溃", "panic", fmt.Sprint(rec))
+				p := lm.WriteCrash("main", rec, debug.Stack())
+				fmt.Fprintln(os.Stderr, "MediaHub 崩溃,报告已保存:", p)
+			} else {
+				fmt.Fprintf(os.Stderr, "MediaHub 崩溃: %v\n%s\n", rec, debug.Stack())
+			}
+			os.Exit(3)
+		}
+	}()
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -83,7 +96,7 @@ func usage() {
 func loadCfg(fs *flag.FlagSet, args []string) (*config.Config, *slog.Logger, error) {
 	pr := projectRoot()
 	cfgPath := fs.String("config", filepath.Join(pr, "runtime", "mediahub", "config.json"), "配置文件")
-	debug := fs.Bool("debug", false, "输出调试日志")
+	debugFlag := fs.Bool("debug", false, "输出调试日志")
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, err
 	}
@@ -91,19 +104,16 @@ func loadCfg(fs *flag.FlagSet, args []string) (*config.Config, *slog.Logger, err
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "logs"), 0o755); err != nil {
+	level := cfg.Log.Level
+	if *debugFlag {
+		level = "debug"
+	}
+	// 日志与崩溃捕获:写到 <数据目录>\logs,自动轮转;panic 会被记录并写崩溃报告
+	lm, err := logx.Setup(cfg.DataDir, version, level, os.Stderr)
+	if err != nil {
 		return nil, nil, err
 	}
-	lf, err := os.OpenFile(filepath.Join(cfg.DataDir, "logs", "mediahub-"+time.Now().Format("20060102")+".log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	var w io.Writer = os.Stderr
-	if err == nil {
-		w = io.MultiWriter(os.Stderr, lf)
-	}
-	lvl := slog.LevelInfo
-	if *debug {
-		lvl = slog.LevelDebug
-	}
-	return cfg, slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: lvl})), nil
+	return cfg, lm.Log, nil
 }
 
 func run(args []string, serve bool) int {
@@ -172,10 +182,34 @@ func run(args []string, serve bool) int {
 			log.Info("Jellyfin 映射同步完成", "matchedVideos", n)
 		}
 	}
+	// 转码引擎的一次性准备:把硬件加速设置同步给 Jellyfin、为每个媒体根目录建库(失败只记日志,不影响浏览)
+	if jf != nil {
+		logx.Go("Jellyfin 初始化", func() {
+			cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			if !jf.Ping(cctx) {
+				log.Warn("Jellyfin 不在线,转码功能暂不可用(启动 Jellyfin 后重启服务即可)")
+				return
+			}
+			if err := jf.ApplyEncoding(cctx, cfg.Video.HWAccel); err != nil {
+				log.Warn("同步硬件加速设置到 Jellyfin 失败", "err", err)
+			}
+			var paths []string
+			for _, r := range roots {
+				paths = append(paths, r.Path)
+			}
+			if n, err := jf.EnsureLibraries(cctx, paths, log); err != nil {
+				log.Warn("检查 Jellyfin 媒体库失败", "err", err)
+			} else if n > 0 {
+				time.AfterFunc(2*time.Minute, func() { defer logx.Recover("Jellyfin 映射同步"); syncJF() }) // 新库刚建好,Jellyfin 在后台扫描,稍后再建立视频映射
+			}
+		})
+	}
 	// first = 本次启动后的第一轮:被中断的扫描续扫,近期已完整扫描过的根目录直接跳过;之后的定时 / 手动扫描总是执行
 	scanOne := func(r index.Root, first bool) {
 		skipAge := time.Duration(cfg.Scan.SkipWithinHours) * time.Hour
-		if first && !ix.ScanDue(r, skipAge) {
+		skipped := first && !ix.ScanDue(r, skipAge)
+		if skipped {
 			log.Info("近期已完整扫描过,启动时不重新扫描(需要时可在管理程序点\"重新扫描\")", "root", r.Path)
 		} else {
 			if err := ix.ScanRoot(ctx, r); err != nil {
@@ -189,7 +223,15 @@ func run(args []string, serve bool) int {
 			log.Error("补全元数据失败", "root", r.Path, "err", err)
 			return
 		}
+		if jf != nil && !skipped {
+			rc, c0 := context.WithTimeout(ctx, 10*time.Second)
+			_ = jf.Refresh(rc) // 让 Jellyfin 也重新扫描一遍,发现新增的视频
+			c0()
+		}
 		syncJF() // 先建立 Jellyfin 映射,这样预热时能直接用 Jellyfin 已有的封面
+		if jf != nil {
+			time.AfterFunc(90*time.Second, func() { defer logx.Recover("Jellyfin 映射同步"); syncJF() }) // Jellyfin 扫描是异步的,过一会儿再对一次,新视频才能马上转码
+		}
 		// 低优先级后台任务:为视频生成封面与 ThumbHash,滚动时列表先显示模糊预览
 		if n := poster.Warm(ctx, r.ID); n > 0 {
 			log.Info("封面预热完成", "root", r.Path, "videos", n)
@@ -205,6 +247,7 @@ func run(args []string, serve bool) int {
 		wg.Add(1)
 		go func(r index.Root) {
 			defer wg.Done()
+			defer logx.Recover("索引 " + r.Path)
 			var tick <-chan time.Time
 			if cfg.Scan.IntervalHours > 0 {
 				t := time.NewTicker(time.Duration(cfg.Scan.IntervalHours) * time.Hour)
@@ -246,7 +289,7 @@ func run(args []string, serve bool) int {
 
 	srv := &api.Server{AdminKey: adminKey, StartedAt: time.Now(),
 		DB: db, Cfg: cfg, Auth: auth.New(db, cfg.Auth.TokenDays), Idx: ix, Cache: cm,
-		Poster: poster, Log: log, Version: version, LoginDelay: time.Second,
+		Poster: poster, Render: api.NewRenderer(db, cfg, cm), JF: jf, Log: log, Version: version, LoginDelay: time.Second,
 		Rescan: func(id int64) {
 			for rid, ch := range triggers {
 				if id == 0 || id == rid {

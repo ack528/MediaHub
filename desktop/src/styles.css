@@ -162,3 +162,20 @@ code { background: #f3f3f3; padding: 1px 6px; border-radius: 4px; font-size: 12.
 ::-webkit-scrollbar-thumb:hover { background: #bdbdbd; background-clip: content-box; border: 2px solid transparent; }
 
 .speed { color: var(--accent, #3b82f6); font-variant-numeric: tabular-nums; }
+
+/* 跳过 / 失败的目录明细 */
+.faildirs { margin-top: 8px; font-size: 13px; }
+.faildirs summary { cursor: pointer; color: var(--primary); user-select: none; }
+.faildirs ul { list-style: none; margin: 8px 0 0; padding: 0; max-height: 220px; overflow: auto; }
+.faildirs li { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid var(--border); min-width: 0; }
+.faildirs li code { font: 12px Consolas, "Cascadia Mono", monospace; word-break: break-all; }
+.faildirs li .why { color: var(--text-2); margin-left: auto; white-space: nowrap; }
+.faildirs .hint { margin-top: 8px; color: var(--text-2); line-height: 1.5; }
+
+/* 日志页 */
+.log-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 20px; border-top: 1px solid var(--border); }
+.log-tools input[type=search] { height: 34px; min-width: 200px; border: 1px solid var(--border-2); border-radius: 8px; padding: 0 10px; outline: none; background: #fff; }
+.log-tools input[type=search]:focus { border-color: var(--primary); }
+.log .lv-warn { color: #ffb74d; }
+.log .lv-error { color: #ff7b72; }
+.log .lv-debug { color: #8b949e; }

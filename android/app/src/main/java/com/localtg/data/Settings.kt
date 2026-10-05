@@ -37,6 +37,7 @@ data class AppSettings(
     val imageMemPercent: Int = 20,
     val hardwareBitmaps: Boolean = true,
     val crossfade: Boolean = true,
+    val heicMode: String = "server",           // HEIC / HEIF / AVIF 的显示方式:server = 服务端转换(推荐) / native = 手机直接解码
     // ---- 视频播放
     val autoplay: Boolean = true,
     val loop: Boolean = false,
@@ -58,6 +59,7 @@ data class AppSettings(
     val decoderMode: String = "auto",          // auto / hw_first / sw_first / hw_only / sw_only
     val autoSoftwareFallback: Boolean = true,  // 解码失败时自动改用软解重试
     val decoderFallback: Boolean = true,       // 首选解码器初始化失败时尝试下一个
+    val autoTranscode: Boolean = true,         // 手机解不了(格式 / 编码不支持)时,自动改用服务端转码播放
     val asyncQueueing: String = "auto",        // auto / on / off:MediaCodec 异步队列
     val tunneling: Boolean = false,            // 隧道播放(部分电视 / 手机的硬解可降低功耗,不稳定)
     val maxHeight: Int = 0,                    // 0 = 不限;否则视频最大高度(用于以后的转码 / HLS)

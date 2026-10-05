@@ -75,6 +75,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
@@ -137,6 +138,15 @@ private fun trackOpts(tracks: Tracks, type: Int): List<TrackOpt> {
     return out
 }
 
+/** 转码目标高度对应的默认视频码率(bps)。 */
+private fun bitrateFor(h: Int): Int = when {
+    h <= 480 -> 1_500_000
+    h <= 720 -> 3_000_000
+    h <= 1080 -> 6_000_000
+    h <= 1440 -> 12_000_000
+    else -> 20_000_000
+}
+
 private fun fmt(ms: Long): String {
     val s = (ms.coerceAtLeast(0)) / 1000
     return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s % 3600 / 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
@@ -160,6 +170,10 @@ fun VideoPage(
     var error by remember { mutableStateOf<String?>(null) }
     var useSoftware by remember(item.id) { mutableStateOf(false) }       // 硬解失败后自动改软解重试一次
     var modeOverride by remember(item.id) { mutableStateOf<String?>(null) } // 用户手动指定解码方式
+    var forceTry by remember(item.id) { mutableStateOf(false) } // 服务端判定文件损坏时,用户选择"仍然尝试播放"
+    val blocked = item.brokenLabel() != null && (item.size == 0L || !forceTry)
+    var transcodeHeight by remember(item.id) { mutableStateOf<Int?>(null) } // null = 直接播放原文件;否则请服务端转码成这个高度
+    val sid = remember(item.id) { java.util.UUID.randomUUID().toString().take(8) }
     var resumeMs by remember(item.id) { mutableLongStateOf(-1L) }        // -1 = 还没读取保存的进度
     var stats by remember { mutableStateOf("") }
     val decoderName = remember { arrayOf("") }
@@ -188,9 +202,9 @@ fun VideoPage(
         if (isCurrent && resumeMs < 0) resumeMs = if (cfg.resume) c.playback.get(item.id) else 0L
     }
 
-    DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, resumeMs >= 0) {
+    DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, transcodeHeight, blocked, resumeMs >= 0) {
         var p: ExoPlayer? = null
-        if (isCurrent && resumeMs >= 0) {
+        if (isCurrent && resumeMs >= 0 && !blocked) {
             val pl = createPlayer(ctx, c, c.settings.value, useSoftware, modeOverride)
             p = pl
             pl.playbackParameters = pl.playbackParameters.withSpeed(speed)
@@ -217,11 +231,29 @@ fun VideoPage(
                         PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
                         PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
                     )
-                    if (codecProblem && !useSoftware && modeOverride == null && c.settings.value.autoSoftwareFallback) {
+                    val formatProblem = e.errorCode in setOf(
+                        PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+                        PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED,
+                        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+                        PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+                    )
+                    val cs = c.settings.value
+                    if (codecProblem && !useSoftware && modeOverride == null && cs.autoSoftwareFallback) {
                         resumeMs = pl.currentPosition
                         useSoftware = true // 触发本 Effect 重建播放器(软解优先)
+                    } else if (transcodeHeight == null && cs.autoTranscode && (formatProblem || codecProblem)) {
+                        // 手机解不了:改用服务端转码(Jellyfin → H.264 / AAC 的 HLS)
+                        val h = if (cs.maxHeight > 0) cs.maxHeight else 1080
+                        AppLog.i("player", "自动改用服务端转码 ${h}p(原因 ${e.errorCodeName})")
+                        resumeMs = pl.currentPosition
+                        useSoftware = false
+                        transcodeHeight = h
+                        showHud(Hud(TgIcons.Speed, "手机无法直接播放,已改用服务端转码 ${h}p"))
                     } else {
-                        error = "无法播放:${e.errorCodeName}"
+                        error = if (transcodeHeight != null) {
+                            if (e.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) "服务端转码不可用:请确认 Jellyfin 已启动,且已收录这个视频"
+                            else "转码播放失败:${e.errorCodeName}"
+                        } else friendlyPlayerError(e, item)
                     }
                 }
             })
@@ -235,7 +267,14 @@ fun VideoPage(
                     AppLog.d("player", "丢帧 $droppedFrames / ${elapsedMs}ms")
                 }
             })
-            pl.setMediaItem(MediaItem.fromUri(c.api.fileUrl(item)))
+            val th = transcodeHeight
+            if (th != null) {
+                val br = c.settings.value.maxBitrateMbps.let { if (it > 0) it * 1_000_000 else bitrateFor(th) }
+                pl.setMediaItem(MediaItem.Builder().setUri(c.api.hlsUrl(item, th, br, sid)).setMimeType(MimeTypes.APPLICATION_M3U8).build())
+                AppLog.i("player", "服务端转码 ${th}p ${br / 1000}kbps")
+            } else {
+                pl.setMediaItem(MediaItem.fromUri(c.api.fileUrl(item)))
+            }
             if (resumeMs > 0) pl.seekTo(resumeMs)
             pl.prepare()
             pl.playWhenReady = c.settings.value.autoplay
@@ -250,10 +289,16 @@ fun VideoPage(
                 val keep = pos > 5000 && (dur <= 0 || pos < dur - 5000)
                 if (c.settings.value.resume && firstFrame) c.scope.launch { c.playback.set(item.id, if (keep) pos else 0L) }
                 pl.release()
+                if (transcodeHeight != null) c.scope.launch { c.api.stopHls(item, sid) } // 通知服务端结束转码
             }
             player = null; firstFrame = false; playing = false
             if (p != null) c.videoPlaying = false
         }
+    }
+
+    // 不完整的视频:提醒一下,播放到被截断处会停止
+    LaunchedEffect(isCurrent, item.id) {
+        if (isCurrent && item.flags.truncated && !blocked) showHud(Hud(TgIcons.Warning, "文件不完整(下载可能中断),播放到被截断处会停止"))
     }
 
     // 睡眠定时 / A-B 循环 / 技术信息
@@ -290,6 +335,7 @@ fun VideoPage(
                     append('\n')
                 }
                 if (a != null) append("音频:").append(codecName(a.sampleMimeType) ?: "?").append("  ${a.channelCount}ch ${a.sampleRate}Hz\n")
+                transcodeHeight?.let { append("服务端转码:${it}p\n") }
                 append("丢帧:${dropped[0]}   缓冲:${pl.totalBufferedDuration / 1000}s   速度:${pl.playbackParameters.speed}x")
             }
             delay(1000)
@@ -472,6 +518,19 @@ fun VideoPage(
                 },
         )
 
+        // 服务端判定损坏(0 字节 / 无法解析):不创建播放器,直接说明原因
+        if (blocked && isCurrent) {
+            Column(Modifier.align(Alignment.Center).padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(TgIcons.Warning, null, tint = Color(0xFFFFB74D), modifier = Modifier.size(48.dp))
+                Text(item.problem ?: "文件已损坏", color = Color.White, fontSize = 16.sp, modifier = Modifier.padding(top = 12.dp))
+                Text(
+                    formatSize(item.size) + " · " + item.name, color = Color(0xB3FFFFFF), fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 6.dp), maxLines = 2,
+                )
+                if (item.size > 0L) TextButton(onClick = { forceTry = true }) { Text("仍然尝试播放") }
+            }
+        }
+
         // 缓冲圈
         if (state == Player.STATE_BUFFERING && firstFrame) {
             CircularProgressIndicator(Modifier.align(Alignment.Center).size(44.dp), color = Color.White)
@@ -514,7 +573,7 @@ fun VideoPage(
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(item.name, color = Color.White, fontSize = 16.sp, maxLines = 1, fontWeight = FontWeight.Medium)
                     Text(
-                        listOfNotNull(item.w?.let { "${item.w}×${item.h}" }, formatSize(item.size), decoderName[0].takeIf { it.isNotEmpty() }?.let { if (it.startsWith("c2.android") || it.startsWith("OMX.google")) "软解" else "硬解" }).joinToString(" · "),
+                        listOfNotNull(item.w?.let { "${item.w}×${item.h}" }, formatSize(item.size), transcodeHeight?.let { "转码 ${it}p" }, decoderName[0].takeIf { it.isNotEmpty() }?.let { if (it.startsWith("c2.android") || it.startsWith("OMX.google")) "软解" else "硬解" }).joinToString(" · "),
                         color = Color(0xB3FFFFFF), fontSize = 12.sp, maxLines = 1,
                     )
                 }
@@ -524,6 +583,7 @@ fun VideoPage(
                     Box {
                         CtrlIcon(TgIcons.More, "更多") { menu = true }
                         DropdownMenu(menu, { menu = false }) {
+                            DropdownMenuItem(text = { Text("画质 / 转码  " + (transcodeHeight?.let { "${it}p" } ?: "原画")) }, onClick = { menu = false; dialog = "quality" })
                             DropdownMenuItem(text = { Text("播放速度  ${"%.2f".format(speed).trimEnd('0').trimEnd('.')}x") }, onClick = { menu = false; dialog = "speed" })
                             DropdownMenuItem(text = { Text("跳转到指定时间") }, onClick = { menu = false; dialog = "jump" })
                             DropdownMenuItem(text = { Text(when { abA == null -> "A-B 循环:设置起点 A"; abB == null -> "A-B 循环:设置终点 B"; else -> "A-B 循环:取消" }) }, onClick = {
@@ -541,6 +601,7 @@ fun VideoPage(
                             DropdownMenuItem(text = { Text("小窗播放") }, onClick = { menu = false; enterPip() })
                             DropdownMenuItem(text = { Text("改用软件解码重试") }, onClick = { menu = false; resumeMs = pl?.currentPosition ?: 0L; modeOverride = "sw_first" })
                             DropdownMenuItem(text = { Text("改用硬件解码重试") }, onClick = { menu = false; resumeMs = pl?.currentPosition ?: 0L; modeOverride = "hw_first" })
+                            DropdownMenuItem(text = { Text("保存到手机") }, onClick = { menu = false; scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, item) } })
                             DropdownMenuItem(text = { Text("媒体信息") }, onClick = { menu = false; dialog = "info" })
                         }
                     }
@@ -603,6 +664,8 @@ fun VideoPage(
                 Row {
                     TextButton(onClick = { error = null; resumeMs = 0L; modeOverride = "sw_first" }) { Text("软解重试") }
                     TextButton(onClick = { error = null; resumeMs = 0L; modeOverride = "hw_first" }) { Text("硬解重试") }
+                    if (transcodeHeight == null) TextButton(onClick = { error = null; resumeMs = 0L; transcodeHeight = if (c.settings.value.maxHeight > 0) c.settings.value.maxHeight else 1080 }) { Text("服务端转码") }
+                    else TextButton(onClick = { error = null; resumeMs = 0L; transcodeHeight = null }) { Text("直接播放") }
                     TextButton(onClick = {
                         val n = AppLog.copyRecent(ctx)
                         Toast.makeText(ctx, "已复制 $n 字日志", Toast.LENGTH_SHORT).show()
@@ -634,6 +697,22 @@ fun VideoPage(
                 dialog = ""
             }
         }
+        "quality" -> {
+            val heights = listOf(null, 480, 720, 1080, 1440, 2160)
+            PickDialog(
+                "画质 / 转码",
+                listOf("原画(直接播放)") .plus(heights.drop(1).map { "服务端转码 ${it}p" }).mapIndexed { i, t -> t to (heights[i] == transcodeHeight) },
+                { dialog = "" },
+            ) { i ->
+                dialog = ""
+                if (heights[i] != transcodeHeight) {
+                    resumeMs = p?.currentPosition ?: 0L
+                    useSoftware = false
+                    transcodeHeight = heights[i]
+                    AppLog.i("player", "手动切换画质:" + (heights[i]?.let { "转码 ${it}p" } ?: "原画"))
+                }
+            }
+        }
         "speed" -> SpeedDialog(speed, { dialog = "" }) { v ->
             speed = v; p?.let { it.playbackParameters = it.playbackParameters.withSpeed(v) }
             AppLog.i("player", "倍速 ${v}x")
@@ -651,6 +730,29 @@ fun VideoPage(
         }
         "jump" -> JumpDialog(p?.duration ?: 0L, { dialog = "" }) { ms -> p?.seekTo(ms); dialog = "" }
         "info" -> InfoDialog(item, p, tracks, decoderName[0], { dialog = "" })
+    }
+}
+
+/** 把 ExoPlayer 的错误翻译成人话:区分下载中断的不完整文件、网络问题、文件已不存在等。 */
+private fun friendlyPlayerError(e: PlaybackException, item: Item): String {
+    var c: Throwable? = e
+    var http: Int? = null
+    var eof = false
+    while (c != null) {
+        if (c is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) http = c.responseCode
+        if (c is java.io.EOFException) eof = true
+        c = c.cause
+    }
+    return when {
+        http == 416 || eof || e.errorCode == PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE ->
+            "视频文件不完整(多半是下载中断留下的),无法播放到被截断处之后"
+        http == 404 -> "文件已不存在,可能被移动或删除了(服务端下次扫描会更新)"
+        http == 422 -> "文件大小为 0 字节(下载失败留下的空文件)"
+        http == 401 || http == 403 -> "登录已失效,请重新登录"
+        e.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            e.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "连接服务器失败或超时,请检查网络和服务端是否在运行"
+        e.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED -> "视频文件已损坏,无法解析"
+        else -> "无法播放:${e.errorCodeName}"
     }
 }
 

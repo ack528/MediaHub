@@ -105,7 +105,7 @@ func newEnv(t *testing.T) *env {
 	if err := a.CreateUser("me", "secret1"); err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{DB: db, Cfg: cfg, Auth: a, Idx: ix, Cache: cm, Poster: NewPoster(db, cfg, cm), Log: log, Version: "test"}
+	srv := &Server{DB: db, Cfg: cfg, Auth: a, Idx: ix, Cache: cm, Poster: NewPoster(db, cfg, cm), Render: NewRenderer(db, cfg, cm), Log: log, Version: "test"}
 	e := &env{t: t, ts: httptest.NewServer(srv.Handler()), srv: srv, lib: lib}
 	t.Cleanup(e.ts.Close)
 	return e
@@ -522,5 +522,49 @@ func TestPosterPrefersJellyfin(t *testing.T) {
 	resp, _ = e.do("GET", "/api/v1/media/"+vid+"/poster", nil, nil)
 	if resp.Header.Get("X-Poster-Source") != "own" || hits["webp"] != before {
 		t.Fatalf("own mode should not use jellyfin: source=%q hits=%v", resp.Header.Get("X-Poster-Source"), hits)
+	}
+}
+
+// 服务端图片转换:HEIC(ffmpeg,含旋转)与 RAW(ExifTool 内嵌预览 + 方向)都能得到 JPEG,尺寸不超过请求档位,结果被缓存。
+func TestRenderHeicAndRaw(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	pr := projectRoot(t)
+	heic := filepath.Join(pr, "testdata", "library", "旅行", "2022-上海", "example.heic")
+	raw := filepath.Join(pr, "testdata", "library", "相机RAW", "Canon_EOS_R6.CR3")
+	for _, f := range []string{heic, raw} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Skipf("缺少样本 %s", f)
+		}
+		os.WriteFile(filepath.Join(e.lib, "相册", filepath.Base(f)), b, 0o644)
+	}
+	roots, _ := e.srv.Idx.SyncRoots()
+	if err := e.srv.Idx.ScanRoot(context.Background(), roots[0]); err != nil {
+		t.Fatal(err)
+	}
+	_ = e.srv.Idx.Enrich(context.Background(), roots[0])
+	for _, c := range []struct{ q, ext string }{{"example", "heic"}, {"Canon_EOS", "cr3"}} {
+		var s struct{ Items []Item }
+		e.getJSON("/api/v1/search?q="+c.q+"&types=photo", &s)
+		if len(s.Items) != 1 {
+			t.Fatalf("%s: search=%d", c.q, len(s.Items))
+		}
+		id := s.Items[0].ID
+		resp, body := e.do("GET", "/api/v1/media/"+id+"/render?w=900", nil, nil)
+		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/jpeg" || len(body) < 2000 || body[0] != 0xFF || body[1] != 0xD8 {
+			t.Fatalf("%s render: %d ct=%q len=%d", c.ext, resp.StatusCode, resp.Header.Get("Content-Type"), len(body))
+		}
+		cfg, err := jpeg.DecodeConfig(bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("%s: 不是有效的 JPEG: %v", c.ext, err)
+		}
+		if long := max(cfg.Width, cfg.Height); long > 960 || long < 400 { // 900 向上取到 960 档
+			t.Fatalf("%s: 输出尺寸 %dx%d 不符合 960 档", c.ext, cfg.Width, cfg.Height)
+		}
+		_, body2 := e.do("GET", "/api/v1/media/"+id+"/render?w=900", nil, nil)
+		if !bytes.Equal(body, body2) {
+			t.Fatalf("%s: 缓存命中的结果应与第一次一致", c.ext)
+		}
 	}
 }

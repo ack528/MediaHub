@@ -23,6 +23,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -228,6 +232,23 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
         persistSoon()
     }
 
+    /** 跳转到某一天(date = yyyy-MM-dd):取该日附近的一条作为锚点,重建列表并滚到那里。返回是否成功。 */
+    suspend fun jumpToDate(date: String): Boolean {
+        val q = lastQuery ?: return false
+        return try {
+            // limit=2:返回 [该日之前的一条?, 该日当天或更靠后的第一条];只有一条时它就是最近的那条
+            val r = c.api.history(dialogId, q.sort, q.dir, q.types.joinToString(","), null, 2, aroundDate = date)
+            val it = (if (r.items.size >= 2) r.items[1] else r.items.firstOrNull()) ?: return false
+            anchorId = it.id; anchorOffset = 0; pos = null; freshOpen = false
+            reload.value += 1
+            persistSoon()
+            true
+        } catch (e: Exception) {
+            AppLog.w("chat", "跳转到日期失败 $date:${e.message}")
+            false
+        }
+    }
+
     /** 查看器翻到已加载内容的末尾时,用它继续取更多(沿用当前的排序 / 方向 / 类型)。 */
     fun moreLoader(): (suspend (String?, String?) -> Pair<List<Item>, String?>)? {
         val q = lastQuery ?: return null
@@ -278,6 +299,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(c: AppContainer, dialogId: String, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
     val vm: ChatViewModel = viewModel(key = "chat-$dialogId", factory = viewModelFactory { initializer { ChatViewModel(c, dialogId) } })
@@ -294,6 +316,9 @@ fun ChatScreen(c: AppContainer, dialogId: String, onBack: () -> Unit, onOpenView
     val gen by vm.generation.collectAsState()
     val ready by vm.ready.collectAsState()
     var menu by remember { mutableStateOf(false) }
+    var datePicker by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
     val dialog = c.dialogCache[dialogId]
     // 本次 Pager 对应的要恢复的位置(恢复完成后 VM 会清空锚点)
     val restoreId = remember(gen) { vm.anchorId }
@@ -331,6 +356,9 @@ fun ChatScreen(c: AppContainer, dialogId: String, onBack: () -> Unit, onOpenView
                         SORT_KEYS.forEach { (k, label) ->
                             DropdownMenuItem(text = { Text((if (k == sortKey) "✓  " else "     ") + label) }, onClick = { vm.change(null) { vm.sortKey.value = k } })
                         }
+                        if (sortKey == "taken") {
+                            DropdownMenuItem(text = { Text("跳转到日期…") }, onClick = { menu = false; datePicker = true })
+                        }
                         HorizontalDivider()
                         val asc = if (grid) ascGrid else ascChat
                         DropdownMenuItem(
@@ -351,6 +379,24 @@ fun ChatScreen(c: AppContainer, dialogId: String, onBack: () -> Unit, onOpenView
                     }
                 }
             }
+        }
+
+        if (datePicker) {
+            val st = rememberDatePickerState()
+            DatePickerDialog(
+                onDismissRequest = { datePicker = false },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val ms = st.selectedDateMillis
+                        datePicker = false
+                        if (ms != null) {
+                            val d = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneOffset.UTC).toLocalDate().toString()
+                            scope.launch { if (!vm.jumpToDate(d)) android.widget.Toast.makeText(ctx, "这个日期附近没有文件", android.widget.Toast.LENGTH_SHORT).show() }
+                        }
+                    }) { Text("跳转") }
+                },
+                dismissButton = { TextButton(onClick = { datePicker = false }) { Text("取消") } },
+            ) { DatePicker(state = st) }
         }
 
         Box(
@@ -525,17 +571,31 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
     var h = w / aspect
     if (h > maxH) { h = maxH; w = h * aspect }
     Box(Modifier.padding(start = 8.dp).width(w).height(h).mediaShared(item.id, shape).clip(shape).background(Color(0x33808080)).clickable(onClick = onClick)) {
-        val url = if (item.isVideo) api.posterUrl(item) else api.fileUrl(item)
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current).data(url)
-                .networkCachePolicy(if (loadEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED).build(),
-            contentDescription = item.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
-        )
-        if (item.isVideo) {
+        val url = if (item.isVideo) api.posterUrl(item) else api.imageUrl(item, 960)
+        var failed by remember(item.id) { mutableStateOf(false) }
+        LaunchedEffect(loadEnabled) { if (loadEnabled) failed = false } // 快速滑动时被暂停的请求不算失败
+        if (item.brokenLabel() != null) {
+            BrokenTile(item.brokenLabel()!! + (item.problem?.let { "\n点开查看原因" } ?: ""), Modifier.fillMaxSize())
+        } else {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current).data(url)
+                    .networkCachePolicy(if (loadEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED).build(),
+                contentDescription = item.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
+                onError = { failed = true }, onSuccess = { failed = false },
+            )
+            if (failed && loadEnabled) BrokenTile("预览不可用\n(点开仍可尝试播放)", Modifier.fillMaxSize())
+        }
+        if (item.flags.truncated) {
+            Row(
+                Modifier.align(Alignment.TopEnd).padding(6.dp).clip(RoundedCornerShape(50)).background(Color(0xCCFFB74D)).padding(horizontal = 8.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) { Text("不完整", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Medium) }
+        }
+        if (item.isVideo && item.brokenLabel() == null) {
             Box(Modifier.align(Alignment.Center).size(48.dp).clip(CircleShape).background(Color(0x80000000)), contentAlignment = Alignment.Center) {
                 Icon(TgIcons.Play, null, tint = Color.White, modifier = Modifier.size(28.dp))
             }
-            Pill(formatDuration(item.durationMs), Modifier.align(Alignment.TopStart).padding(6.dp), sizeSp = 12)
+            formatDuration(item.durationMs).takeIf { it.isNotEmpty() }?.let { Pill(it, Modifier.align(Alignment.TopStart).padding(6.dp), sizeSp = 12) }
         }
     }
 }

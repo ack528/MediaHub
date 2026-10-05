@@ -150,6 +150,11 @@ private fun ImagePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
         "内存缓存比例", s.imageMemPercent, listOf(10, 15, 20, 25, 30, 40).map { it to "$it%" },
         desc = "占应用可用内存的比例;大相册快速回滚时越大越流畅",
     ) { u { copy(imageMemPercent = it) } }
+    Header("格式兼容")
+    ChoiceRow(
+        "HEIC / HEIF / AVIF", s.heicMode, listOf("server" to "服务端转换(推荐)", "native" to "手机直接解码"),
+        desc = "服务端转成 JPEG 后显示,方向和色彩都正确;RAW、JPEG XL、TIFF 等格式总是由服务端转换",
+    ) { u { copy(heicMode = it) } }
     Header("显示")
     SwitchRow("硬件位图", "更省内存、绘制更快;个别机型出现花屏时关闭", s.hardwareBitmaps) { u { copy(hardwareBitmaps = it) } }
     SwitchRow("淡入动画", "图片加载完成时渐显", s.crossfade) { u { copy(crossfade = it) } }
@@ -189,6 +194,7 @@ private fun CodecPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
         desc = "“仅硬件 / 仅软件”不会回退到另一种,遇到不支持的格式会直接报错",
     ) { u { copy(decoderMode = it) } }
     SwitchRow("解码失败自动改软解", "硬件解码器报错时,自动换成软件解码从当前位置重试", s.autoSoftwareFallback) { u { copy(autoSoftwareFallback = it) } }
+    SwitchRow("解不了时自动转码", "手机无法播放(封装 / 编码不支持,软解也失败)时,自动改用服务端转码播放,需要服务端配置了 Jellyfin", s.autoTranscode) { u { copy(autoTranscode = it) } }
     SwitchRow("允许备用解码器", "首选解码器初始化失败时依次尝试同格式的其他解码器", s.decoderFallback) { u { copy(decoderFallback = it) } }
     ChoiceRow(
         "MediaCodec 异步队列", s.asyncQueueing, listOf("auto" to "自动", "on" to "强制开启", "off" to "强制关闭"),
@@ -203,11 +209,11 @@ private fun CodecPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
     Header("画质限制(用于转码 / 自适应码率)")
     ChoiceRow(
         "最大分辨率", s.maxHeight, listOf(0 to "不限", 2160 to "2160p (4K)", 1440 to "1440p", 1080 to "1080p", 720 to "720p", 480 to "480p"),
-        desc = "对直接播放原文件不起作用;转码功能上线后用来限制输出画质",
+        desc = "服务端转码时的最大分辨率(不限 = 1080p);直接播放原文件不受影响",
     ) { u { copy(maxHeight = it) } }
     ChoiceRow(
         "最大码率", s.maxBitrateMbps, listOf(0 to "不限", 40 to "40 Mbps", 20 to "20 Mbps", 10 to "10 Mbps", 5 to "5 Mbps", 2 to "2 Mbps"),
-        desc = "同上",
+        desc = "服务端转码时的视频码率上限(不限 = 按分辨率自动:480p 1.5M / 720p 3M / 1080p 6M / 1440p 12M / 2160p 20M)",
     ) { u { copy(maxBitrateMbps = it) } }
     Header("音轨与字幕")
     val langs = listOf("" to "跟随系统", "zh" to "中文", "en" to "English", "ja" to "日本語", "ko" to "한국어")

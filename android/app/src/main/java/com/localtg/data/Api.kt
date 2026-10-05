@@ -49,7 +49,8 @@ class LogInterceptor : Interceptor {
         try {
             val resp = chain.proceed(req)
             val ms = (System.nanoTime() - t0) / 1_000_000
-            if (!resp.isSuccessful && resp.code != 206) com.localtg.AppLog.w("net", "$what -> ${resp.code} (${ms}ms)")
+            if (resp.code == 504 && ms < 5) com.localtg.AppLog.d("net", "$what 暂停加载(快速滑动时只读本地缓存)")
+            else if (!resp.isSuccessful && resp.code != 206) com.localtg.AppLog.w("net", "$what -> ${resp.code} (${ms}ms)")
             else if (ms > 3000) com.localtg.AppLog.w("net", "$what 较慢 -> ${resp.code} (${ms}ms)")
             else com.localtg.AppLog.d("net", "$what -> ${resp.code} (${ms}ms)")
             return resp
@@ -113,12 +114,14 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     /** around 不为空时以该条目为中心取一页(用于恢复上次浏览位置);cursor 带方向,可向前或向后翻页。 */
     suspend fun history(
         dialogId: String, sort: String, dir: String, types: String, cursor: String?, limit: Int, around: String? = null,
+        aroundDate: String? = null,
     ): HistoryResp {
         val url = "$base/api/v1/dialogs/$dialogId/history".toHttpUrl().newBuilder()
             .addQueryParameter("sort", sort).addQueryParameter("dir", dir)
             .addQueryParameter("types", types).addQueryParameter("limit", limit.toString())
         cursor?.let { url.addQueryParameter("cursor", it) }
         around?.let { url.addQueryParameter("around", it) }
+        aroundDate?.let { url.addQueryParameter("aroundDate", it) } // yyyy-MM-dd,仅按时间排序时有效
         return call(Request.Builder().url(url.build()).build())
     }
 
@@ -140,6 +143,26 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     fun fileUrl(item: Item): String = "$base/api/v1/media/${item.id}/file?v=${item.v}"
     fun posterUrl(item: Item): String = "$base/api/v1/media/${item.id}/poster?v=${item.v}"
     fun fileUrl(id: String): String = "$base/api/v1/media/$id/file"
+
+    /** 服务端转码(Jellyfin HLS)的播放地址:maxHeight 目标高度,maxBitrate 视频码率(bps),sid 本次播放的会话标识。 */
+    fun hlsUrl(item: Item, maxHeight: Int, maxBitrate: Int, sid: String, audioIndex: Int? = null): String =
+        "$base/api/v1/media/${item.id}/hls/master.m3u8?maxHeight=$maxHeight&maxBitrate=$maxBitrate&sid=$sid" + (audioIndex?.let { "&audio=$it" } ?: "")
+
+    /** 退出播放时通知服务端结束这个会话的转码,释放 CPU / 核显。 */
+    suspend fun stopHls(item: Item, sid: String) {
+        runCatching {
+            withContext(Dispatchers.IO) {
+                http.newCall(Request.Builder().url("$base/api/v1/media/${item.id}/hls?sid=$sid").delete().build()).await().close()
+            }
+        }
+    }
+
+    /** 为 true 时 HEIC / HEIF / AVIF 也走服务端转换(设置里的"HEIC 显示方式")。 */
+    @Volatile var serverRenderHeic: Boolean = true
+
+    /** 显示图片用的地址:手机能直接显示的用原文件;其它格式由服务端转成 JPEG(w = 需要的长边像素,服务端取最近的一档)。 */
+    fun imageUrl(item: Item, w: Int): String =
+        if (needsServerRender(item.ext, serverRenderHeic)) "$base/api/v1/media/${item.id}/render?w=$w&v=${item.v}" else fileUrl(item)
     fun posterUrl(id: String): String = "$base/api/v1/media/$id/poster"
 }
 

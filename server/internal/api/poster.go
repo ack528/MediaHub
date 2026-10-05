@@ -1,6 +1,7 @@
 package api
 
 import (
+	"runtime/debug"
 	"bytes"
 	"context"
 	"database/sql"
@@ -9,6 +10,7 @@ import (
 	"image"
 	"image/draw"
 	"image/jpeg"
+	"mediahub/internal/logx"
 	"mediahub/internal/proc"
 	"os"
 	"os/exec"
@@ -77,7 +79,9 @@ func (p *Poster) Resolve(ctx context.Context, mediaID int64) (*PosterResult, err
 	var rootID int64
 	var typ int
 	var jfID, jfTag sql.NullString
-	if err := p.db.QueryRow(`SELECT root_id, type, jf_item_id, jf_img_tag FROM media WHERE id=?`, mediaID).Scan(&rootID, &typ, &jfID, &jfTag); err != nil {
+	var state int
+	var size int64
+	if err := p.db.QueryRow(`SELECT root_id, type, jf_item_id, jf_img_tag, state, size FROM media WHERE id=?`, mediaID).Scan(&rootID, &typ, &jfID, &jfTag, &state, &size); err != nil {
 		return nil, err
 	}
 	if typ != 1 {
@@ -93,6 +97,9 @@ func (p *Poster) Resolve(ctx context.Context, mediaID int64) (*PosterResult, err
 			return &PosterResult{Data: data, ContentType: ct, Source: "jellyfin"}, nil
 		}
 		// Jellyfin 暂时取不到图(离线、条目被移除等),回落到自己生成
+	}
+	if state == 2 || size == 0 { // 解析失败 / 空文件:ffmpeg 也生成不了封面,不必每次请求都白跑一次
+		return nil, errors.New("poster: 文件损坏或为空")
 	}
 	path, err := p.Get(ctx, mediaID)
 	if err != nil {
@@ -145,6 +152,19 @@ func (p *Poster) Get(ctx context.Context, mediaID int64) (string, error) {
 		c = &call{done: make(chan struct{})}
 		p.flight[mediaID] = c
 		go func() {
+			defer func() { // 封面生成里 panic 不能让等待它的请求永远卡住
+				if rec := recover(); rec != nil {
+					c.err = fmt.Errorf("封面生成 panic: %v", rec)
+					if lm := logx.Default(); lm != nil {
+						lm.Log.Error("封面生成 panic", "media", mediaID, "panic", fmt.Sprint(rec))
+						lm.WriteCrash("封面生成", rec, debug.Stack())
+					}
+					p.mu.Lock()
+					delete(p.flight, mediaID)
+					p.mu.Unlock()
+					close(c.done)
+				}
+			}()
 			c.path, c.err = p.generate(mediaID, rootID, durationMs)
 			p.mu.Lock()
 			delete(p.flight, mediaID)

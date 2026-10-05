@@ -52,7 +52,11 @@ type Config struct {
 	} `json:"tools"`
 	// IndexOtherFiles:是否把非媒体文件(文档等)也建索引,默认 false
 	IndexOtherFiles bool `json:"indexOtherFiles"`
-	Scan            struct {
+	// Log.Level:服务端日志级别 debug / info / warn / error,默认 info
+	Log struct {
+		Level string `json:"level"`
+	} `json:"log"`
+	Scan struct {
 		// SkipWithinHours:启动时,距上次"完整扫描"不足这么多小时就不再重新扫描(被中断的扫描总是会续扫)。0 = 每次启动都扫描
 		SkipWithinHours int `json:"skipWithinHours"`
 		// IntervalHours:服务运行期间定时重新扫描的间隔(小时);0 = 不定时扫描
@@ -76,6 +80,7 @@ func Default() *Config {
 	c.Video.PosterSource = "auto"
 	c.Jellyfin.URL = "http://127.0.0.1:8096"
 	c.Auth.TokenDays = 180
+	c.Log.Level = "info"
 	c.Scan.SkipWithinHours = 12
 	c.Scan.IntervalHours = 24
 	return c

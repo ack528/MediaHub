@@ -42,6 +42,10 @@ func (s *Server) mediaFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "gone", "文件不可读")
 		return
 	}
+	if st.Size() == 0 {
+		writeErr(w, 422, "file.empty", "文件大小为 0 字节(多半是下载失败留下的空文件)")
+		return
+	}
 	w.Header().Set("Content-Type", MimeByExt(ext))
 	w.Header().Set("ETag", `"`+strconv.FormatInt(st.ModTime().UnixMilli(), 16)+"-"+strconv.FormatInt(st.Size(), 16)+`"`)
 	if r.URL.Query().Get("v") != "" {

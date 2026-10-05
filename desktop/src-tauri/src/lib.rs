@@ -17,7 +17,7 @@ use std::{
 
 use serde_json::{json, Value};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, WindowEvent,
 };
@@ -229,66 +229,69 @@ async fn service_status() -> Value {
     .await
 }
 
+fn start_service_blocking() -> Result<(), String> {
+    let cfg = read_json(&config_path());
+    if ping(&cfg).is_some() {
+        return Ok(());
+    }
+    let exe = server_exe();
+    if !exe.exists() {
+        return Err(format!("找不到服务程序:{}", exe.display()));
+    }
+    Command::new(&exe)
+        .arg("serve")
+        .arg("-config")
+        .arg(config_path())
+        .env("MEDIAHUB_ROOT", root_dir())
+        .current_dir(root_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        // 与管理程序脱离(新进程组),关闭管理界面后服务继续运行。
+        // 不能用 DETACHED_PROCESS:无控制台的进程启动 ffmpeg / ExifTool 时,Windows 会为每个子进程新建一个可见的 cmd 窗口;
+        // 只用 CREATE_NO_WINDOW,服务端带一个隐藏的控制台,子进程继承它,不再弹窗。
+        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+        .spawn()
+        .map_err(|e| format!("启动失败:{e}"))?;
+    if wait_for(&cfg, true, 12) {
+        Ok(())
+    } else {
+        Err("服务在 12 秒内没有响应,请查看日志".into())
+    }
+}
+
+fn stop_service_blocking() -> Result<(), String> {
+    let cfg = read_json(&config_path());
+    let _ = Command::new("taskkill")
+        .args(["/F", "/IM", "mediahub.exe"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    if wait_for(&cfg, false, 8) {
+        Ok(())
+    } else {
+        Err("服务没有停止".into())
+    }
+}
+
+fn rescan_blocking() -> Result<(), String> {
+    let cfg = read_json(&config_path());
+    let key = admin_key(&cfg).ok_or("找不到管理密钥(服务未运行?)")?;
+    http_post_empty(&format!("{}/api/v1/admin/rescan", base_url(&cfg)), &key)
+}
+
 #[tauri::command]
 async fn service_start() -> Result<(), String> {
-    blocking(|| {
-        let cfg = read_json(&config_path());
-        if ping(&cfg).is_some() {
-            return Ok(());
-        }
-        let exe = server_exe();
-        if !exe.exists() {
-            return Err(format!("找不到服务程序:{}", exe.display()));
-        }
-        Command::new(&exe)
-            .arg("serve")
-            .arg("-config")
-            .arg(config_path())
-            .env("MEDIAHUB_ROOT", root_dir())
-            .current_dir(root_dir())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            // 与管理程序脱离(新进程组),关闭管理界面后服务继续运行。
-            // 不能用 DETACHED_PROCESS:无控制台的进程启动 ffmpeg / ExifTool 时,Windows 会为每个子进程新建一个可见的 cmd 窗口;
-            // 只用 CREATE_NO_WINDOW,服务端带一个隐藏的控制台,子进程继承它,不再弹窗。
-            .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
-            .spawn()
-            .map_err(|e| format!("启动失败:{e}"))?;
-        if wait_for(&cfg, true, 12) {
-            Ok(())
-        } else {
-            Err("服务在 12 秒内没有响应,请查看日志".into())
-        }
-    })
-    .await
+    blocking(start_service_blocking).await
 }
 
 #[tauri::command]
 async fn service_stop() -> Result<(), String> {
-    blocking(|| {
-        let cfg = read_json(&config_path());
-        let _ = Command::new("taskkill")
-            .args(["/F", "/IM", "mediahub.exe"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-        if wait_for(&cfg, false, 8) {
-            Ok(())
-        } else {
-            Err("服务没有停止".into())
-        }
-    })
-    .await
+    blocking(stop_service_blocking).await
 }
 
 #[tauri::command]
 async fn admin_rescan() -> Result<(), String> {
-    blocking(|| {
-        let cfg = read_json(&config_path());
-        let key = admin_key(&cfg).ok_or("找不到管理密钥(服务未运行?)")?;
-        http_post_empty(&format!("{}/api/v1/admin/rescan", base_url(&cfg)), &key)
-    })
-    .await
+    blocking(rescan_blocking).await
 }
 
 // ---------------------------------------------------------------- 命令:账号(调用服务程序的 CLI)
@@ -357,23 +360,203 @@ async fn delete_user(name: String) -> Result<(), String> {
 
 // ---------------------------------------------------------------- 命令:日志
 
+fn log_dir() -> PathBuf {
+    data_dir(&read_json(&config_path())).join("logs")
+}
+
+fn line_rank(l: &str) -> u8 {
+    if l.contains(" level=ERROR") {
+        4
+    } else if l.contains(" level=WARN") {
+        3
+    } else if l.contains(" level=INFO") {
+        2
+    } else {
+        1
+    }
+}
+
+/// 读日志文件(服务停止时也能看)。level:空 = 全部;debug/info/warn/error = 该级别及以上。
+/// 当天的日志不够 n 行时,往前补前面的日志文件。
 #[tauri::command]
-async fn read_log(lines: usize) -> Result<String, String> {
+async fn read_log(lines: usize, level: Option<String>) -> Result<String, String> {
     blocking(move || {
-        let cfg = read_json(&config_path());
-        let dir = data_dir(&cfg).join("logs");
-        let newest = fs::read_dir(&dir)
+        let dir = log_dir();
+        let mut files: Vec<_> = fs::read_dir(&dir)
             .map_err(|_| format!("没有日志目录:{}", dir.display()))?
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "log").unwrap_or(false))
-            .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
-        let Some(f) = newest else { return Ok(String::new()) };
-        let bytes = fs::read(f.path()).map_err(|e| e.to_string())?;
-        let tail = if bytes.len() > 512 * 1024 { &bytes[bytes.len() - 512 * 1024..] } else { &bytes[..] };
-        let text = String::from_utf8_lossy(tail);
-        let all: Vec<&str> = text.lines().collect();
-        let n = lines.clamp(1, 2000);
-        Ok(all[all.len().saturating_sub(n)..].join("\n"))
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.starts_with("mediahub-") && n.ends_with(".log")
+            })
+            .collect();
+        files.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+        let min = match level.as_deref().map(|s| s.to_lowercase()).as_deref() {
+            Some("debug") => 1,
+            Some("info") => 2,
+            Some("warn") => 3,
+            Some("error") => 4,
+            _ => 0,
+        };
+        let n = lines.clamp(1, 5000);
+        let mut out: Vec<String> = vec![];
+        for f in files.iter().rev().take(4) {
+            let bytes = fs::read(f.path()).map_err(|e| e.to_string())?;
+            let tail = if bytes.len() > 2 * 1024 * 1024 { &bytes[bytes.len() - 2 * 1024 * 1024..] } else { &bytes[..] };
+            let text = String::from_utf8_lossy(tail);
+            let mut part: Vec<String> = text.lines().filter(|l| min == 0 || line_rank(l) >= min).map(|l| l.to_string()).collect();
+            part.append(&mut out);
+            out = part;
+            if out.len() >= n {
+                break;
+            }
+        }
+        Ok(out[out.len().saturating_sub(n)..].join("\n"))
+    })
+    .await
+}
+
+/// 崩溃报告列表(新 → 旧):文件名、大小、修改时间(unix 秒)
+#[tauri::command]
+fn list_crashes() -> Vec<Value> {
+    let mut v: Vec<(String, u64, u64)> = fs::read_dir(log_dir())
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("crash-"))
+                .map(|e| {
+                    let m = e.metadata().ok();
+                    let t = m
+                        .as_ref()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    (e.file_name().to_string_lossy().to_string(), m.map(|m| m.len()).unwrap_or(0), t)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort_by(|a, b| b.0.cmp(&a.0));
+    v.into_iter().map(|(n, size, t)| json!({ "name": n, "size": size, "time": t })).collect()
+}
+
+/// 把日志目录(日志 + 崩溃报告 + stderr.log)打成 zip,返回 zip 路径。服务没运行也能导出;不含密码、令牌和 API 密钥。
+#[tauri::command]
+async fn export_logs() -> Result<String, String> {
+    blocking(|| {
+        let dir = log_dir();
+        if !dir.exists() {
+            return Err(format!("没有日志目录:{}", dir.display()));
+        }
+        let out_dir = root_dir().join("runtime").join("exports");
+        fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let zip = out_dir.join(format!("mediahub-logs-{stamp}.zip"));
+        // Windows 自带的 tar(bsdtar)可以直接打 zip
+        let st = Command::new("tar")
+            .arg("-a")
+            .arg("-c")
+            .arg("-f")
+            .arg(&zip)
+            .arg("-C")
+            .arg(&dir)
+            .arg(".")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("打包失败:{e}"))?;
+        if !st.status.success() || !zip.exists() {
+            return Err(format!("打包失败:{}", String::from_utf8_lossy(&st.stderr).trim()));
+        }
+        Ok(zip.to_string_lossy().to_string())
+    })
+    .await
+}
+
+// ---------------------------------------------------------------- 命令:开机自启 / 防火墙
+
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_NAME: &str = "MediaHubManager";
+
+#[tauri::command]
+async fn autostart_get() -> bool {
+    blocking(|| {
+        Command::new("reg")
+            .args(["query", RUN_KEY, "/v", RUN_NAME])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+    .await
+}
+
+/// 开机自启:登录 Windows 后以"最小化到托盘"的方式启动管理程序(配置里勾选"启动管理程序时自动启动服务"后,服务也随之启动)。
+#[tauri::command]
+async fn autostart_set(enable: bool) -> Result<(), String> {
+    blocking(move || {
+        let out = if enable {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let val = format!("\"{}\" --minimized", exe.display());
+            Command::new("reg")
+                .args(["add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &val, "/f"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+        } else {
+            Command::new("reg").args(["delete", RUN_KEY, "/v", RUN_NAME, "/f"]).creation_flags(CREATE_NO_WINDOW).output()
+        }
+        .map_err(|e| e.to_string())?;
+        if out.status.success() || !enable {
+            Ok(())
+        } else {
+            Err(format!("写入注册表失败:{}", String::from_utf8_lossy(&out.stderr).trim()))
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+async fn firewall_status() -> bool {
+    blocking(|| {
+        Command::new("netsh")
+            .args(["advfirewall", "firewall", "show", "rule", "name=MediaHub"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+    .await
+}
+
+/// 放行端口(只对"专用网络"):需要管理员权限,会弹出 Windows 的 UAC 确认框。
+#[tauri::command]
+async fn firewall_add(port: u16) -> Result<(), String> {
+    blocking(move || {
+        let args = format!(
+            "advfirewall firewall add rule name=MediaHub dir=in action=allow protocol=TCP localport={port} profile=private"
+        );
+        let ps = format!("Start-Process -FilePath netsh -ArgumentList '{args}' -Verb RunAs -WindowStyle Hidden -Wait");
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err("没有获得管理员权限,已取消".into());
+        }
+        let ok = Command::new("netsh")
+            .args(["advfirewall", "firewall", "show", "rule", "name=MediaHub"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ok {
+            Ok(())
+        } else {
+            Err("防火墙规则没有创建成功".into())
+        }
     })
     .await
 }
@@ -406,17 +589,43 @@ pub fn run() {
             set_password,
             delete_user,
             read_log,
+            list_crashes,
+            export_logs,
+            autostart_get,
+            autostart_set,
+            firewall_status,
+            firewall_add,
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
+            let start = MenuItem::with_id(app, "start", "启动服务", true, None::<&str>)?;
+            let stop = MenuItem::with_id(app, "stop", "停止服务", true, None::<&str>)?;
+            let rescan = MenuItem::with_id(app, "rescan", "重新扫描媒体库", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出管理程序(服务继续运行)", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
+            let menu = Menu::with_items(app, &[&show, &sep1, &start, &stop, &rescan, &sep2, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .tooltip("MediaHub")
                 .on_menu_event(|app, ev| match ev.id.as_ref() {
                     "show" => show_main(app),
+                    "start" => {
+                        tauri::async_runtime::spawn_blocking(|| {
+                            let _ = start_service_blocking();
+                        });
+                    }
+                    "stop" => {
+                        tauri::async_runtime::spawn_blocking(|| {
+                            let _ = stop_service_blocking();
+                        });
+                    }
+                    "rescan" => {
+                        tauri::async_runtime::spawn_blocking(|| {
+                            let _ = rescan_blocking();
+                        });
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -429,6 +638,18 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+            // 开机自启时带 --minimized:不弹窗口,只留托盘图标
+            if std::env::args().any(|a| a == "--minimized") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+            // 配置里勾选了"启动管理程序时自动启动服务"
+            if read_json(&config_path())["desktop"]["autoStartService"].as_bool().unwrap_or(false) {
+                tauri::async_runtime::spawn_blocking(|| {
+                    let _ = start_service_blocking();
+                });
+            }
             Ok(())
         })
         // 点关闭只是隐藏到托盘;服务本来就是独立进程

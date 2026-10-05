@@ -116,7 +116,11 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
                 enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
             ) {
                 Column(Modifier.fillMaxWidth().background(Color(0x66000000)).statusBarsPadding().padding(8.dp)) {
-                    TextButton(onClick = onBack) { Text("‹ 返回", color = Color.White) }
+                    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = onBack) { Text("‹ 返回", color = Color.White) }
+                        androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                        if (cur.size > 0L && !cur.flags.corrupt) TextButton(onClick = { scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, cur) } }) { Text("保存到手机", color = Color.White) }
+                    }
                     Text(cur.name, color = Color.White, modifier = Modifier.padding(horizontal = 12.dp), maxLines = 1)
                     Text(
                         "${pager.currentPage + 1} / ${items.size}   ${formatDateTime(cur.takenAt)}   ${formatSize(cur.size)}" +
@@ -138,7 +142,7 @@ private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean
         return
     }
     ZoomableAsyncImage(
-        model = ImageRequest.Builder(LocalContext.current).data(c.api.fileUrl(item)).build(),
+        model = ImageRequest.Builder(LocalContext.current).data(c.api.imageUrl(item, 2880)).build(),
         contentDescription = item.name,
         modifier = Modifier.fillMaxSize().then(if (shared) Modifier.mediaShared(item.id, RectangleShape) else Modifier),
         onClick = { ui.chrome = !ui.chrome },

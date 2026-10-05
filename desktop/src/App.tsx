@@ -52,8 +52,8 @@ function PageBody({ page, tab }: { page: PageId; tab: string }) {
     case "storage": return <Storage tab={tab} />;
     case "video": return <Video tab={tab} />;
     case "accounts": return <Accounts tab={tab} />;
-    case "network": return <Network />;
-    case "logs": return <Logs />;
+    case "network": return <Network tab={tab} />;
+    case "logs": return <Logs tab={tab} />;
     case "about": return <About />;
   }
 }

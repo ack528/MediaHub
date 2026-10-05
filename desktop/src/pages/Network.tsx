@@ -1,13 +1,14 @@
-import { Card, ItemRow, Row } from "../components";
+import { useCallback, useEffect, useState } from "react";
+import { bridge } from "../bridge";
+import { Badge, Btn, Card, ItemRow, Row, Switch } from "../components";
 import { itemsOf } from "../schema";
 import { useApp } from "../store";
 import { CopyBtn } from "./Overview";
 
-export function Network() {
+function Listen() {
   const { ips, config } = useApp();
   const port = Number(config.listen.slice(config.listen.lastIndexOf(":") + 1)) || 8480;
   const items = itemsOf("network", "监听与访问");
-  const fw = `netsh advfirewall firewall add rule name="MediaHub" dir=in action=allow protocol=TCP localport=${port} profile=private`;
   return (
     <>
       <Card icon="globe" title="监听与访问" count={items.length}>
@@ -19,10 +20,58 @@ export function Network() {
             <CopyBtn text={`http://${i.ip}:${port}`} />
           </Row>
         ))}
-        <Row icon="shield" title="Windows 防火墙" desc={<>首次让手机访问时,需要放行端口。以管理员身份运行 PowerShell 执行(只对“专用网络”生效):<pre className="code">{fw}</pre></>}>
-          <CopyBtn text={fw} />
+      </Card>
+    </>
+  );
+}
+
+function Startup() {
+  const { config, toast } = useApp();
+  const port = Number(config.listen.slice(config.listen.lastIndexOf(":") + 1)) || 8480;
+  const items = itemsOf("network", "开机与防火墙");
+  const [auto, setAuto] = useState(false);
+  const [fw, setFw] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const cmd = `netsh advfirewall firewall add rule name="MediaHub" dir=in action=allow protocol=TCP localport=${port} profile=private`;
+
+  const load = useCallback(async () => {
+    try { setAuto(await bridge.autostartGet()); } catch { /* ignore */ }
+    try { setFw(await bridge.firewallStatus()); } catch { setFw(null); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const toggleAuto = async (v: boolean) => {
+    try { await bridge.autostartSet(v); setAuto(v); toast(v ? "已设为开机自启(启动后最小化到托盘)" : "已取消开机自启"); }
+    catch (e) { toast(String(e), "err"); }
+  };
+  const addFw = async () => {
+    setBusy(true);
+    try { await bridge.firewallAdd(port); toast("已放行端口 " + port); } catch (e) { toast(String(e), "err"); }
+    setBusy(false);
+    load();
+  };
+
+  return (
+    <>
+      <Card icon="play" title="开机与启动" count={items.length + 1}>
+        <Row icon="zap" title="开机自启管理程序" desc="登录 Windows 后自动运行管理程序,窗口不弹出,只留在托盘。配合下面的开关,服务也会随之启动。">
+          <Switch checked={auto} onChange={toggleAuto} />
+        </Row>
+        {items.map((i) => <ItemRow key={i.id} item={i} />)}
+      </Card>
+      <Card icon="shield" title="Windows 防火墙">
+        <Row icon="shield" title="端口放行" desc={<>手机访问需要放行 TCP 端口 {port}(只对“专用网络”生效)。点“一键放行”会弹出管理员确认框。</>}>
+          {fw === null ? <Badge>未检测</Badge> : fw ? <Badge tone="green">已放行</Badge> : <Badge tone="orange">未放行</Badge>}
+          <Btn kind="primary" icon="shield" disabled={busy} onClick={addFw}>{busy ? "等待确认…" : fw ? "重新放行" : "一键放行"}</Btn>
+        </Row>
+        <Row icon="wrench" title="手动方式" desc={<>也可以以管理员身份运行 PowerShell 执行:<pre className="code">{cmd}</pre></>}>
+          <CopyBtn text={cmd} />
         </Row>
       </Card>
     </>
   );
+}
+
+export function Network({ tab }: { tab: string }) {
+  return tab === "开机与防火墙" ? <Startup /> : <Listen />;
 }

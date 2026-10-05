@@ -70,6 +70,11 @@ UPDATE media SET dialog_id = COALESCE((
 DELETE FROM dialogs WHERE instr(rel_path, '\') > 0;
 UPDATE dialogs SET parent_id = NULL, topics = 0;
 `,
+	// v5:文件完整性检查标记(chk);并让之前"解析失败"的视频重新补全一次,以便写上更明确的原因
+	`
+ALTER TABLE media ADD COLUMN chk INTEGER NOT NULL DEFAULT 0;
+UPDATE media SET state=0 WHERE state=2;
+`,
 }
 
 // Migrate 把数据库升级到最新模式。

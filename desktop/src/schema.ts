@@ -38,8 +38,8 @@ export const PAGES: PageDef[] = [
   { id: "storage", label: "缓存与图片", icon: "database", tabs: ["缓存", "图片"] },
   { id: "video", label: "视频转码", icon: "film", tabs: ["转码", "Jellyfin", "工具路径"] },
   { id: "accounts", label: "账号安全", icon: "users", tabs: ["账号", "登录"] },
-  { id: "network", label: "网络", icon: "globe", tabs: ["监听与访问"] },
-  { id: "logs", label: "日志", icon: "filetext", tabs: ["服务日志"] },
+  { id: "network", label: "网络", icon: "globe", tabs: ["监听与访问", "开机与防火墙"] },
+  { id: "logs", label: "日志", icon: "filetext", tabs: ["服务日志", "日志设置"] },
   { id: "about", label: "关于", icon: "info", tabs: ["关于"] },
 ];
 
@@ -185,6 +185,20 @@ export const ITEMS: Item[] = [
     read: (c) => portOf(c.listen),
     write: (c, v) => ({ ...c, listen: `${hostOf(c.listen)}:${v}` }),
   },
+
+  {
+    id: "autoStartService", page: "network", tab: "开机与防火墙", icon: "play", kind: "switch",
+    title: "打开管理程序时自动启动服务", desc: "管理程序启动(包括开机自启)时,如果服务没在运行就自动把它拉起来。服务本身与管理程序是两个进程,关闭管理界面不会停止服务。",
+    ...at("desktop.autoStartService"),
+  },
+
+  // ---- 日志 / 日志设置
+  {
+    id: "logLevel", page: "logs", tab: "日志设置", icon: "filetext", kind: "select", restart: true,
+    title: "服务端日志级别", desc: "信息:记录启动、扫描、登录等常规事件(推荐);调试:额外记录每个请求,排查问题时临时使用,文件会增长得更快;警告 / 错误:只记录异常。日志保留 14 天,总量不超过 300 MB。",
+    ...at("log.level"),
+    options: [{ value: "debug", label: "调试(最详细)" }, { value: "info", label: "信息(推荐)" }, { value: "warn", label: "仅警告和错误" }, { value: "error", label: "仅错误" }],
+  },
 ];
 
 export function itemsOf(page: PageId, tab: string) { return ITEMS.filter((i) => i.page === page && i.tab === tab); }
@@ -196,7 +210,9 @@ const CUSTOM: Record<string, number> = {
   "storage/缓存": 1, // 各盘缓存占用
   "accounts/账号": 1,
   "network/监听与访问": 1,
+  "network/开机与防火墙": 2, // 开机自启、防火墙
   "logs/服务日志": 1,
+  "logs/日志设置": 2, // 导出日志、崩溃报告
   "about/关于": 1,
 };
 export function countOf(page: PageId, tab: string) {

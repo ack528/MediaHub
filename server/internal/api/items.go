@@ -23,6 +23,8 @@ type VideoInfo struct {
 type Flags struct {
 	Animated bool `json:"animated"`
 	Corrupt  bool `json:"corrupt"`
+	// Truncated:能解析但文件不完整(典型是下载中断),播放到被截断处会停止
+	Truncated bool `json:"truncated"`
 }
 
 type Item struct {
@@ -44,11 +46,13 @@ type Item struct {
 	V          string     `json:"v"`
 	Video      *VideoInfo `json:"video,omitempty"`
 	Flags      Flags      `json:"flags"`
+	// Problem:文件有问题时的中文说明(0 字节 / 不完整 / 无法解析),手机端直接显示
+	Problem string `json:"problem,omitempty"`
 }
 
 // itemCols 与 scanItem 的列顺序必须一致。排序键作为额外一列追加在最后。
 const itemCols = `m.id, m.dialog_id, m.name, m.ext, m.type, m.size, m.mtime, m.ctime, m.taken_eff,
-	m.w, m.h, m.rot, m.duration_ms, m.container, m.vcodec, m.acodecs, m.bitrate, m.hdr, m.state, m.probe_json, m.thumbhash`
+	m.w, m.h, m.rot, m.duration_ms, m.container, m.vcodec, m.acodecs, m.bitrate, m.hdr, m.state, m.probe_json, m.thumbhash, m.err`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -62,8 +66,9 @@ func scanItem(sc scanner, extra ...any) (Item, error) {
 		container, vcodec, acodecs, hdr, pj sql.NullString
 		name, ext                           string
 		th                                  []byte
+		errTxt                              sql.NullString
 	)
-	dest := []any{&id, &dlg, &name, &ext, &typ, &size, &mtime, &ctime, &taken, &w, &h, &rot, &dur, &container, &vcodec, &acodecs, &br, &hdr, &state, &pj, &th}
+	dest := []any{&id, &dlg, &name, &ext, &typ, &size, &mtime, &ctime, &taken, &w, &h, &rot, &dur, &container, &vcodec, &acodecs, &br, &hdr, &state, &pj, &th, &errTxt}
 	dest = append(dest, extra...)
 	if err := sc.Scan(dest...); err != nil {
 		return it, err
@@ -85,7 +90,16 @@ func scanItem(sc scanner, extra ...any) (Item, error) {
 		it.Thumbhash = base64.StdEncoding.EncodeToString(th)
 	}
 	it.Flags.Animated = ext == "gif" || ext == "apng"
-	it.Flags.Corrupt = state == 2
+	it.Flags.Corrupt = state == 2 || (size == 0 && classify.Type(typ) != classify.File)
+	it.Flags.Truncated = state == 1 && errTxt.Valid && errTxt.String != ""
+	switch {
+	case size == 0:
+		it.Problem = "文件大小为 0 字节(多半是下载失败留下的空文件)"
+	case errTxt.Valid && errTxt.String != "":
+		it.Problem = errTxt.String
+	case state == 2:
+		it.Problem = "无法解析,文件可能已损坏"
+	}
 	if classify.Type(typ) == classify.Video || classify.Type(typ) == classify.Audio {
 		if dur.Valid {
 			d := dur.Int64

@@ -71,7 +71,7 @@ fun TgAvatar(title: String, key: String, size: Dp, cover: Item?, api: Api) {
             fontSize = (size.value * 0.42f).sp, fontWeight = FontWeight.Medium,
         )
         if (cover != null && cover.canShowNatively()) {
-            val url = if (cover.isVideo) api.posterUrl(cover.id) else api.fileUrl(cover.id)
+            val url = if (cover.isVideo) api.posterUrl(cover.id) else api.imageUrl(cover, 480)
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current).data(url).build(),
                 contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(size),

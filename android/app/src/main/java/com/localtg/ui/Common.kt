@@ -4,10 +4,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,7 +55,32 @@ fun formatSize(b: Long): String = when {
 }
 
 /** 图片能否由 Android 直接解码显示;否则需要服务端转换(M4)。 */
-fun Item.canShowNatively(): Boolean = isVideo || ext in NATIVE_IMAGE_EXT
+fun Item.canShowNatively(): Boolean = isVideo || type == "photo" || type == "gif" // 手机不能直接显示的格式由服务端转成 JPEG
+
+/** 损坏 / 无法加载时的占位:警告图标 + 一句话说明(不再是一块空白)。 */
+@Composable
+fun BrokenTile(text: String, modifier: Modifier = Modifier, compact: Boolean = false) {
+    Box(modifier.background(Color(0xFF3A3F47)), contentAlignment = Alignment.Center) {
+        androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            androidx.compose.material3.Icon(
+                com.localtg.ui.tg.TgIcons.Warning, null, tint = Color(0xFFFFB74D),
+                modifier = Modifier.size(if (compact) 22.dp else 34.dp),
+            )
+            Text(
+                text, color = Color(0xCCFFFFFF), fontSize = if (compact) 10.sp else 12.sp,
+                modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp), maxLines = 2,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+        }
+    }
+}
+
+/** 文件损坏时占位上显示的简短文字;不损坏返回 null。 */
+fun Item.brokenLabel(): String? = when {
+    size == 0L -> "空文件"
+    flags.corrupt -> "文件损坏"
+    else -> null
+}
 
 /**
  * 网格/列表里的一格缩略图:视频用封面,图片直接用原图(Coil 按格子尺寸降采样解码)。
@@ -61,10 +89,14 @@ fun Item.canShowNatively(): Boolean = isVideo || ext in NATIVE_IMAGE_EXT
 @Composable
 fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled: Boolean = true) {
     Box(modifier.background(Color(0x22888888))) {
-        if (!item.canShowNatively()) {
+        if (item.brokenLabel() != null) {
+            BrokenTile(item.brokenLabel()!!, Modifier.fillMaxSize(), compact = true)
+        } else if (!item.canShowNatively()) {
             Text(item.ext.uppercase(), Modifier.align(Alignment.Center), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            val url = if (item.isVideo) api.posterUrl(item) else api.fileUrl(item)
+            var failed by androidx.compose.runtime.remember(item.id) { androidx.compose.runtime.mutableStateOf(false) }
+            androidx.compose.runtime.LaunchedEffect(loadEnabled) { if (loadEnabled) failed = false } // 快速滑动时被暂停的请求不算失败
+            val url = if (item.isVideo) api.posterUrl(item) else api.imageUrl(item, 480)
             val req = ImageRequest.Builder(LocalContext.current)
                 .data(url)
                 .networkCachePolicy(if (loadEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED)
@@ -72,6 +104,14 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
             AsyncImage(
                 model = req, contentDescription = item.name, contentScale = ContentScale.Crop,
                 placeholder = ColorPainter(Color(0x22888888)), modifier = Modifier.fillMaxSize(),
+                onError = { failed = true }, onSuccess = { failed = false },
+            )
+            if (failed && loadEnabled) BrokenTile("预览不可用", Modifier.fillMaxSize(), compact = true)
+        }
+        if (item.flags.truncated) { // 不完整的视频(下载中断):角上放个警告图标
+            androidx.compose.material3.Icon(
+                com.localtg.ui.tg.TgIcons.Warning, "文件不完整", tint = Color(0xFFFFB74D),
+                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(18.dp),
             )
         }
         if (item.isVideo) {

@@ -44,3 +44,6 @@ desktop/src-tauri/icons/ios/
 .claude/
 Thumbs.db
 .DS_Store
+
+# 手机上传来的调试日志(含设备数据)
+bugs/

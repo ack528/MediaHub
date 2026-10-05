@@ -27,6 +27,7 @@ import (
 
 	"mediahub/internal/classify"
 	"mediahub/internal/config"
+	"mediahub/internal/logx"
 	"mediahub/internal/natsort"
 	"mediahub/internal/winfs"
 )
@@ -52,6 +53,10 @@ type Progress struct {
 	Message  string    `json:"message,omitempty"`
 
 	// 实时速度:每秒采样一次的指数平滑值
+	// Skipped:因无权限 / 目录已消失而跳过的目录数(属于正常现象,不算错误);FailedDirs:最近的跳过 / 失败明细
+	Skipped    int64        `json:"skipped"`
+	FailedDirs []DirFailure `json:"failedDirs,omitempty"`
+
 	ScanRate    float64 `json:"scanRate"`    // 扫描速度,文件/秒
 	EnrichRate  float64 `json:"enrichRate"`  // 元数据读取速度,个/秒
 	EnrichTotal int64   `json:"enrichTotal"` // 本轮需要读取元数据的总数
@@ -61,6 +66,20 @@ type Progress struct {
 	// 采样用的内部状态
 	lastFiles, lastEnriched int64
 	lastT                   time.Time
+}
+
+// DirFailure 一个读取失败(或被跳过)的目录及原因。
+type DirFailure struct {
+	Path   string `json:"path"`
+	Kind   string `json:"kind"` // denied | gone | offline | io | other
+	Code   int    `json:"code,omitempty"`
+	Reason string `json:"reason"`
+}
+
+// 无论配置怎么写,这些系统保护目录总是跳过(读它们只会得到"没有权限")。
+var builtinExclude = []string{
+	"system volume information", "$recycle.bin", "recovery", "config.msi", "$winreagent", "$sysreset",
+	"$windows.~bt", "$windows.~ws", "windows.old", "found.000", "msocache", ".mediahub",
 }
 
 type Indexer struct {
@@ -75,11 +94,14 @@ type Indexer struct {
 
 func New(db *sql.DB, cfg *config.Config, log *slog.Logger) *Indexer {
 	ex := map[string]bool{}
+	for _, n := range builtinExclude {
+		ex[n] = true
+	}
 	for _, n := range cfg.Exclude {
 		ex[strings.ToLower(n)] = true
 	}
 	ix := &Indexer{DB: db, Cfg: cfg, Log: log, progress: map[int64]*Progress{}, exclude: ex}
-	go ix.sampler()
+	logx.Go("扫描速度采样", ix.sampler)
 	return ix
 }
 
@@ -135,6 +157,7 @@ func (ix *Indexer) Progress() []Progress {
 			Dirs: atomic.LoadInt64(&p.Dirs), Files: atomic.LoadInt64(&p.Files),
 			Enriched: atomic.LoadInt64(&p.Enriched), Errors: atomic.LoadInt64(&p.Errors),
 			Started: p.Started, Finished: p.Finished, Message: p.Message,
+			Skipped: atomic.LoadInt64(&p.Skipped), FailedDirs: append([]DirFailure(nil), p.FailedDirs...),
 			ScanRate: p.ScanRate, EnrichRate: p.EnrichRate, EnrichTotal: atomic.LoadInt64(&p.EnrichTotal),
 			ETASec: p.ETASec, Resumed: p.Resumed,
 		})
@@ -289,6 +312,10 @@ func (ix *Indexer) ScanRoot(ctx context.Context, r Root) error {
 	atomic.StoreInt64(&p.Dirs, 0)
 	atomic.StoreInt64(&p.Files, 0)
 	atomic.StoreInt64(&p.Errors, 0)
+	atomic.StoreInt64(&p.Skipped, 0)
+	ix.mu.Lock()
+	p.FailedDirs = nil
+	ix.mu.Unlock()
 
 	// 续扫还是新扫:上次状态为 scanning 说明被中断了,沿用同一个扫描代号
 	var state string
@@ -335,8 +362,7 @@ func (ix *Indexer) ScanRoot(ctx context.Context, r Root) error {
 	scanDir := func(f frame) ([]frame, error) {
 		entries, err := winfs.ListDir(f.path)
 		if err != nil {
-			atomic.AddInt64(&p.Errors, 1)
-			ix.Log.Warn("目录读取失败,保留其下旧数据", "dir", f.path, "err", err)
+			ix.recordDirFailure(p, f.path, err)
 			ix.preserveSubtree(r.ID, f, gen)
 			return nil, nil
 		}
@@ -464,6 +490,27 @@ func (ix *Indexer) ScanRoot(ctx context.Context, r Root) error {
 	ix.Log.Info("扫描完成", "root", r.Path, "dirs", atomic.LoadInt64(&p.Dirs), "files", atomic.LoadInt64(&p.Files),
 		"ms", time.Since(p.Started).Milliseconds(), "resumed", resume)
 	return nil
+}
+
+// recordDirFailure 记录一个读取失败的目录:无权限 / 已消失属于正常现象(记为"跳过"),其它才算错误,并按严重程度写日志。
+func (ix *Indexer) recordDirFailure(p *Progress, path string, err error) {
+	kind, code, text := winfs.ErrKind(err)
+	switch kind {
+	case "denied":
+		atomic.AddInt64(&p.Skipped, 1)
+		ix.Log.Info("跳过没有权限的目录", "dir", path, "code", code)
+	case "gone":
+		atomic.AddInt64(&p.Skipped, 1)
+		ix.Log.Debug("目录在扫描过程中消失", "dir", path)
+	default:
+		atomic.AddInt64(&p.Errors, 1)
+		ix.Log.Warn("目录读取失败,已保留其下旧数据", "dir", path, "kind", kind, "code", code, "reason", text, "err", err)
+	}
+	ix.mu.Lock()
+	if len(p.FailedDirs) < 50 {
+		p.FailedDirs = append(p.FailedDirs, DirFailure{Path: path, Kind: kind, Code: code, Reason: text})
+	}
+	ix.mu.Unlock()
 }
 
 func (ix *Indexer) markScanned(dialogID, gen int64) {

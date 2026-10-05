@@ -2,6 +2,7 @@
 package api
 
 import (
+	"fmt"
 	"context"
 	"crypto/subtle"
 	"database/sql"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +19,8 @@ import (
 	"mediahub/internal/cache"
 	"mediahub/internal/config"
 	"mediahub/internal/index"
+	"mediahub/internal/jellyfin"
+	"mediahub/internal/logx"
 	"mediahub/internal/winfs"
 )
 
@@ -29,6 +33,8 @@ type Server struct {
 	Idx     *index.Indexer
 	Cache   *cache.Manager
 	Poster  *Poster
+	Render  *Renderer
+	JF      *jellyfin.Client // 转码引擎(可选)
 	Log     *slog.Logger
 	Version string
 	// Rescan 由 main 提供:异步重新扫描(rootID=0 表示全部)
@@ -69,8 +75,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/media/{id}/file", authd(s.mediaFile))
 	mux.Handle("HEAD /api/v1/media/{id}/file", authd(s.mediaFile))
 	mux.Handle("GET /api/v1/media/{id}/poster", authd(s.mediaPoster))
+	mux.Handle("GET /api/v1/media/{id}/render", authd(s.mediaRender))
+	mux.Handle("GET /api/v1/media/{id}/hls/{rest...}", authd(s.mediaHLS))
+	mux.Handle("DELETE /api/v1/media/{id}/hls", authd(s.mediaHLSStop))
 	mux.Handle("GET /api/v1/admin/status", authd(s.adminStatus))
 	mux.Handle("POST /api/v1/admin/rescan", authd(s.adminRescan))
+	mux.Handle("GET /api/v1/admin/logs", s.adminOnly(s.adminLogs))
+	mux.Handle("GET /api/v1/admin/logs/bundle", s.adminOnly(s.adminLogBundle))
+	mux.Handle("POST /api/v1/admin/logs/level", s.adminOnly(s.adminLogLevel))
 	return s.logging(mux)
 }
 
@@ -78,17 +90,56 @@ func (s *Server) logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()
 		sw := &statusWriter{ResponseWriter: w, code: 200}
+		// 请求里的 panic 不能拖垮服务:记日志、写崩溃报告,给客户端一个 500
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.Log.Error("请求处理中 panic", "m", r.Method, "path", r.URL.Path, "panic", fmt.Sprint(rec))
+				if lm := logx.Default(); lm != nil {
+					lm.WriteCrash("HTTP "+r.Method+" "+r.URL.Path, rec, debug.Stack())
+				}
+				if !sw.wrote {
+					writeErr(sw, 500, "internal", "服务器内部错误(已记录到日志)")
+				}
+			}
+		}()
 		next.ServeHTTP(sw, r)
-		s.Log.Debug("http", "m", r.Method, "path", r.URL.Path, "q", r.URL.RawQuery, "code", sw.code, "ms", time.Since(t0).Milliseconds())
+		ms := time.Since(t0).Milliseconds()
+		attrs := []any{"m", r.Method, "path", r.URL.Path, "code", sw.code, "ms", ms, "ip", clientIP(r)}
+		stream := strings.Contains(r.URL.Path, "/file") || strings.Contains(r.URL.Path, "/hls/") // 播放 / 下载本来就耗时,不算慢
+		switch {
+		case sw.code >= 500:
+			s.Log.Error("HTTP 5xx", attrs...)
+		case sw.code == 404 && strings.HasSuffix(r.URL.Path, "/poster"), sw.code == 401 && strings.HasSuffix(r.URL.Path, "/dialogs"):
+			s.Log.Debug("http", attrs...) // 封面不存在、令牌过期这类是常态,不刷屏
+		case sw.code >= 400:
+			s.Log.Warn("HTTP 4xx", append(attrs, "q", r.URL.RawQuery)...)
+		case !stream && ms > 5000:
+			s.Log.Warn("请求较慢", attrs...)
+		default:
+			s.Log.Debug("http", attrs...)
+		}
 	})
 }
 
 type statusWriter struct {
 	http.ResponseWriter
-	code int
+	code  int
+	wrote bool
 }
 
-func (w *statusWriter) WriteHeader(c int) { w.code = c; w.ResponseWriter.WriteHeader(c) }
+func (w *statusWriter) WriteHeader(c int) { w.code, w.wrote = c, true; w.ResponseWriter.WriteHeader(c) }
+func (w *statusWriter) Write(b []byte) (int, error) {
+	w.wrote = true
+	return w.ResponseWriter.Write(b)
+}
+
+func clientIP(r *http.Request) string {
+	h, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return h
+}
 
 // Flush/Unwrap 让反向代理与 ServeContent 能访问底层能力。
 func (w *statusWriter) Flush() {
@@ -145,7 +196,7 @@ func rfc(ms int64) string { return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 
 func (s *Server) serverInfo(w http.ResponseWriter, r *http.Request) {
 	name := "MediaHub"
-	writeJSON(w, 200, map[string]any{"name": name, "version": s.Version, "apiVersion": APIVersion})
+	writeJSON(w, 200, map[string]any{"name": name, "version": s.Version, "apiVersion": APIVersion, "transcode": s.JF != nil})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {

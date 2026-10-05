@@ -2,7 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openPath as openerOpenPath } from "@tauri-apps/plugin-opener";
-import { DEFAULT_CONFIG, type Config, type Env, type LocalIp, type ServiceStatus, type UserInfo } from "./types";
+import { DEFAULT_CONFIG, type Config, type CrashFile, type Env, type LocalIp, type ServiceStatus, type UserInfo } from "./types";
 
 export interface Bridge {
   readonly isMock: boolean;
@@ -18,7 +18,13 @@ export interface Bridge {
   addUser(name: string, password: string): Promise<void>;
   setPassword(name: string, password: string): Promise<void>;
   deleteUser(name: string): Promise<void>;
-  readLog(lines: number): Promise<string>;
+  readLog(lines: number, level?: string): Promise<string>;
+  listCrashes(): Promise<CrashFile[]>;
+  exportLogs(): Promise<string>;
+  autostartGet(): Promise<boolean>;
+  autostartSet(enable: boolean): Promise<void>;
+  firewallStatus(): Promise<boolean>;
+  firewallAdd(port: number): Promise<void>;
   pickFolder(): Promise<string | null>;
   openPath(path: string): Promise<void>;
 }
@@ -37,7 +43,13 @@ const tauri: Bridge = {
   addUser: (name, password) => invoke("add_user", { name, password }),
   setPassword: (name, password) => invoke("set_password", { name, password }),
   deleteUser: (name) => invoke("delete_user", { name }),
-  readLog: (lines) => invoke("read_log", { lines }),
+  readLog: (lines, level) => invoke("read_log", { lines, level: level || null }),
+  listCrashes: () => invoke("list_crashes"),
+  exportLogs: () => invoke("export_logs"),
+  autostartGet: () => invoke("autostart_get"),
+  autostartSet: (enable) => invoke("autostart_set", { enable }),
+  firewallStatus: () => invoke("firewall_status"),
+  firewallAdd: (port) => invoke("firewall_add", { port }),
   pickFolder: async () => {
     const r = await openDialog({ directory: true, multiple: false, title: "选择文件夹" });
     return typeof r === "string" ? r : null;
@@ -67,7 +79,7 @@ const delay = <T,>(v: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(v
 
 const mockBridge: Bridge = {
   isMock: true,
-  env: () => delay({ root: "D:\\Project\\Claude\\本地浏览", serverExe: "D:\\Project\\Claude\\本地浏览\\runtime\\bin\\mediahub.exe", serverExists: true, appVersion: "0.4.0", configPath: "D:\\Project\\Claude\\本地浏览\\runtime\\mediahub\\config.json", configExists: true }),
+  env: () => delay({ root: "D:\\Project\\Claude\\本地浏览", serverExe: "D:\\Project\\Claude\\本地浏览\\runtime\\bin\\mediahub.exe", serverExists: true, appVersion: "1.0.0", configPath: "D:\\Project\\Claude\\本地浏览\\runtime\\mediahub\\config.json", configExists: true }),
   readConfig: () => delay(mock.config),
   writeConfig: async (cfg) => { mock.config = cfg; save(); },
   localIps: () => delay([{ name: "以太网", ip: "192.168.1.20", private: true }, { name: "WLAN", ip: "192.168.1.31", private: true }]),
@@ -76,13 +88,13 @@ const mockBridge: Bridge = {
     const up = Math.floor((Date.now() - mock.startedAt) / 1000);
     return {
       running: true, pids: [4321],
-      info: { name: "MediaHub", version: "0.4.0", apiVersion: 1 },
+      info: { name: "MediaHub", version: "1.0.0", apiVersion: 1 },
       status: {
-        version: "0.4.0", listen: "0.0.0.0:8480", startedAt: new Date(mock.startedAt).toISOString(), uptimeSec: up,
+        version: "1.0.0", listen: "0.0.0.0:8480", startedAt: new Date(mock.startedAt).toISOString(), uptimeSec: up,
         media: 2_184_330, dialogs: 41_902,
         index: [
           { rootId: 1, label: "D:", state: "idle", dirs: 18234, files: 612044, enriched: 612044, errors: 0 },
-          { rootId: 2, label: "E:", state: "enriching", dirs: 9921, files: 402118, enriched: 188200, errors: 3, enrichRate: 41.5, enrichTotal: 402118, etaSec: 5150 },
+          { rootId: 2, label: "E:", state: "enriching", dirs: 9921, files: 402118, enriched: 188200, errors: 3, skipped: 2, enrichRate: 41.5, enrichTotal: 402118, etaSec: 5150, failedDirs: [{ path: "E:\\Backup\\old", kind: "io", code: 23, reason: "磁盘读取错误(可能有坏道)" }, { path: "E:\\Private", kind: "denied", code: 5, reason: "没有权限访问" }, { path: "E:\\Temp\\gone", kind: "gone", code: 3, reason: "目录已不存在" }] },
           { rootId: 3, label: "F:", state: "idle", dirs: 1203, files: 88122, enriched: 88122, errors: 0 },
         ],
         cache: [
@@ -101,7 +113,13 @@ const mockBridge: Bridge = {
   addUser: async (name) => { if (mock.users.some((u) => u.name === name)) throw "用户已存在"; mock.users.push({ name, created: Math.floor(Date.now() / 1000) }); save(); },
   setPassword: () => delay(undefined),
   deleteUser: async (name) => { mock.users = mock.users.filter((u) => u.name !== name); save(); },
-  readLog: () => delay(Array.from({ length: 24 }, (_, i) => `time=2026-10-05T10:${String(i).padStart(2, "0")}:12.000+08:00 level=INFO msg="示例日志(浏览器 mock)" n=${i}`).join("\n")),
+  readLog: (_n, level) => delay(Array.from({ length: 24 }, (_, i) => `time=2026-10-05T10:${String(i).padStart(2, "0")}:12.000+08:00 level=${i % 6 === 0 ? "WARN" : "INFO"} msg="示例日志(浏览器 mock)" n=${i}`).filter((l) => !level || level === "info" || level === "debug" || l.includes("level=WARN")).join("\n")),
+  listCrashes: () => delay([]),
+  exportLogs: () => delay("D:\\Project\\Claude\\本地浏览\\runtime\\exports\\mediahub-logs-mock.zip"),
+  autostartGet: async () => localStorage.getItem("mock-autostart") === "1",
+  autostartSet: async (e) => { localStorage.setItem("mock-autostart", e ? "1" : "0"); },
+  firewallStatus: async () => localStorage.getItem("mock-fw") === "1",
+  firewallAdd: async () => { localStorage.setItem("mock-fw", "1"); },
   pickFolder: async () => window.prompt("(浏览器模式)输入文件夹路径", "G:\\") || null,
   openPath: async (p) => { window.alert("打开:" + p); },
 };

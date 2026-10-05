@@ -59,6 +59,9 @@ data class VideoInfo(
 )
 
 @Serializable
+data class ItemFlags(val animated: Boolean = false, val corrupt: Boolean = false, val truncated: Boolean = false)
+
+@Serializable
 data class Item(
     val id: String,
     val dialogId: String,
@@ -77,6 +80,10 @@ data class Item(
     val thumbhash: String? = null,
     val v: String = "",
     val video: VideoInfo? = null,
+    /** 服务端检查出的文件状态:corrupt 无法解析 / 空文件;truncated 能解析但不完整(下载中断) */
+    val flags: ItemFlags = ItemFlags(),
+    /** 文件有问题时的中文说明(服务端给出) */
+    val problem: String? = null,
 ) {
     val isVideo: Boolean get() = type == "video"
     val aspect: Float? get() = if (w != null && h != null && h > 0) w.toFloat() / h else null
@@ -91,5 +98,18 @@ data class HistoryResp(
     val prevCursor: String? = null,
 )
 
-/** Android 能直接解码显示的图片扩展名(Android 17:含 HEIC / AVIF)。其余格式走服务端 render(M4)。 */
-val NATIVE_IMAGE_EXT = setOf("jpg", "jpeg", "jpe", "jfif", "png", "webp", "bmp", "gif", "heic", "heif", "avif")
+/** Android 能可靠地直接解码显示的图片扩展名。 */
+val NATIVE_IMAGE_EXT = setOf("jpg", "jpeg", "jpe", "jfif", "png", "webp", "bmp", "gif")
+
+/** HEIC / HEIF / AVIF:系统能解码,但方向、色彩、个别文件会出问题,默认也交给服务端转换(设置里可改成手机直接解码)。 */
+val HEIC_EXT = setOf("heic", "heif", "hif", "avif")
+
+/** 这些格式是否需要服务端转成 JPEG 再显示(RAW、JXL、TIFF 等一律需要;HEIC 类看设置)。 */
+fun needsServerRender(ext: String, renderHeic: Boolean): Boolean {
+    val e = ext.lowercase()
+    return when {
+        e in NATIVE_IMAGE_EXT -> false
+        e in HEIC_EXT -> renderHeic
+        else -> true
+    }
+}

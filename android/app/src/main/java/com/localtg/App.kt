@@ -29,7 +29,11 @@ class AppContainer(app: Application) {
     val settings = com.localtg.data.SettingsStore(app, scope)
     val playback = com.localtg.data.PlaybackStore(app)
     val http: OkHttpClient = buildHttpClient(session, settings.value.connectTimeoutSec, settings.value.readTimeoutSec) { scope.launch { session.clearToken() } }
-    val api = Api(http, session)
+    val api = Api(http, session).also { it.serverRenderHeic = settings.value.heicMode == "server" }
+    init {
+        // 设置改变后立即生效的项
+        scope.launch { settings.state.collect { api.serverRenderHeic = it.heicMode == "server" } }
+    }
 
     /** 聊天页点开查看器时,把当前已加载的条目快照交给查看器。 */
     @Volatile var viewerFeed: com.localtg.data.ViewerFeed = com.localtg.data.ViewerFeed(emptyList())

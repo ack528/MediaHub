@@ -15,6 +15,9 @@ export interface Config {
   tools: { ffmpeg: string; ffprobe: string; exiftool: string; vips: string };
   indexOtherFiles: boolean;
   scan: { skipWithinHours: number; intervalHours: number };
+  log: { level: "debug" | "info" | "warn" | "error" };
+  /** 管理程序自己的设置(服务端忽略) */
+  desktop: { autoStartService: boolean };
 }
 
 /** 与 Go 的 config.Default() 保持一致。 */
@@ -31,6 +34,8 @@ export const DEFAULT_CONFIG: Config = {
   tools: { ffmpeg: "", ffprobe: "", exiftool: "", vips: "" },
   indexOtherFiles: false,
   scan: { skipWithinHours: 12, intervalHours: 24 },
+  log: { level: "info" },
+  desktop: { autoStartService: false },
 };
 
 export function mergeConfig(partial: unknown): Config {
@@ -65,7 +70,14 @@ export interface IndexProgress {
   scanRate?: number; enrichRate?: number; enrichTotal?: number; etaSec?: number;
   /** 本次是接着上次被中断的扫描继续 */
   resumed?: boolean;
+  /** 因无权限 / 目录已消失而跳过的目录数,以及最近的明细 */
+  skipped?: number;
+  failedDirs?: DirFailure[];
 }
+
+export interface DirFailure { path: string; kind: "denied" | "gone" | "offline" | "io" | "other"; code?: number; reason: string }
+
+export interface CrashFile { name: string; size: number; time: number }
 
 export interface CacheInfo {
   rootId: string; dir: string; mode: "on_drive" | "fallback"; reason?: string;

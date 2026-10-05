@@ -14,8 +14,8 @@ android {
         applicationId = "com.localtg"
         minSdk = 26
         targetSdk = 37
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "1.0.0"
     }
     // 发布签名:密钥库与口令放在项目根目录 signing\(不要外传);没有该文件时 release 用调试签名,方便别人构建
     val signingProps = Properties().apply {
@@ -75,6 +75,7 @@ dependencies {
 
     implementation("androidx.media3:media3-exoplayer:1.11.1")
     implementation("androidx.media3:media3-ui:1.11.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.11.1")
 
     testImplementation("junit:junit:4.13.2")

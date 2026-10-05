@@ -5,6 +5,8 @@ import { useApp } from "../store";
 const fmtRate = (r?: number) => (r && r > 0 ? (r >= 100 ? Math.round(r).toLocaleString("zh-CN") : r.toFixed(1)) : "0");
 const fmtEta = (sec: number) => (sec >= 3600 ? `${Math.floor(sec / 3600)} 小时 ${Math.floor((sec % 3600) / 60)} 分钟` : sec >= 60 ? `${Math.ceil(sec / 60)} 分钟` : `${sec} 秒`);
 
+const KIND_LABEL: Record<string, string> = { denied: "没有权限", gone: "已不存在", offline: "盘不可用", io: "读取出错", other: "其他" };
+
 function portOf(listen: string) { return Number(listen.slice(listen.lastIndexOf(":") + 1)) || 8480; }
 
 export function CopyBtn({ text }: { text: string }) {
@@ -70,8 +72,24 @@ export function Overview() {
                    {scanning && <> · <b className="speed">{fmtRate(p.scanRate)} 文件/秒</b></>}
                    {enriching && <> · 已读元数据 {fmtNum(p.enriched)} / {fmtNum(total)} · <b className="speed">{fmtRate(p.enrichRate)} 个/秒</b>{p.etaSec ? <> · 预计还需 {fmtEta(p.etaSec)}</> : null}</>}
                    {scanning && p.resumed && <> · 接着上次中断的扫描继续</>}
+                   {(p.skipped ?? 0) > 0 && <> · {p.skipped} 个目录已跳过</>}
                    {p.errors > 0 && <> · <span className="warn-text">{p.errors} 个目录读取失败</span></>}
                    {enriching && <Progress value={p.enriched} max={total} />}
+                   {(p.failedDirs?.length ?? 0) > 0 && (
+                     <details className="faildirs">
+                       <summary>查看跳过 / 失败的目录({p.failedDirs!.length}{p.failedDirs!.length >= 50 ? "+" : ""})</summary>
+                       <ul>
+                         {p.failedDirs!.map((f) => (
+                           <li key={f.path}>
+                             <Badge tone={f.kind === "denied" || f.kind === "gone" ? "gray" : "orange"}>{KIND_LABEL[f.kind] ?? "其他"}</Badge>
+                             <code>{f.path}</code>
+                             <span className="why">{f.reason}{f.code ? `(错误码 ${f.code})` : ""}</span>
+                           </li>
+                         ))}
+                       </ul>
+                       <div className="hint">“没有权限”“目录不存在”是正常现象(系统保护目录、被删除的文件夹),已自动跳过;“读取出错”“盘不可用”需要留意:可能是硬盘坏道、移动硬盘断开,或网络盘掉线。</div>
+                     </details>
+                   )}
                  </>}>
               <Badge tone={busyState ? "blue" : "green"}>{scanning ? "扫描中" : enriching ? "读取元数据" : p.state === "error" ? "出错" : "已完成"}</Badge>
             </Row>
