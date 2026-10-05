@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用内使用的完整 logo(圆角渐变方块 + 相框 + 服务器底座),和桌面端 app-icon.svg 一致 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="96dp" android:height="96dp"
+    android:viewportWidth="1024" android:viewportHeight="1024">
+    <path android:pathData="M274,64 H750 A210,210 0 0 1 960,274 V750 A210,210 0 0 1 750,960 H274 A210,210 0 0 1 64,750 V274 A210,210 0 0 1 274,64 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="64" android:startY="64" android:endX="960" android:endY="960">
+                <item android:offset="0" android:color="#4AA3FF" />
+                <item android:offset="1" android:color="#1B6FE0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="44"
+        android:pathData="M288,268 H736 A56,56 0 0 1 792,324 V652 A56,56 0 0 1 736,708 H288 A56,56 0 0 1 232,652 V324 A56,56 0 0 1 288,268 Z" />
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M352,408 A48,48 0 1 0 448,408 A48,48 0 1 0 352,408 Z" />
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M262,676 L452,500 L560,600 L640,524 L762,676 Z" />
+    <path android:fillColor="#EBF3FF"
+        android:pathData="M358,768 H666 A26,26 0 0 1 666,820 H358 A26,26 0 0 1 358,768 Z" />
+    <path android:fillColor="#1B6FE0"
+        android:pathData="M381,794 A11,11 0 1 0 403,794 A11,11 0 1 0 381,794 Z" />
+    <path android:fillColor="#1B6FE0"
+        android:pathData="M425,794 A11,11 0 1 0 447,794 A11,11 0 1 0 425,794 Z" />
+</vector>

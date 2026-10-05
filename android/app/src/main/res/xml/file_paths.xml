@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 日志打包后放在 cache/shared/,通过系统分享面板发出 -->
+    <cache-path name="shared" path="shared/" />
+</paths>

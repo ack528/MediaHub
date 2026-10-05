@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4aa3ff"/>
+      <stop offset="1" stop-color="#1b6fe0"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="210" fill="url(#g)"/>
+  <!-- 相框 -->
+  <rect x="232" y="268" width="560" height="440" rx="56" fill="none" stroke="#ffffff" stroke-width="44"/>
+  <!-- 山与太阳 -->
+  <circle cx="400" cy="408" r="48" fill="#ffffff"/>
+  <path d="M262 676 L452 500 L560 600 L640 524 L762 676 Z" fill="#ffffff"/>
+  <!-- 服务器底座 -->
+  <rect x="332" y="768" width="360" height="52" rx="26" fill="#ffffff" opacity="0.92"/>
+  <circle cx="392" cy="794" r="11" fill="#1b6fe0"/>
+  <circle cx="436" cy="794" r="11" fill="#1b6fe0"/>
+</svg>

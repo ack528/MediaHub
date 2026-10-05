@@ -1,0 +1,49 @@
+package com.localtg.data
+
+import android.content.Context
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.flow.first
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+
+private val Context.viewDataStore by preferencesDataStore(name = "view_state")
+
+/**
+ * 每个群组(文件夹)各自记住:上次看到哪一条、滚动偏移,以及排序/视图/过滤。
+ * 下次点开时直接回到那个位置(Telegram 打开聊天回到上次位置的做法)。
+ */
+@Serializable
+data class DialogView(
+    /** 退出时屏幕上"第一项"(聊天流里是最靠下的一条,网格里是左上角)的条目 id */
+    val itemId: String? = null,
+    /** 该条目相对于列表边缘的像素偏移,用于精确还原 */
+    val offsetPx: Int = 0,
+    val sort: String = "taken",
+    val ascChat: Boolean = true,
+    val ascGrid: Boolean = false,
+    val grid: Boolean = false,
+    val types: List<String> = listOf("photo", "video", "gif"),
+    val columns: Int = 3,
+    val savedAt: Long = 0,
+)
+
+class ViewStateStore(private val ctx: Context) {
+    private fun key(dialogId: String) = stringPreferencesKey("dv_$dialogId")
+
+    suspend fun load(dialogId: String): DialogView? = runCatching {
+        ctx.viewDataStore.data.first()[key(dialogId)]?.let { AppJson.decodeFromString<DialogView>(it) }
+    }.getOrNull()
+
+    suspend fun save(dialogId: String, v: DialogView) {
+        runCatching {
+            ctx.viewDataStore.edit { it[key(dialogId)] = AppJson.encodeToString(v.copy(savedAt = System.currentTimeMillis())) }
+        }
+    }
+
+    /** 退出登录或换服务器时清掉所有位置记录(条目 id 只对原服务器有效)。 */
+    suspend fun clearAll() {
+        runCatching { ctx.viewDataStore.edit { it.clear() } }
+    }
+}

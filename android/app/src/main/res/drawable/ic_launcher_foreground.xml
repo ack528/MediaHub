@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 与桌面端 / app-icon.svg 同一个 logo:相框(山与太阳)+ 服务器底座。内容缩到自适应图标的安全区内。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="1024" android:viewportHeight="1024">
+    <group android:pivotX="512" android:pivotY="544" android:scaleX="0.72" android:scaleY="0.72" android:translateY="-32">
+        <path
+            android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="44"
+            android:pathData="M288,268 H736 A56,56 0 0 1 792,324 V652 A56,56 0 0 1 736,708 H288 A56,56 0 0 1 232,652 V324 A56,56 0 0 1 288,268 Z" />
+        <path android:fillColor="#FFFFFF"
+            android:pathData="M352,408 A48,48 0 1 0 448,408 A48,48 0 1 0 352,408 Z" />
+        <path android:fillColor="#FFFFFF"
+            android:pathData="M262,676 L452,500 L560,600 L640,524 L762,676 Z" />
+        <path android:fillColor="#EBF3FF"
+            android:pathData="M358,768 H666 A26,26 0 0 1 666,820 H358 A26,26 0 0 1 358,768 Z" />
+        <path android:fillColor="#1B6FE0"
+            android:pathData="M381,794 A11,11 0 1 0 403,794 A11,11 0 1 0 381,794 Z" />
+        <path android:fillColor="#1B6FE0"
+            android:pathData="M425,794 A11,11 0 1 0 447,794 A11,11 0 1 0 425,794 Z" />
+    </group>
+</vector>

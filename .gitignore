@@ -1,0 +1,46 @@
+# ---- 便携工具链与下载缓存(体积大,可由 tools/setup.ps1 重新生成);脚本本身要提交 ----
+tools/*
+!tools/*.ps1
+!tools/versions.json
+
+# ---- 运行时数据、构建产物、打包输出 ----
+runtime/
+dist/
+server/**/*.exe
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.log
+*.apk
+
+# ---- 签名密钥(绝不能提交,丢了无法覆盖安装旧版 APK;需要自行备份)----
+signing/
+*.jks
+*.keystore
+keystore.properties
+
+# ---- 测试样本与截图(样本由 testdata/scripts 下的脚本生成 / 下载)----
+testdata/*
+!testdata/scripts/
+
+# ---- Android ----
+android/build/
+android/.gradle/
+android/**/build/
+android/.idea/
+android/local.properties
+android/.kotlin/
+
+# ---- 桌面端(Tauri / Node)----
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/gen/
+desktop/src-tauri/target/
+# tauri icon 顺带生成的移动端图标用不到
+desktop/src-tauri/icons/android/
+desktop/src-tauri/icons/ios/
+
+# ---- 其它 ----
+.claude/
+Thumbs.db
+.DS_Store
