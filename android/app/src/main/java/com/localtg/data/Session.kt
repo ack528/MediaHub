@@ -73,10 +73,14 @@ class SessionStore(private val ctx: Context) {
     private val kToken = stringPreferencesKey("token")
     private val kLastAddress = stringPreferencesKey("last_address")
     private val kPin = stringPreferencesKey("tls_pin")
+    private val kMode = stringPreferencesKey("mode")
 
     /** null 表示未登录。 */
     val session = MutableStateFlow<Session?>(null)
     val loaded = MutableStateFlow(false)
+
+    /** 本地媒体模式(读取手机自己的照片和视频,不连服务器)。 */
+    val local = MutableStateFlow(false)
 
     /** 已信任的服务器证书指纹(SHA-256);HTTPS 连接只接受这张证书。 */
     val pin = MutableStateFlow<String?>(null)
@@ -95,7 +99,12 @@ class SessionStore(private val ctx: Context) {
                 TokenCrypto.encrypt(stored)?.let { enc -> ctx.dataStore.edit { it[kToken] = enc } }
             }
         }
-        session.value = if (!url.isNullOrEmpty() && !tok.isNullOrEmpty()) Session(url, tok) else null
+        if (p[kMode] == "local") {
+            local.value = true
+            session.value = Session(LocalMode.BASE, "local")
+        } else {
+            session.value = if (!url.isNullOrEmpty() && !tok.isNullOrEmpty()) Session(url, tok) else null
+        }
         loaded.value = true
     }
 
@@ -106,9 +115,18 @@ class SessionStore(private val ctx: Context) {
 
     suspend fun lastAddress(): String = ctx.dataStore.data.first()[kLastAddress].orEmpty()
 
+    /** 进入本地媒体模式。 */
+    suspend fun enterLocal() {
+        ctx.dataStore.edit { it[kMode] = "local" }
+        local.value = true
+        session.value = Session(LocalMode.BASE, "local")
+    }
+
     suspend fun save(s: Session, addressAsTyped: String) {
         val stored = TokenCrypto.encrypt(s.token) ?: s.token
+        local.value = false
         ctx.dataStore.edit {
+            it[kMode] = "server"
             it[kUrl] = s.baseUrl
             it[kToken] = stored
             it[kLastAddress] = addressAsTyped
@@ -118,7 +136,8 @@ class SessionStore(private val ctx: Context) {
 
     /** 退出登录或令牌失效:保留服务器地址,清掉令牌。 */
     suspend fun clearToken() {
-        ctx.dataStore.edit { it.remove(kToken) }
+        ctx.dataStore.edit { it.remove(kToken); it.remove(kMode) }
+        local.value = false
         session.value = null
     }
 }

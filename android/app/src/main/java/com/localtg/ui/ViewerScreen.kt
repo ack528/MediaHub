@@ -119,7 +119,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
                     androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         TextButton(onClick = onBack) { Text("‹ 返回", color = Color.White) }
                         androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
-                        if (cur.size > 0L && !cur.flags.corrupt) TextButton(onClick = { scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, cur) } }) { Text("保存到手机", color = Color.White) }
+                        if (!c.isLocal && cur.size > 0L && !cur.flags.corrupt) TextButton(onClick = { scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, cur) } }) { Text("保存到手机", color = Color.White) }
                     }
                     Text(cur.name, color = Color.White, modifier = Modifier.padding(horizontal = 12.dp), maxLines = 1)
                     Text(

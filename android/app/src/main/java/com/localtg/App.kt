@@ -30,7 +30,8 @@ class AppContainer(app: Application) {
     val viewState = com.localtg.data.ViewStateStore(app)
     val settings = com.localtg.data.SettingsStore(app, scope)
     val playback = com.localtg.data.PlaybackStore(app)
-    val http: OkHttpClient = buildHttpClient(session, settings.value.connectTimeoutSec, settings.value.readTimeoutSec) { scope.launch { session.clearToken() } }
+    val local = com.localtg.data.LocalMedia(app)
+    val http: OkHttpClient = buildHttpClient(session, local, settings.value.connectTimeoutSec, settings.value.readTimeoutSec) { scope.launch { session.clearToken() } }
     val api = Api(http, session).also { it.serverRenderHeic = settings.value.heicMode == "server" }
     init {
         // 设置改变后立即生效的项
@@ -51,6 +52,9 @@ class AppContainer(app: Application) {
     }
 
     /** 聊天页点开查看器时,把当前已加载的条目快照交给查看器。 */
+    /** 本地媒体模式(读取手机自己的照片和视频)。 */
+    val isLocal: Boolean get() = session.local.value
+
     /** 登录页顶部的提示(例如服务器升级为加密传输后,旧的 http 登录需要重新连接)。 */
     val notice = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 

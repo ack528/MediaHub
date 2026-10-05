@@ -17,7 +17,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import com.localtg.data.LocalMedia
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -57,6 +62,13 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
     val notice by c.notice.collectAsState()
 
     LaunchedEffect(Unit) { address = c.session.lastAddress() }
+
+    // 本地媒体模式:读取手机自己的照片和视频(按文件夹分群),不需要服务器
+    val ctx = LocalContext.current
+    fun enterLocal() { scope.launch { c.session.enterLocal(); onDone() } }
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        if (LocalMedia.hasPermission(ctx)) enterLocal() else error = "需要允许读取照片和视频,才能浏览手机上的本地媒体(可以在系统设置里授予)"
+    }
 
     /** 验证服务器并进入账号密码步骤。 */
     suspend fun connect(url: String) {
@@ -105,6 +117,11 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
                     }
                 },
             ) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("连接") }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                enabled = !busy, modifier = Modifier.fillMaxWidth(),
+                onClick = { if (LocalMedia.hasPermission(ctx)) enterLocal() else permLauncher.launch(LocalMedia.permissions()) },
+            ) { Text("读取本地媒体(不连接服务器)") }
         } else {
             Text("已连接:${info!!.name}  v${info!!.version}", style = MaterialTheme.typography.titleMedium)
             Text(normalized, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

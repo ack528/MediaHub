@@ -153,11 +153,12 @@ private data class Query(val sort: String, val dir: String, val types: Set<Strin
 class ChatViewModel(private val c: AppContainer, private val dialogId: String) : ViewModel() {
     private val defaultTypes = setOf("photo", "video", "gif")
     val ready = MutableStateFlow(false)
-    val sortKey = MutableStateFlow("taken")
+    // 服务器上的文件夹默认按文件名排序;本地媒体默认按文件时间
+    val sortKey = MutableStateFlow(if (c.isLocal) "taken" else "name")
     /** 聊天流从上到下是否为正序(时间:旧→新,最新在最底部,和 Telegram 一样)。 */
     val ascChat = MutableStateFlow(true)
     /** 网格从左上到右下是否为正序(默认新→旧)。 */
-    val ascGrid = MutableStateFlow(false)
+    val ascGrid = MutableStateFlow(!c.isLocal) // 按名称时网格从 a 到 z(从前到后);按时间时新的在前
     val grid = MutableStateFlow(false)
     val types = MutableStateFlow(defaultTypes)
     val columns = MutableStateFlow(3)
@@ -354,7 +355,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, onBack: () -> Unit, onOpenView
                     BarIcon(TgIcons.More, "更多") { menu = true }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         SORT_KEYS.forEach { (k, label) ->
-                            DropdownMenuItem(text = { Text((if (k == sortKey) "✓  " else "     ") + label) }, onClick = { vm.change(null) { vm.sortKey.value = k } })
+                            DropdownMenuItem(text = { Text((if (k == sortKey) "✓  " else "     ") + label) }, onClick = { vm.change(null) { vm.sortKey.value = k; vm.ascGrid.value = (k == "name" || k == "type") } })
                         }
                         if (sortKey == "taken") {
                             DropdownMenuItem(text = { Text("跳转到日期…") }, onClick = { menu = false; datePicker = true })

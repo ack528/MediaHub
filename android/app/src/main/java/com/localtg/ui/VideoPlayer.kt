@@ -245,7 +245,7 @@ fun VideoPage(
                     if (codecProblem && !useSoftware && modeOverride == null && cs.autoSoftwareFallback) {
                         resumeMs = pl.currentPosition
                         useSoftware = true // 触发本 Effect 重建播放器(软解优先)
-                    } else if (transcodeHeight == null && cs.autoTranscode && (formatProblem || codecProblem)) {
+                    } else if (transcodeHeight == null && cs.autoTranscode && !c.isLocal && (formatProblem || codecProblem)) {
                         // 手机解不了:改用服务端转码(服务端 ffmpeg / Jellyfin → H.264 / AAC 的 HLS)
                         val h = if (cs.maxHeight > 0) cs.maxHeight else 1080
                         AppLog.i("player", "自动改用服务端转码 ${h}p(原因 ${e.errorCodeName})")
@@ -676,7 +676,7 @@ fun VideoPage(
                             DropdownMenuItem(text = { Text("小窗播放") }, onClick = { menu = false; enterPip() })
                             DropdownMenuItem(text = { Text("改用软件解码重试") }, onClick = { menu = false; resumeMs = pl?.currentPosition ?: 0L; modeOverride = "sw_first" })
                             DropdownMenuItem(text = { Text("改用硬件解码重试") }, onClick = { menu = false; resumeMs = pl?.currentPosition ?: 0L; modeOverride = "hw_first" })
-                            DropdownMenuItem(text = { Text("保存到手机") }, onClick = { menu = false; scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, item) } })
+                            if (!c.isLocal) DropdownMenuItem(text = { Text("保存到手机") }, onClick = { menu = false; scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, item) } })
                             DropdownMenuItem(text = { Text("媒体信息") }, onClick = { menu = false; dialog = "info" })
                         }
                     }

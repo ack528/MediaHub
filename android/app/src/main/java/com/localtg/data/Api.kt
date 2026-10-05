@@ -61,7 +61,7 @@ class LogInterceptor : Interceptor {
     }
 }
 
-fun buildHttpClient(store: SessionStore, connectSec: Int, readSec: Int, onUnauthorized: () -> Unit): OkHttpClient {
+fun buildHttpClient(store: SessionStore, local: LocalMedia, connectSec: Int, readSec: Int, onUnauthorized: () -> Unit): OkHttpClient {
     val (sslCtx, trust) = Tls.pinnedContext { store.pin.value }
     return OkHttpClient.Builder()
         // HTTPS:只接受指纹已被用户确认的自签名证书(不校验主机名,服务器 IP 变了也能连);HTTP 地址不受影响
@@ -69,6 +69,7 @@ fun buildHttpClient(store: SessionStore, connectSec: Int, readSec: Int, onUnauth
         .hostnameVerifier { _, _ -> true }
         .connectTimeout(connectSec.toLong(), TimeUnit.SECONDS)
         .readTimeout(readSec.toLong(), TimeUnit.SECONDS)
+        .addInterceptor(LocalInterceptor(local)) // 本地媒体模式:发往 local.mediahub 的请求在进程内应答,不走网络
         .addInterceptor(AuthInterceptor({ store.session.value }, onUnauthorized))
         .addInterceptor(LogInterceptor())
         .build()
@@ -167,7 +168,9 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
 
     /** 显示图片用的地址:手机能直接显示的用原文件;其它格式由服务端转成 JPEG(w = 需要的长边像素,服务端取最近的一档)。 */
     fun imageUrl(item: Item, w: Int): String =
-        if (needsServerRender(item.ext, serverRenderHeic)) "$base/api/v1/media/${item.id}/render?w=$w&v=${item.v}" else fileUrl(item)
+        // 本地媒体:动图直接读文件,其余用系统缩略图(又快又省内存)
+        if (store.local.value) { if (item.ext == "gif") fileUrl(item) else "$base/api/v1/media/${item.id}/render?w=${w.coerceAtMost(4096)}&v=${item.v}" }
+        else if (needsServerRender(item.ext, serverRenderHeic)) "$base/api/v1/media/${item.id}/render?w=$w&v=${item.v}" else fileUrl(item)
     fun posterUrl(id: String): String = "$base/api/v1/media/$id/poster"
 }
 

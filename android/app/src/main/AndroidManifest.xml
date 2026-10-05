@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 本地媒体模式:读取手机上的照片和视频 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- Android 17(API 37)起,访问局域网地址(如 192.168.x.x / 10.x.x.x)需要此权限,首次启动时会弹窗申请 -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 

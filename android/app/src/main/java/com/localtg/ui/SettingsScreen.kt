@@ -305,6 +305,16 @@ private fun StoragePage(c: AppContainer) {
 private fun AccountPage(c: AppContainer) {
     val session by c.session.session.collectAsState()
     val scope = rememberCoroutineScope()
+    val local by c.session.local.collectAsState()
+    if (local) {
+        Header("当前模式")
+        InfoRow("模式", "本地媒体(读取这部手机上的照片和视频,一个文件夹一个群组)")
+        Header("账号")
+        ActionRow("返回登录页", "切换到服务器,或重新选择模式", confirm = "返回登录页?", danger = false) {
+            scope.launch { c.session.clearToken() }
+        }
+        return
+    }
     Header("当前服务器")
     InfoRow("地址", session?.baseUrl ?: "未登录")
     val pin by c.session.pin.collectAsState()
