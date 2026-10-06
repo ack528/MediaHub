@@ -2,6 +2,7 @@ package com.localtg.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -253,9 +254,12 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     }.cachedIn(viewModelScope)
 
     /** 修改视图设置。anchor = 要保持位置的条目(切换聊天/网格时用当前条目);null 表示回到最新一端。 */
-    fun change(anchor: String?, block: () -> Unit) {
+    fun change(anchor: String?, force: Boolean = false, block: () -> Unit) {
         anchorId = anchor; anchorOffset = 0; pos = null; freshOpen = false
         block()
+        // 聊天流和网格的查询参数相同时(例如按时间排序、网格新→旧、聊天新→旧 → 服务端方向都是 desc),Pager 不会重建,
+        // 新显示的那个列表组合出来就在最开头,锚点根本没用上 —— 切换视图"不在对应位置"就是这个原因。force = 强制重建一次,让锚点生效。
+        if (force) reload.value += 1
         persistSoon()
     }
 
@@ -418,7 +422,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                     Text(sub, color = tg.barSub, fontSize = 13.sp, maxLines = 1)
                 }
                 // 右上角:点击在"聊天流"与"网格"之间切换
-                BarIcon(if (grid) TgIcons.Chat else TgIcons.Grid, if (grid) "聊天视图" else "网格视图") { vm.change(vm.currentItemId()) { vm.grid.value = !grid } } // 切换视图时保持在当前这一条
+                BarIcon(if (grid) TgIcons.Chat else TgIcons.Grid, if (grid) "聊天视图" else "网格视图") { vm.change(vm.currentItemId(), force = true) { vm.grid.value = !grid } } // 切换视图时保持在当前这一条(强制重建 Pager,锚点才会生效)
                 Box {
                     BarIcon(TgIcons.More, "更多") { menu = true }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -492,7 +496,14 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                         else (fadeIn(tween(220, 90, Motion.Standard)) + scaleIn(tween(300, easing = Motion.Standard), initialScale = 0.96f)) togetherWith fadeOut(tween(90))
                     },
                 ) { g ->
-                    if (g) MediaGrid(lazyItems, c.api, columns, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest)
+                    if (g) MediaGrid(
+                        lazyItems, c.api, columns, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest,
+                        onLongPress = { it ->
+                            // 长按网格里的某一格:切到聊天流并定位到这一条
+                            android.widget.Toast.makeText(ctx, "已在聊天流中定位到这一条", android.widget.Toast.LENGTH_SHORT).show()
+                            vm.change(it.id, force = true) { vm.grid.value = false }
+                        },
+                    )
                     else ChatFeed(lazyItems, c.api, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest, sortKey == "taken")
                 }
             }
@@ -680,7 +691,9 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
 private fun MediaGrid(
     items: LazyPagingItems<Item>, api: Api, columns: Int, gen: Int, restoreId: String?, restoreOffset: Int,
     onOpen: (Item) -> Unit, onRestored: () -> Unit, onPosition: (String, Int, Boolean) -> Unit, fresh: Boolean, onJumpNewest: () -> Unit,
+    onLongPress: (Item) -> Unit,
 ) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val state = rememberLazyGridState()
     PositionMemory(items, gen, restoreId, restoreOffset, { state.firstVisibleItemIndex }, { state.firstVisibleItemScrollOffset },
         { i, o -> state.scrollToItem(i, o) }, onRestored, onPosition, fresh)
@@ -708,7 +721,10 @@ private fun MediaGrid(
         items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
             val item = items[index]
             if (item != null) {
-                MediaThumb(item, api, loadEnabled = !fast || !LocalSettings.current.pauseThumbsWhenFast, modifier = Modifier.aspectRatio(1f).mediaShared(item.id, androidx.compose.ui.graphics.RectangleShape).clickable { onOpen(item) })
+                MediaThumb(item, api, loadEnabled = !fast || !LocalSettings.current.pauseThumbsWhenFast, modifier = Modifier.aspectRatio(1f).mediaShared(item.id, androidx.compose.ui.graphics.RectangleShape).combinedClickable(
+                    onClick = { onOpen(item) },
+                    onLongClick = { haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); onLongPress(item) },
+                ))
             } else {
                 Box(Modifier.aspectRatio(1f))
             }
