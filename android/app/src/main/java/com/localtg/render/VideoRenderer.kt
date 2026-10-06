@@ -129,6 +129,8 @@ class VideoRenderer(
     private var lsfgBusy = false            // worker 正在生成(只在渲染线程读写)
     private var lsfgStopPending = false
     private var lsfgLastId = -1L            // 最近一个成功生成的帧的 id
+    private var lsfgPf = Double.NaN         // 相位累加器(单位:相位 = 真实帧 id × n + 第几张)
+    private var lsfgPfN = 0
     private var lsfgExec: java.util.concurrent.ExecutorService? = null
     private var lsfgOk = 0
     private lateinit var pool8: Gl.Pool     // 生成帧用 RGBA8 的纹理池(比 16F 省 4 倍带宽,每帧要拷 k 张)
@@ -584,6 +586,7 @@ class VideoRenderer(
         var t = 0f
         var mode = 0
         var lsfgIdx = -1
+        var lsfgTaken = false
         var showTex = a.img.id
         if (needNext && b != null && interval > 0 && b.ts > a.ts) {
             val dt = b.ts - a.ts
@@ -593,10 +596,29 @@ class VideoRenderer(
                 t = ((nowNs - a.ts).toDouble() / dt).toFloat().coerceIn(0f, 1f)
                 mode = if (isMc(effFrc(cfg)) && b.mv != null) 2 else 1
                 if (b.gen.isNotEmpty() && effFrc(cfg) == "lsfg") {
-                    // LSFG:这一帧和前一帧之间有 k 张生成帧,按时间位置挑最近的那一张(第 0 张是前一帧本身)
+                    // LSFG:每个真实帧之间有 k 张生成帧,共 n = k + 1 个"相位"(第 0 个是真实帧本身)。
+                    // 不能直接用 floor(t * n) 按时间取相位:源帧率 × n 正好等于屏幕刷新率时(24fps × 5 = 120Hz),
+                    // 每个 vsync 的采样点落在相位边界附近,时钟的微小漂移 / 抖动会让相位时而重复、时而跳过,
+                    // 表现就是"一会流畅一会卡"。改用相位累加器(锁相环):每个 vsync 前进 n × 源帧率 / 刷新率 个相位,
+                    // 再慢慢向真实时间靠拢(±0.3 个相位的死区内不修正),整数倍时每个 vsync 恰好前进一个相位,节奏均匀。
+                    lsfgTaken = true
                     val n = b.gen.size + 1
-                    lsfgIdx = min((t * n + 1e-3f).toInt(), n - 1)
-                    showTex = if (lsfgIdx == 0) a.img.id else b.gen[lsfgIdx - 1].id
+                    val step = n * srcHz / refreshHz
+                    val ptrue = a.id.toDouble() * n + t * n
+                    if (lsfgPf.isNaN() || lsfgPfN != n || abs(ptrue - lsfgPf) > 2.5) { lsfgPf = ptrue; lsfgPfN = n }
+                    else {
+                        lsfgPf += step
+                        val err = ptrue - lsfgPf
+                        if (abs(err) > 0.3) lsfgPf += (err - 0.3 * Math.signum(err)) * 0.1
+                    }
+                    val ph = floor(lsfgPf).toLong()
+                    val tex = phaseTex(ph, n)
+                    if (tex != null) {
+                        showTex = tex
+                    } else { // 相位对应的帧 / 生成帧不全:退回按时间取
+                        val ix = min((t * n + 1e-3f).toInt(), n - 1)
+                        showTex = if (ix == 0) a.img.id else b.gen[ix - 1].id
+                    }
                     mode = 0; t = 0f
                 } else if (cfg.frcMultiplier > 0) {
                     // 固定倍率:每个源帧之间只出 N 个画面(N 不超过 刷新率 / 源帧率),其余刷新重复上一个画面(也省 GPU)
@@ -605,7 +627,9 @@ class VideoRenderer(
                 }
             }
         }
-        val key = "${a.id}/${if (mode == 0) 0 else (t * 64).toInt()}/$mode/${b?.mv != null}/$lsfgIdx"
+        if (!lsfgTaken) lsfgPf = Double.NaN
+        if (lsfgTaken) lsfgIdx = 0
+        val key = "${a.id}/${if (mode == 0) 0 else (t * 64).toInt()}/$mode/${b?.mv != null}/$showTex"
         if (key == lastDrawKey && !dirty) {
             if (ring.isNotEmpty() && (needNext || b != null)) scheduleVsync()
             return
@@ -705,6 +729,17 @@ class VideoRenderer(
     // ---------------------------------------------------------------- LSFG
 
     /** 每个真实帧之间要生成几张:固定倍率 m → m-1 张;自动 → 补到这块屏的最高刷新率附近。不超过屏幕能显示的。 */
+    /** 绝对相位 ph(= 真实帧 id × n + 第几张)对应的纹理:第 0 张是真实帧,其余是下一帧上挂着的生成帧;帧或生成帧不全返回 null。 */
+    private fun phaseTex(ph: Long, n: Int): Int? {
+        val fa = Math.floorDiv(ph, n.toLong())
+        val idx = (ph - fa * n).toInt()
+        val sa = ring.firstOrNull { it.id == fa } ?: return null
+        if (idx == 0) return sa.img.id
+        val sb = ring.firstOrNull { it.id == fa + 1 } ?: return null
+        if (sb.gen.size != n - 1) return null
+        return sb.gen[idx - 1].id
+    }
+
     private fun lsfgGenerated(cfg: EnhanceConfig): Int {
         if (interval <= 0L) return 0
         val srcHz = 1e9 / interval
