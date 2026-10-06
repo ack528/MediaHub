@@ -129,6 +129,7 @@ class VideoRenderer(
     private var lsfg: LsfgSession? = null
     private var lsfgFail = 0
     private var pBlit = 0
+    private val lsfgPending = ArrayDeque<Slot>() // 等 worker 空出来的帧(最多 3 个):排队而不是丢,否则一次丢帧会让下一帧也失去前一帧(生成帧只在连续两帧之间有效)
     private var lsfgBusy = false            // worker 正在生成(只在渲染线程读写)
     private var lsfgStopPending = false
     private val trace = FrcTrace()
@@ -269,7 +270,10 @@ class VideoRenderer(
         var cfg: EGLConfig? = null
         if (wantHdr) cfg = chooseConfig(10, 2)
         if (cfg == null) cfg = chooseConfig(8, 8) ?: throw IllegalStateException("没有可用的 EGL 配置")
-        val c3 = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE)
+        // 上屏的 GL 上下文设成高优先级(EGL_IMG_context_priority,Adreno 支持):帧生成的 Vulkan 计算占满 GPU 时,上屏也不会被排在后面
+        val c3 = if (ext.contains("EGL_IMG_context_priority"))
+            intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, 0x3100 /* EGL_CONTEXT_PRIORITY_LEVEL_IMG */, 0x3101 /* EGL_CONTEXT_PRIORITY_HIGH_IMG */, EGL14.EGL_NONE)
+        else intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE)
         ctx = EGL14.eglCreateContext(dpy, cfg, EGL14.EGL_NO_CONTEXT, c3, 0)
         check(ctx != EGL14.EGL_NO_CONTEXT) { "无法创建 OpenGL ES 3 上下文" }
         // HDR:带 BT.2020 PQ 色彩空间的 10 位表面(SurfaceFlinger 会按显示器能力做色调映射);失败就退回普通 SDR 表面
@@ -796,8 +800,11 @@ class VideoRenderer(
         if (interval <= 0L) return 0
         val src = stdRate(1e9 / interval)
         if (lsfgK > 0 && lsfgKKey == cfg.frcMultiplier && abs(src - lsfgKSrc) / lsfgKSrc < 0.3) return lsfgK
-        val target = if (maxRefreshRate >= 115f) 120.0 else 60.0
-        val m = if (cfg.frcMultiplier > 0) cfg.frcMultiplier else max(2, Math.round(target / src).toInt())
+        // 目标刷新率就是向系统申请的那个(maxRefreshRate,同分辨率下 ≤ 120Hz 里最高的);倍率不超过 刷新率 / 源帧率
+        // (30fps 在 120Hz 上 ×5 = 150 > 120,多生成的相位上屏时只能跳过,白白多花 GPU 时间 —— 日志里 k=4 时生成耗时 29.5ms 贴着 33ms 的帧间隔,k=3 只要 23ms)。
+        val target = maxRefreshRate.toDouble()
+        val cap = max(2, floor(target / src + 0.15).toInt())
+        val m = if (cfg.frcMultiplier > 0) min(cfg.frcMultiplier, cap) else cap
         lsfgK = (m - 1).coerceIn(1, 7)
         lsfgKKey = cfg.frcMultiplier
         lsfgKSrc = src
@@ -807,6 +814,7 @@ class VideoRenderer(
 
     /** 停掉会话。worker 还在生成时不能释放(原生层正在用),等它完成后在 [onLsfgDone] 里释放。 */
     private fun stopLsfg() {
+        lsfgPending.clear()
         if (lsfgBusy) { lsfgStopPending = true; return }
         lsfg?.destroy()
         lsfg = null
@@ -821,7 +829,16 @@ class VideoRenderer(
      * 丢帧太多(来不及)会自动降级。生成帧是"前一个被处理的帧 → 这一帧"之间的,只有两帧连续(中间没丢帧)时才有效。
      */
     private fun runLsfg(slot: Slot, cfg: EnhanceConfig) {
-        if (lsfgBusy) { if (trace.enabled) trace.busyDrops++; return } // worker 还在读输入 AHB,这一帧没有生成帧(覆盖率里体现)
+        if (lsfgBusy) {
+            // worker 还在读输入 AHB,这一帧不能现在写进去:排队,worker 做完马上接着做(帧纹理还在帧环里;队列满了才放弃,放弃会让下一帧失去前一帧)
+            if (lsfgPending.size < 3) lsfgPending.addLast(slot) else if (trace.enabled) trace.busyDrops++
+            return
+        }
+        submitLsfg(slot, cfg)
+    }
+
+    /** 真正提交一帧(worker 空闲时才会调用)。 */
+    private fun submitLsfg(slot: Slot, cfg: EnhanceConfig) {
         val k = lsfgGenerated(cfg)
         if (k < 1) return
         val scale = min(cfg.lsfgFlowScale, lsfgScaleCap)
@@ -908,6 +925,11 @@ class VideoRenderer(
         sess.counter++
         lsfgLastId = id
         lsfgOk++
+        // 排队的帧接着做(帧被帧环淘汰了就跳过;那样链会断一次)
+        while (true) {
+            val next = lsfgPending.removeFirstOrNull() ?: break
+            if (ring.contains(next) && lsfg === sess && !lsfgStopPending) { submitLsfg(next, config); break }
+        }
     }
 
     companion object {

@@ -20,6 +20,16 @@ foreach ($d in @('framegen', 'thirdparty\volk', 'thirdparty\pe-parse', 'thirdpar
   if ($LASTEXITCODE -ge 8) { throw "复制失败: $d" }
 }
 $global:LASTEXITCODE = 0
+# 本项目对 framegen 的补丁(目前:帧生成队列设为 LOW 全局优先级,让上屏能抢占),覆盖到复制来的源码上
+$Patch = Join-Path $PSScriptRoot 'lsfg-patches'
+if (Test-Path $Patch) {
+  foreach ($f in Get-ChildItem $Patch -Recurse -File) {
+    $rel = $f.FullName.Substring($Patch.Length + 1)
+    $to = Join-Path $VkDst $rel
+    New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
+    Copy-Item $f.FullName $to -Force
+  }
+}
 $AppDst = Join-Path $Dst 'app'
 New-Item -ItemType Directory -Force $AppDst | Out-Null
 foreach ($f in @('android_shader_loader.cpp', 'android_shader_loader.hpp', 'unicode_minimal.cpp')) {
