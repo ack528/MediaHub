@@ -102,13 +102,13 @@ data class AppSettings(
     val subtitleLanguage: String = "",
     // ---- 画质增强(实验):用自己的 OpenGL 渲染器显示视频,可实时超分 / 补帧 / SDR→HDR
     val enhUpscale: String = "off",            // off / fsr(通用)/ anime4k_s(动漫,较快)/ anime4k_m(动漫,画质更好)
-    val enhFrc: String = "off",                // off / blend(帧混合)/ mc_fast(运动补偿·轻量)/ mc(运动补偿)/ mc_hq(运动补偿·高质量)/ flow(光流·OpenCV DIS)/ lsfg(LSFG 帧生成)
-    val enhFrcMultiplier: Int = 0,             // 补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 5 = 固定倍数(源 24fps × 3 = 72fps)
+    val enhFrc: String = "off",                // off / lsfg(LSFG 标准:补到屏幕最高刷新率)/ lsfg_low(LSFG 低功耗:补到 60fps)
+    val enhFrcMultiplier: Int = 0,             // 标准模式的补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 5 = 固定倍数(源 24fps × 3 = 72fps)
     val hwReport: String = "",                 // 最近一次"硬件支持检测"的结果(JSON)
     val lsfgFlowScale: Float = 0.5f,           // LSFG 内部光流精度(越小越快,画质略降)
-    val lsfgPerf: Boolean = true,              // LSFG 性能模式(3.1P)
+    val lsfgPerf: Boolean = true,              // LSFG 性能模式(3.1P;低功耗模式强制开启)
     val frcTrace: Boolean = true,              // 补帧详细日志(每 2 秒一组汇总 + 异常事件,排查卡顿用)
-    val enhFrcAdaptive: Boolean = true,        // 补帧跟不上时自动降一档
+    val enhFrcAdaptive: Boolean = true,        // 补帧跟不上时自动降低光流精度,最低还不够就停用
     val enhFpsOverlay: Boolean = true,         // 补帧时在画面右上角显示 源帧率 → 输出帧率
     val enhHdr: String = "off",                // off / auto(显示器支持 HDR 才启用)/ on
     val enhPeak: Int = 600,                    // SDR→HDR 的高光峰值亮度(nit)
@@ -128,7 +128,10 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
 
     private fun loadBlocking(): AppSettings = runCatching {
         runBlocking { ctx.settingsDataStore.data.first()[key]?.let { AppJson.decodeFromString<AppSettings>(it) } }
-    }.getOrNull() ?: AppSettings()
+    }.getOrNull()?.let { s ->
+        // 补帧只保留 LSFG:旧版本的 blend / mc* / flow 等值一律回到"关闭"
+        if (s.enhFrc in setOf("off", "lsfg", "lsfg_low")) s else s.copy(enhFrc = "off")
+    } ?: AppSettings()
 
     val value: AppSettings get() = state.value
 

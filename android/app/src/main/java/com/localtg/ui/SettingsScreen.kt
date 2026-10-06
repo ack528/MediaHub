@@ -329,34 +329,33 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
         "只对低于此分辨率的视频超分", s.enhMaxH, listOf(540 to "540p", 720 to "720p", 900 to "900p", 1080 to "1080p"),
         desc = "高分辨率视频超分计算量很大;超过这个高度的视频直接显示",
     ) { u { copy(enhMaxH = it) } }
-    Header("补帧")
+    Header("补帧(LSFG)")
     ChoiceRow(
         "补帧方式", s.enhFrc,
         listOf(
-            "off" to "关闭", "blend" to "帧混合(最省电,轻微拖影)", "mc_fast" to "运动补偿·轻量(省电,适合 1080p 以上)",
-            "mc" to "运动补偿(平衡)", "mc_hq" to "运动补偿·高质量(最顺滑,最费电)",
-            "flow" to "光流·OpenCV DIS(逐像素光流,边缘最干净)",
-            "lsfg" to "LSFG 帧生成(Lossless Scaling,效果最好,最费 GPU)",
+            "off" to "关闭",
+            "lsfg_low" to "LSFG 低功耗(目标 60 帧,省电发热小)",
+            "lsfg" to "LSFG 标准(补到屏幕最高刷新率,效果最好,最费 GPU)",
         ),
-        desc = "把 24 / 30 帧视频补到屏幕刷新率(60 / 120 Hz),画面更顺滑(类似电视的“流畅运动”)。运动补偿用 GPU 金字塔块匹配估计运动(和 AMD FSR 3 的光流同一类做法):轻量档只估到 1/4 分辨率、候选少;高质量档多一轮 1/8 像素精修、每个像素比较 9 个相邻块。快速运动和遮挡处可能有瑕疵",
+        desc = "补帧只保留内置的 LSFG(Lossless Scaling 帧生成)。标准:把 24 / 30 帧视频补到屏幕刷新率(最高 120 Hz);" +
+            "低功耗:目标 60 帧(24 → 48、25 → 50、30 → 60),光流精度固定最低、固定请求 60 Hz 刷新率,GPU 占用和发热明显更小;60 帧的视频不需要补。快速运动和遮挡处可能有瑕疵",
     ) { u { copy(enhFrc = it) } }
     ChoiceRow(
-        "补帧倍率", s.enhFrcMultiplier,
+        "补帧倍率(标准模式)", s.enhFrcMultiplier,
         listOf(0 to "自动(补到屏幕刷新率)", 2 to "2 倍", 3 to "3 倍", 4 to "4 倍", 5 to "5 倍", 6 to "6 倍", 8 to "8 倍"),
-        desc = "固定倍率:24fps 视频 × 3 = 72fps。倍率超过 屏幕刷新率 ÷ 源帧率 时按能显示的最大倍率算;每个源帧之间只生成需要的画面,GPU 压力比“自动”小。" +
-            "补帧时应用会请求系统保持高刷新率(固定倍率时请求 源帧率 × 倍率),屏幕因省电 / 久不触摸降刷新率时会按实测刷新率自动调整",
+        desc = "固定倍率:24fps 视频 × 3 = 72fps。倍率超过 屏幕刷新率 ÷ 源帧率 时按能显示的最大倍率算;每个源帧之间只生成需要的画面,GPU 压力比“自动”小。低功耗模式不看这一项",
     ) { u { copy(enhFrcMultiplier = it) } }
     ChoiceRow(
-        "LSFG 光流精度", s.lsfgFlowScale, listOf(0.25f to "25%(最快)", 0.5f to "50%(默认)", 0.75f to "75%", 1f to "100%(最准,最慢)"),
-        desc = "只对「LSFG 帧生成」有效:内部光流的分辨率比例。1080p 以上建议 50% 以下;下一次开始播放生效",
+        "LSFG 光流精度(标准模式)", s.lsfgFlowScale, listOf(0.25f to "25%(最快)", 0.5f to "50%(默认)", 0.75f to "75%", 1f to "100%(最准,最慢)"),
+        desc = "内部光流的分辨率比例。1080p 以上建议 50% 以下;下一次开始播放生效。低功耗模式固定 25%",
     ) { u { copy(lsfgFlowScale = it) } }
-    SwitchRow("LSFG 性能模式", "用 LSFG 3.1P(更轻量的变体)。关闭后用标准的 3.1,画质略好但更费 GPU", s.lsfgPerf) { u { copy(lsfgPerf = it) } }
+    SwitchRow("LSFG 性能模式(标准模式)", "用 LSFG 3.1P(更轻量的变体)。关闭后用标准的 3.1,画质略好但更费 GPU;低功耗模式强制开启", s.lsfgPerf) { u { copy(lsfgPerf = it) } }
     SwitchRow(
         "补帧详细日志", "补帧时每 2 秒把统计写进日志(标签 frc):源帧间隔、vsync 抖动、上屏节奏(相位重复 / 跳过)、LSFG 生成耗时、覆盖率、热状态…," +
             "异常时立即写一行。卡顿时打开,到「设置 → 日志与诊断」分享日志给开发者分析", s.frcTrace,
     ) { u { copy(frcTrace = it) } }
-    SwitchRow("补帧跟不上时自动降级", "补帧耗时持续超过帧间隔时,自动降一档(高质量 → 标准 → 轻量 → 帧混合),避免掉帧", s.enhFrcAdaptive) { u { copy(enhFrcAdaptive = it) } }
-    SwitchRow("右上角显示帧率", "补帧时在画面右上角用小字显示“源帧率 → 输出帧率”;源帧率已接近屏幕刷新率时显示“补帧待机”", s.enhFpsOverlay) { u { copy(enhFpsOverlay = it) } }
+    SwitchRow("补帧跟不上时自动降级", "补帧耗时持续超过帧间隔(或覆盖率不足)时,依次降低光流精度,降到最低还不够就停用补帧,避免掉帧", s.enhFrcAdaptive) { u { copy(enhFrcAdaptive = it) } }
+    SwitchRow("右上角显示帧率", "补帧时在画面右上角用小字显示“源帧率 → 输出帧率”;源帧率已接近目标刷新率时显示“补帧待机”", s.enhFpsOverlay) { u { copy(enhFpsOverlay = it) } }
     Header("SDR 转 HDR")
     ChoiceRow(
         "SDR→HDR", s.enhHdr, listOf("off" to "关闭", "auto" to "自动(屏幕支持 HDR 时开启)", "on" to "总是开启"),
@@ -376,7 +375,7 @@ private fun HardwarePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> U
     var step by remember { mutableStateOf("") }
     val report = remember(s.hwReport) { runCatching { AppJson.decodeFromString<HwReport>(s.hwReport) }.getOrNull() }
     Text(
-        "实际运行一遍超分和补帧着色器(540p→1080p 超分、1080p 运动估计、OpenCV 光流),量出每帧耗时,再和 30fps / 60fps 的帧间隔比较。" +
+        "实际运行一遍超分着色器(540p→1080p),量出每帧耗时,再和 30fps / 60fps 的帧间隔比较;补帧(LSFG)按前提条件和 GPU 型号判断。" +
             "检测期间画面可能短暂卡顿,请不要在检测时播放视频。",
         fontSize = 13.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
@@ -419,9 +418,7 @@ private fun HardwarePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> U
 }
 
 private fun upscaleName(v: String) = when (v) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K 小模型"; "anime4k_m" -> "Anime4K 中模型"; else -> "关闭" }
-private fun frcName(v: String) = when (v) {
-    "blend" -> "帧混合"; "mc_fast" -> "运动补偿·轻量"; "mc" -> "运动补偿"; "mc_hq" -> "运动补偿·高质量"; "flow" -> "光流·OpenCV DIS"; else -> "关闭"
-}
+private fun frcName(v: String) = when (v) { "lsfg" -> "LSFG 标准"; "lsfg_low" -> "LSFG 低功耗"; else -> "关闭" }
 
 @Composable
 private fun LsfgPage(s: AppSettings) {
@@ -437,7 +434,7 @@ private fun LsfgPage(s: AppSettings) {
     val st = remember(tick) { com.localtg.render.Lsfg.state }
     Text(
         "LSFG = Lossless Scaling 的帧生成(基于开源的 lsfg-vk,Vulkan 计算着色器)。本应用已经把你自己的 Lossless.dll 内置进安装包," +
-            "第一次用时在手机上提取里面的着色器并缓存,之后直接用:播放视频时把「补帧方式」选为「LSFG 帧生成」,倍率在「补帧倍率」里调(2 ~ 8 倍)。",
+            "应用启动时会自动在后台提取里面的着色器并缓存(只有第一次要几秒),之后直接用:到「画质增强 → 补帧方式」选「LSFG 标准」或「LSFG 低功耗(目标 60 帧)」,标准模式的倍率在「补帧倍率」里调(2 ~ 8 倍)。",
         fontSize = 13.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
     )
@@ -450,7 +447,7 @@ private fun LsfgPage(s: AppSettings) {
             2 -> "已提取,可以使用"
             1 -> "正在提取(第一次约几秒到几十秒)…"
             3 -> "不可用:" + com.localtg.render.Lsfg.error
-            else -> "还没提取(第一次选用 LSFG 帧生成时自动提取)"
+            else -> "还没提取(应用启动时会自动提取)"
         },
     )
     InfoRow(
@@ -462,7 +459,7 @@ private fun LsfgPage(s: AppSettings) {
         },
     )
     Header("操作")
-    ActionRow("现在提取着色器", "不用等到播放时;已经提取过的会跳过") {
+    ActionRow("现在提取着色器", "启动时已经自动提取;这里用于提取失败后重试(已经提取过的会跳过)") {
         com.localtg.render.Lsfg.prepareAsync(ctx)
     }
     ActionRow("重新提取着色器", "清掉缓存后重新从内置的 Lossless.dll 提取(换了 DLL 或提取出错时用)", confirm = "清掉着色器缓存并重新提取?") {
@@ -471,9 +468,9 @@ private fun LsfgPage(s: AppSettings) {
     }
     Header("说明")
     Text(
-        "1. 帧生成在手机 GPU 上用 Vulkan 计算着色器实时进行,很费电、会发热;跟不上时「补帧跟不上时自动降级」会依次降到光流 / 块匹配 / 帧混合。\n" +
-            "2. 生成会让画面比声音晚约一个源帧间隔(最多 50ms),人感觉不到。\n" +
-            "3. 启动失败(设备不支持 / 驱动问题)两次后,本次播放自动改用光流,日志里有原因(设置 → 日志与诊断)。\n" +
+        "1. 帧生成在手机 GPU 上用 Vulkan 计算着色器实时进行,很费电、会发热;想省电就用「LSFG 低功耗」(目标 60 帧)。跟不上时「补帧跟不上时自动降级」会逐档降低光流精度,最低还不够就停用补帧。\n" +
+            "2. 生成会让画面比声音晚约 1.5 个源帧间隔(最多 80ms),人感觉不到。\n" +
+            "3. 启动失败(设备不支持 / 驱动问题)两次后,本次播放不再补帧,日志里有原因(设置 → 日志与诊断)。\n" +
             "4. Lossless.dll 受版权保护:它在你自己的安装包里,只给你自己用,请不要把带它的 APK 发给别人。",
         color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
     )

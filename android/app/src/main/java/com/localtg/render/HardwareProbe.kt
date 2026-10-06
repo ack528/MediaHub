@@ -30,10 +30,9 @@ data class HwReport(
 
 /**
  * 补帧 / 超分的硬件支持检测:
- *  1. 静态能力:OpenGL ES 3、浮点渲染目标(RGBA16F)、Vulkan 版本、显示器刷新率 / HDR、CPU 核数 / ABI;
- *  2. 实测:在离屏 GL 上下文里用和播放时一模一样的着色器跑一遍 —— FSR / Anime4K 超分(540p→1080p)、
- *     运动估计(1080p,轻量 / 标准 / 高质量)、OpenCV DIS 光流(480×270),量出每帧耗时,
- *     再和 30fps / 60fps 的帧间隔(33ms / 17ms)比,给出"良好 / 勉强 / 不支持"和推荐设置。
+ *  1. 静态能力:OpenGL ES 3、浮点渲染目标(RGBA16F)、Vulkan 版本、显示器刷新率 / HDR、CPU 核数 / ABI、LSFG 的前提条件;
+ *  2. 实测:在离屏 GL 上下文里用和播放时一模一样的着色器跑一遍 FSR / Anime4K 超分(540p→1080p),量出每帧耗时,
+ *     再和 30fps 的帧间隔(33ms)比,给出"良好 / 勉强 / 不支持"和推荐设置。补帧只有 LSFG,按前提条件和 GPU 型号给建议。
  * 必须在后台线程调用(会创建并占用自己的 EGL 上下文,约 3 ~ 15 秒)。
  */
 object HardwareProbe {
@@ -145,25 +144,15 @@ object HardwareProbe {
             }
         }
 
-        // ---------------- OpenCV 光流(CPU,不需要 GL 上下文)
-        progress("测试光流(OpenCV DIS)…")
-        val dis = DisFlow.benchOnce(480, 270, 6)
-        if (dis != null) bench["flow"] = dis
-        lines += when {
-            !DisFlow.available() -> HwLine("光流补帧(OpenCV DIS)", 0, "光流库没有加载($abi 不在安装包支持的架构里,或库损坏),补帧会改用块匹配运动补偿")
-            dis == null -> HwLine("光流补帧(OpenCV DIS)", 0, "光流测试失败")
-            else -> HwLine("光流补帧(OpenCV DIS)", level(dis, 33.3 * 0.6), "480×270 光流:${costText(dis)}。在专用 CPU 线程上算,不占 GPU;算不过来时该帧对退回帧混合")
-        }
-
         // ---------------- 显示器
         lines += HwLine(
             "显示器刷新率", if (maxHz >= 90f) 2 else 1,
             "当前 ${"%.0f".format(curHz)} Hz,最高 ${"%.0f".format(maxHz)} Hz" + (if (hdr) ",支持 HDR" else ",不支持 HDR") + "。" +
-                if (maxHz >= 90f) "高刷屏补帧收益大(24fps 视频可补到 3~5 倍)。省电模式 / 不触摸时系统可能降低刷新率,播放补帧时应用会请求保持高刷并按实际刷新率自动调整" else "60Hz 屏补帧收益有限(24 → 60 约 2.5 倍,节奏不均匀),建议用 2 倍",
+                if (maxHz >= 90f) "高刷屏补帧收益大(24fps 视频可补到 3~5 倍)。省电模式 / 不触摸时系统可能降低刷新率,播放补帧时应用会请求保持高刷并按实际刷新率自动调整" else "60Hz 屏补帧收益有限(24 → 60 约 2.5 倍,节奏不均匀),建议用低功耗模式(×2)",
         )
         lines += HwLine(
             "CPU", 3,
-            "$soc,$cores 核,$abi" + if (abi != "arm64-v8a" && abi != "x86_64") "(光流库只含 arm64-v8a / x86_64)" else "",
+            "$soc,$cores 核,$abi" + if (abi != "arm64-v8a" && abi != "x86_64") "(LSFG 原生库只含 arm64-v8a / x86_64)" else "",
         )
 
         // ---------------- 内置 LSFG(Lossless Scaling 帧生成)
@@ -187,12 +176,9 @@ object HardwareProbe {
         val upLvl = mapOf("fsr" to level(bench["upscale:fsr"]), "anime4k_s" to level(bench["upscale:anime4k_s"]), "anime4k_m" to level(bench["upscale:anime4k_m"]))
         val recUp = if ((upLvl["fsr"] ?: 0) >= 1) "fsr" else "off"
         val recFrc = when {
-            !glOk || glMajor < 3 || !halfOk -> "off"
-            dis != null && level(dis, 33.3 * 0.6) == 2 && level(bench["me:hq"]) >= 1 -> "flow"
-            level(bench["me:hq"]) == 2 -> "mc_hq"
-            level(bench["me:mc"]) == 2 -> "mc"
-            level(bench["me:fast"]) >= 1 -> "mc_fast"
-            else -> "blend"
+            !glOk || glMajor < 3 || !halfOk || lsfgLevel == 0 -> "off"
+            lsfgLevel == 2 && maxHz >= 90f -> "lsfg"
+            else -> "lsfg_low"
         }
         val note = buildString {
             append("推荐:超分 ")
@@ -202,7 +188,7 @@ object HardwareProbe {
             append("。补帧 ")
             append(
                 when (recFrc) {
-                    "flow" -> "光流(OpenCV DIS)"; "mc_hq" -> "运动补偿·高质量"; "mc" -> "运动补偿(平衡)"; "mc_fast" -> "运动补偿·轻量"; "blend" -> "帧混合"; else -> "不支持"
+                    "lsfg" -> "LSFG 标准(补到屏幕最高刷新率)"; "lsfg_low" -> "LSFG 低功耗(目标 60fps,光流精度最低,省电发热小)"; else -> "不支持(LSFG 前提条件不满足)"
                 },
             )
             append("。以上按 30fps 视频的帧预算估计,60fps 视频的预算只有一半,建议再降一档。")
@@ -215,7 +201,6 @@ object HardwareProbe {
     private fun benchGl(lines: MutableList<HwLine>, bench: MutableMap<String, Double>, progress: (String) -> Unit) {
         val pool = Gl.Pool(true)
         var pLuma = 0; var pMerge = 0; var pFill = 0
-        var me: MotionEstimator? = null
         try {
             pLuma = Gl.program(ChainShaders.LUMA)
             pMerge = Gl.program(ChainShaders.MERGE)
@@ -233,7 +218,7 @@ object HardwareProbe {
                 return (System.nanoTime() - t0) / 1e6 / runs
             }
 
-            // ---- 超分:540p → 1080p
+            // ---- 超分:540p → 1080p(补帧只有 LSFG,在上面按前提条件判断)
             val src = pool.acquire(960, 540)
             fill(src, 0f)
             var slow = false
@@ -260,33 +245,10 @@ object HardwareProbe {
                 lines += HwLine("超分:$label", level(ms), "960×540 → 1920×1080:${costText(ms)}")
             }
             pool.release(src)
-
-            // ---- 补帧:1080p 运动估计(含亮度金字塔)
-            progress("测试运动估计…")
-            me = MotionEstimator(pool)
-            val grid = GridPool()
-            val a = pool.acquire(1920, 1080); val b = pool.acquire(1920, 1080)
-            fill(a, 0f); fill(b, 6f)
-            val estimator = me
-            val pa = estimator.pyramid(a); val pb = estimator.pyramid(b)
-            val pyrMs = timeMs(3) { estimator.release(estimator.pyramid(b)) }
-            for ((key, mode, label) in listOf(Triple("fast", "mc_fast", "运动补偿·轻量"), Triple("mc", "mc", "运动补偿(平衡)"), Triple("hq", "mc_hq", "运动补偿·高质量"))) {
-                val ms = try {
-                    pyrMs + timeMs(3) { grid.release(estimator.estimate(pa, pb, grid, mode)) }
-                } catch (e: Throwable) {
-                    AppLog.w("enhance", "运动估计检测 $mode 失败:${e.message}"); null
-                }
-                if (ms != null) bench["me:$key"] = ms
-                lines += HwLine("补帧:$label", level(ms), "1080p 运动估计:${costText(ms)}")
-            }
-            estimator.release(pa); estimator.release(pb)
-            pool.release(a); pool.release(b)
-            lines += HwLine("补帧:帧混合", 2, "只做两帧加权,几乎没有开销(此外每次屏幕刷新还要画一遍,开销随屏幕分辨率和刷新率增长)")
         } catch (e: Throwable) {
             AppLog.w("enhance", "GL 实测失败:${e.message}", e)
             lines += HwLine("GL 实测", 0, "失败:${e.message}")
         } finally {
-            runCatching { me?.destroy() }
             runCatching { pool.clear() }
             if (pLuma != 0) GLES30.glDeleteProgram(pLuma)
             if (pMerge != 0) GLES30.glDeleteProgram(pMerge)

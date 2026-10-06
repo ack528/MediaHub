@@ -27,17 +27,17 @@ import kotlin.math.min
 data class EnhanceConfig(
     /** off | fsr | anime4k_s | anime4k_m */
     val upscale: String = "off",
-    /** off | blend(帧混合)| mc_fast(运动补偿·轻量)| mc(运动补偿)| mc_hq(运动补偿·高质量)| flow(光流·OpenCV DIS)| lsfg(LSFG 帧生成) */
+    /** off | lsfg(标准:补到屏幕最高刷新率,≤120Hz)| lsfg_low(低功耗:补到 60fps,光流精度固定最低) */
     val frc: String = "off",
-    /** 补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 8 = 固定倍数 */
+    /** 标准模式的补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 8 = 固定倍数(低功耗模式忽略) */
     val frcMultiplier: Int = 0,
-    /** LSFG:内部光流精度(0.25 ~ 1.0,越小越快) */
+    /** LSFG:内部光流精度(0.25 ~ 1.0,越小越快;低功耗模式固定 0.25) */
     val lsfgFlowScale: Float = 0.5f,
-    /** LSFG:性能模式(3.1P) */
+    /** LSFG:性能模式(3.1P;低功耗模式强制开启) */
     val lsfgPerf: Boolean = true,
     /** 补帧详细日志(每 2 秒一组汇总 + 异常事件,标签 frc) */
     val trace: Boolean = false,
-    /** 补帧跟不上时自动降级:mc_hq → mc → mc_fast → blend */
+    /** 补帧跟不上时自动降低光流精度,到最低还不够就停用补帧 */
     val frcAdaptive: Boolean = true,
     /** off | auto(显示器支持 HDR 才启用)| on */
     val hdr: String = "off",
@@ -45,18 +45,22 @@ data class EnhanceConfig(
     /** 视频高度超过这个值就不做超分(1080p 以上本来就够清晰,且计算量大) */
     val upscaleMaxSrcHeight: Int = 900,
 ) {
-    val active get() = upscale != "off" || frc != "off" || hdr != "off"
+    val frcOn get() = frc == "lsfg" || frc == "lsfg_low"
+    val lowPower get() = frc == "lsfg_low"
+    val active get() = upscale != "off" || frcOn || hdr != "off"
 }
 
 /**
  * 增强渲染器:ExoPlayer 解码到 SurfaceTexture,在这里用 OpenGL ES 3 处理后显示到 SurfaceView。
  *
  * 处理流程:
- *   每个源帧到达时(onFrameAvailable)  OES → RGBA16F → [mpv 着色器链:FSR / Anime4K 超分] → 帧环形缓冲(+亮度金字塔+运动估计)
- *   每个屏幕刷新时(Choreographer vsync) 取 ExoPlayer 给出的"上屏时间"附近的两帧 → [运动补偿插帧] → [SDR→HDR 逆色调映射] → 窗口表面
+ *   每个源帧到达时(onFrameAvailable)  OES → RGBA16F → [mpv 着色器链:FSR / Anime4K 超分] → 帧环形缓冲(+HDR 用的亮度图)→ [LSFG 帧生成:异步]
+ *   每个屏幕刷新时(Choreographer vsync) 按相位累加器从"真实帧 + LSFG 生成帧"里选一张 → [SDR→HDR 逆色调映射] → 窗口表面
+ *
+ * 补帧只有 LSFG 一种(标准 / 低功耗两档);运动补偿、帧混合、OpenCV 光流都已删除。
  *
  * 帧上屏时间:ExoPlayer 用 releaseOutputBuffer(index, releaseTimeNs) 释放解码帧,SurfaceTexture.getTimestamp() 就是这个时间
- * (System.nanoTime 时钟),而且帧会比上屏时间早到几帧 —— 所以不用额外延迟就能在两个真实帧之间插值。
+ * (System.nanoTime 时钟),而且帧会比上屏时间早到几帧 —— 所以能在两个真实帧之间上屏生成帧。
  * 如果时间戳不在这个时钟里(个别解码器),退回到"到达时间 + 延迟一帧"。
  */
 class VideoRenderer(
@@ -91,8 +95,7 @@ class VideoRenderer(
     // 程序
     private var pOes = 0; private var pLuma = 0; private var pMerge = 0; private var pFinal = 0
     private lateinit var pool: Gl.Pool
-    private lateinit var grid: GridPool
-    private var me: MotionEstimator? = null
+    private var luma: LumaBuilder? = null
     private val chains = HashMap<String, ShaderChain?>()
 
     // 视频信息(由播放器回调设置)
@@ -101,11 +104,7 @@ class VideoRenderer(
     @Volatile private var vpar = 1f
     @Volatile private var resizeMode = "fit"
 
-    private class Slot(val ts: Long, val img: Gl.Tex, val pyr: LumaPyramid?, var mv: Gl.Tex?, val id: Long) {
-        var mvUW = 1   // 运动向量的单位(某一层亮度图的宽高)
-        var mvUH = 1
-        var luma: ByteArray? = null   // 光流用:1/4 分辨率亮度(8 位)
-        var mvOwn = false             // mv 是自己上传的光流纹理(不是纹理池里的),释放时要直接删除
+    private class Slot(val ts: Long, val img: Gl.Tex, val pyr: LumaPyramid?, val id: Long) {
         val gen = ArrayList<Gl.Tex>() // LSFG:前一帧 → 这一帧 之间生成的中间帧
         val arrivalNs = System.nanoTime() // 这一帧到达渲染器的时刻(统计生成延迟用)
     }
@@ -122,10 +121,8 @@ class VideoRenderer(
     @Volatile var stats = ""; private set
     /** 补帧时显示在画面右上角的小字:源帧率 → 输出帧率 */
     @Volatile var fpsText = ""; private set
-    @Volatile private var frcDemote = 0   // 因性能不够已降了几档
+    @Volatile private var lsfgGaveUp = false // 光流精度已经降到最低还是跟不上:本次播放停用补帧
     private var ingestedWin = 0
-    private var flowEngine: DisFlow? = null
-    private var flowTried = false
     private var lsfg: LsfgSession? = null
     private var lsfgFail = 0
     private var pBlit = 0
@@ -187,66 +184,30 @@ class VideoRenderer(
     fun setResizeMode(m: String) { resizeMode = m; poke() }
     fun setConfig(c: EnhanceConfig) {
         trace.enabled = c.trace
-        if (c.frc != config.frc) { frcDemote = 0; lsfgScaleCap = 1f; lsfgCoverage = -1 }
-        if (c.frcMultiplier != config.frcMultiplier) lsfgK = 0
+        if (c.frc != config.frc) { lsfgGaveUp = false; lsfgScaleCap = 1f; lsfgCoverage = -1 }
         if (c.lsfgFlowScale != config.lsfgFlowScale) lsfgScaleCap = 1f
         config = c; poke()
     }
 
-    /** 降级后实际使用的补帧方式。 */
-    private fun effFrc(cfg: EnhanceConfig): String {
-        var base = cfg.frc
-        if (base == "lsfg") {
-            val app = Assets.app
-            if (app != null) Lsfg.prepareAsync(app)
-            // 还没提取完着色器 / 不可用 / 多次启动失败:先用光流(不可用再往下降)
-            if (Lsfg.state != 2 || lsfgFail >= 2) base = "flow"
-        }
-        if (base == "flow") {
-            if (!flowTried) { flowTried = true; flowEngine = DisFlow.create { id, f, w, h -> handler.post { attachFlow(id, f, w, h) } } }
-            if (flowEngine == null) base = "mc_hq" // 光流库不可用(架构不支持 / 加载失败):用块匹配的最高档
-        }
-        val ladder = listOf("lsfg", "flow", "mc_hq", "mc", "mc_fast", "blend")
-        val i = ladder.indexOf(base)
-        return if (i < 0) base else ladder[min(i + frcDemote, ladder.size - 1)]
+    /** 低功耗模式的目标输出帧率 / 固定的光流精度。 */
+    private val lowTargetHz = 60.0
+    private val lowFlowScale = 0.25f
+
+    /** 补帧的目标刷新率:低功耗 = 60Hz;标准 = 这块屏同分辨率下 ≤120Hz 里最高的。 */
+    private fun targetHz(cfg: EnhanceConfig): Double = if (cfg.lowPower) lowTargetHz else maxRefreshRate.toDouble()
+
+    /** 这次播放里 LSFG 能不能用:没提取完着色器 / 不可用 / 多次启动失败 / 性能不够已停用 都不行。 */
+    private fun lsfgUsable(cfg: EnhanceConfig): Boolean {
+        if (!cfg.frcOn) return false
+        val app = Assets.app
+        if (app != null) Lsfg.prepareAsync(app) // 正常情况下应用启动时已经在提取了;这里是保险
+        return Lsfg.state == 2 && lsfgFail < 2 && !lsfgGaveUp
     }
 
-    private fun isMc(m: String) = m == "mc" || m == "mc_fast" || m == "mc_hq" || m == "flow"
+    /** 源帧率已经接近目标刷新率(例如 60fps 视频在 60Hz 屏上)时不需要补帧。 */
+    private fun frcNeeded(cfg: EnhanceConfig): Boolean =
+        interval <= 0L || (1e9 / interval) * 1.3 < min(1e9 / period, targetHz(cfg))
 
-    /** 源帧率已经接近刷新率(例如 60fps 视频在 60Hz 屏上)时不需要插帧,也就不用做运动估计。 */
-    private fun frcNeeded(): Boolean = interval <= 0L || (1e9 / interval) * 1.3 < 1e9 / period
-
-    /** 光流结果回来了(渲染线程):上传成纹理挂到对应的帧上。该帧已经被淘汰就丢掉。 */
-    private fun attachFlow(id: Long, f: FloatArray, w: Int, h: Int) {
-        if (released) return
-        val s = ring.firstOrNull { it.id == id } ?: return
-        val t = IntArray(1)
-        GLES30.glGenTextures(1, t, 0)
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0])
-        // RG32F 不可过滤,必须用最近邻(着色器里用 texelFetch)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-        val bb = java.nio.ByteBuffer.allocateDirect(f.size * 4).order(java.nio.ByteOrder.nativeOrder())
-        bb.asFloatBuffer().put(f)
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RG32F, w, h, 0, GLES30.GL_RG, GLES30.GL_FLOAT, bb)
-        s.mv?.let { old -> if (s.mvOwn) old.delete() else grid.release(old) }
-        s.mv = Gl.Tex(t[0], 0, w, h, true)
-        s.mvOwn = true
-        s.mvUW = w; s.mvUH = h
-        dirty = true
-        if (!choreoPosted) scheduleVsync()
-    }
-
-    /** 读回 1/4 分辨率亮度图,转成 8 位(光流库的输入)。 */
-    private fun readLuma(t: Gl.Tex): ByteArray {
-        val buf = java.nio.ByteBuffer.allocateDirect(t.w * t.h * 16).order(java.nio.ByteOrder.nativeOrder())
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, t.fbo)
-        GLES30.glReadPixels(0, 0, t.w, t.h, GLES30.GL_RGBA, GLES30.GL_FLOAT, buf)
-        val fb = buf.asFloatBuffer()
-        return ByteArray(t.w * t.h) { i -> (fb.get(i * 4).coerceIn(0f, 1f) * 255f + 0.5f).toInt().toByte() }
-    }
     fun onSurfaceSize(w: Int, h: Int) { surfaceW = w; surfaceH = h; poke() }
 
     fun release() {
@@ -300,14 +261,13 @@ class VideoRenderer(
         AppLog.i("enhance", "GL: ${GLES30.glGetString(GLES30.GL_RENDERER)} / ${GLES30.glGetString(GLES30.GL_VERSION)};浮点渲染=$halfOk HDR 表面=$hdrSurface")
         pool = Gl.Pool(halfOk)
         pool8 = Gl.Pool(false)
-        grid = GridPool()
 
         pOes = Gl.program(OES_FRAG)
         pLuma = Gl.program(ChainShaders.LUMA)
         pMerge = Gl.program(ChainShaders.MERGE)
         pFinal = Gl.program(FINAL_FRAG)
         pBlit = Gl.program(BLIT_FRAG)
-        me = MotionEstimator(pool)
+        luma = LumaBuilder(pool)
 
         val t = IntArray(1)
         GLES30.glGenTextures(1, t, 0)
@@ -346,8 +306,7 @@ class VideoRenderer(
         chains.clear()
         ring.forEach { retire(it) }
         ring.clear()
-        runCatching { me?.destroy() }
-        runCatching { flowEngine?.release() }
+        runCatching { luma?.destroy() }
         lsfgExec?.let { ex -> ex.shutdown(); runCatching { ex.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS) } } // 等 worker 生成完,原生层才能安全释放
         lsfgBusy = false
         stopLsfg()
@@ -427,37 +386,17 @@ class VideoRenderer(
         GLES20.glUniformMatrix4fv(Gl.loc(pOes, "uMat"), 1, false, stMatrix, 0)
         Gl.draw()
 
-        val eff = effFrc(cfg)
-        val needMv = (eff == "mc" || eff == "mc_fast" || eff == "mc_hq") && frcNeeded()
-        val needFlow = eff == "flow" && frcNeeded() && flowEngine != null
-        val needPyr = (needMv || needFlow || hdrActive(cfg)) && halfOk
-        val pyr = if (needPyr) me?.pyramid(src) else null
+        val lsfgOn = lsfgUsable(cfg)
+        val pyr = if (hdrActive(cfg) && halfOk) luma?.build(src) else null
         var img = src
         if (cfg.upscale != "off" && halfOk && !degraded && h <= cfg.upscaleMaxSrcHeight) {
             val d = destRect()
             val up = chain(cfg.upscale)?.run(src, d.w, d.h)
             if (up != null) { img = up; pool.release(src) }
         }
-        val slot = Slot(ts, img, pyr, null, nextId++)
+        val slot = Slot(ts, img, pyr, nextId++)
         val prev = ring.lastOrNull()
-        if (needMv && prev?.pyr != null && pyr != null && halfOk) {
-            val m = me
-            if (m != null) {
-                slot.mv = m.estimate(prev.pyr, pyr, grid, eff)
-                slot.mvUW = m.unitW; slot.mvUH = m.unitH
-            }
-        }
-        if (needFlow && pyr != null) {
-            // 光流:读回亮度交给 OpenCV(专用线程),结果回来后再挂到这一帧上;还没回来时这对帧用帧混合
-            val l = readLuma(pyr.d2)
-            slot.luma = l
-            val pl = prev?.luma
-            val pp = prev?.pyr
-            if (pl != null && pp != null && pp.d2.w == pyr.d2.w && pp.d2.h == pyr.d2.h) flowEngine?.submit(slot.id, pl, l, pyr.d2.w, pyr.d2.h)
-        }
-        if (eff == "lsfg" && frcNeeded()) runLsfg(slot, cfg) else if (lsfg != null) stopLsfg()
-        if (slot.mv != null && !slot.mvOwn && frames % 48L == 0L && AppLog.isDebug()) debugDumpMotion(slot.mv!!)
-        if (frames % 120L == 0L && AppLog.isDebug()) probeLeft = 12
+        if (lsfgOn && frcNeeded(cfg)) runLsfg(slot, cfg) else if (lsfg != null) stopLsfg()
         if (prev != null) {
             val dt = ts - prev.ts
             if (dt in 4_000_000L..200_000_000L) interval = if (interval == 0L) dt else (interval * 7 + dt) / 8
@@ -478,73 +417,46 @@ class VideoRenderer(
             if (overBudget >= 6 && cfg.upscale != "off" && !degraded) {
                 degraded = true
                 AppLog.w("enhance", "超分耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms,自动停用超分")
-            } else if (overBudget >= 6 && cfg.frcAdaptive && (isMc(eff) || eff == "lsfg") && (cfg.upscale == "off" || degraded)) {
-                // 超分已经停了(或没开)还是跟不上:补帧降一档(高质量 → 标准 → 轻量 → 帧混合)
-                frcDemote++
+            } else if (overBudget >= 6 && cfg.frcAdaptive && lsfgOn && (cfg.upscale == "off" || degraded)) {
+                // 超分已经停了(或没开)还是跟不上:降光流精度,降到最低还不够就停用补帧
                 overBudget = 0
-                AppLog.w("enhance", "补帧耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms,自动降级为 ${effFrc(cfg)}")
+                AppLog.w("enhance", "补帧耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms")
+                lowerLsfgQuality(cfg, "处理耗时超过帧间隔")
             }
         }
-        // LSFG 来不及:最近 24 个帧里超过一半没处理上(worker 一直忙),说明这块 GPU 跑不动这个设置 → 降一档
-        // 画面"一会卡一会流畅"就是有的区间有生成帧、有的没有(生成速度偶尔跟不上)。按覆盖率调整:低于 85% 就先降光流精度(逐档 100→75→50→35→25%),
-        // 到最低档还不够再降级到光流
-        if (eff == "lsfg" && covTotal >= 24) {
+        // 覆盖率 = 上屏的帧区间里有生成帧的比例。画面"一会卡一会流畅"就是有的区间有生成帧、有的没有(生成速度偶尔跟不上)。
+        // 低于 85% 就先降光流精度(逐档 100→75→50→35→25%),到最低档还不够就停用补帧
+        if (lsfgOn && covTotal >= 24) {
             val cov = covOk * 100 / covTotal
             lsfgCoverage = cov
-            if (cov < 85 && cfg.frcAdaptive) {
-                val cur = min(cfg.lsfgFlowScale, lsfgScaleCap)
-                val next = flowSteps.firstOrNull { it < cur - 0.01f }
-                if (next != null) {
-                    lsfgScaleCap = next
-                    AppLog.w("lsfg", "LSFG 覆盖率只有 $cov%(最近 $covTotal 个区间里 $covOk 个有生成帧),光流精度从 ${(cur * 100).toInt()}% 降到 ${(next * 100).toInt()}%,重建会话")
-                } else {
-                    frcDemote++
-                    AppLog.w("lsfg", "LSFG 覆盖率只有 $cov% 且光流精度已是最低,自动降级为 ${effFrc(cfg)}")
-                }
-            } else AppLog.d("lsfg", "LSFG 覆盖率 $cov%")
+            if (cov < 85 && cfg.frcAdaptive) lowerLsfgQuality(cfg, "覆盖率只有 $cov%(最近 $covTotal 个区间里 $covOk 个有生成帧)")
+            else AppLog.d("lsfg", "LSFG 覆盖率 $cov%")
             covTotal = 0; covOk = 0
         }
         if (!choreoPosted) scheduleVsync()
     }
 
-    /** 调试:读回运动场,统计向量分布(只在日志级别为"调试"时每 48 帧一次)。 */
-    private fun debugDumpMotion(t: Gl.Tex) {
-        val buf = java.nio.ByteBuffer.allocateDirect(t.w * t.h * 16).order(java.nio.ByteOrder.nativeOrder())
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, t.fbo)
-        GLES30.glReadPixels(0, 0, t.w, t.h, GLES30.GL_RGBA, GLES30.GL_FLOAT, buf)
-        val f = buf.asFloatBuffer()
-        val hist = java.util.TreeMap<Int, Int>()
-        var big = 0
-        for (i in 0 until t.w * t.h) {
-            val vx = Math.round(f.get(i * 4)); val vy = Math.round(f.get(i * 4 + 1))
-            if (vx != 0 || vy != 0) { hist.merge(vx, 1, Int::plus); big++ }
+    /** 光流精度降一档;已经是最低就停用补帧(本次播放)。 */
+    private fun lowerLsfgQuality(cfg: EnhanceConfig, why: String) {
+        val cur = lsfgScale(cfg)
+        val next = flowSteps.firstOrNull { it < cur - 0.01f }
+        if (next != null) {
+            lsfgScaleCap = next
+            AppLog.w("lsfg", "LSFG $why,光流精度从 ${(cur * 100).toInt()}% 降到 ${(next * 100).toInt()}%,重建会话")
+        } else {
+            lsfgGaveUp = true
+            AppLog.w("lsfg", "LSFG $why,且光流精度已是最低,本次播放停用补帧")
         }
-        AppLog.d("enhance", "运动场 ${t.w}x${t.h} 非零块 $big;vx 分布 ${hist.entries.sortedByDescending { it.value }.take(6).joinToString { "${it.key}:${it.value}" }}")
     }
 
-    private var probeLeft = 0
-
-    /** 调试:读回屏幕中间一行,找白色方块的位置(用 movebox 测试片),打印 模式 / 插值系数 / 方块位置。 */
-    private fun debugProbe(a: Slot, mode: Int, t: Float, d: Rect) {
-        probeLeft--
-        val row = java.nio.ByteBuffer.allocateDirect(d.w * 4)
-        GLES30.glReadPixels(d.x, d.y + d.h / 2, d.w, 1, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, row)
-        var sum = 0L; var cnt = 0
-        for (x in 0 until d.w) {
-            val r = row.get(x * 4).toInt() and 255; val g = row.get(x * 4 + 1).toInt() and 255
-            if (r > 200 && g > 200) { sum += x; cnt++ }
-        }
-        val cx = if (cnt > 20) sum.toFloat() / cnt / d.w * 480f else -1f
-        AppLog.d("enhance", "探针 帧${a.id} 模式$mode t=${"%.2f".format(t)} 方块x=${"%.1f".format(cx)}(源像素)")
-    }
+    /** 当前实际使用的光流精度:低功耗固定最低档,标准按设置,都受自动降级的上限约束。 */
+    private fun lsfgScale(cfg: EnhanceConfig): Float = min(if (cfg.lowPower) lowFlowScale else cfg.lsfgFlowScale, lsfgScaleCap)
 
     private fun retire(s: Slot) {
         pool.release(s.img)
-        me?.release(s.pyr)
-        if (s.mvOwn) s.mv?.delete() else grid.release(s.mv)
+        luma?.release(s.pyr)
         s.gen.forEach { pool8.release(it) }
         s.gen.clear()
-        s.luma = null
     }
 
     private fun hdrActive(c: EnhanceConfig) = hdrSurface && c.hdr != "off"
@@ -580,46 +492,41 @@ class VideoRenderer(
         lastVsync = vsyncNs
         val cfg = config
         // 补帧要用到"下一帧",而 ExoPlayer 只会在上屏前 ~50ms 才释放帧,几乎没有前瞻余量;
-        // 所以补帧时让画面整体晚一个源帧间隔(最多 50ms)上屏 —— 视频比声音慢 ≤50ms,人感觉不到(ITU 容限是 −45ms 超前 / +125ms 滞后)
-        // LSFG 的生成有延迟(几十毫秒),多留一点余量,否则一个区间的前半段还没有生成帧、后半段才有,会"一会卡一会流畅"
-        val lsfgActive = lsfg != null && effFrc(cfg) == "lsfg"
-        val frcDelay = frcDelayFor(cfg, lsfgActive)
+        // LSFG 的生成有延迟(几十毫秒),所以补帧时让画面整体晚 1.5 个源帧间隔(最多 80ms)上屏 —— 视频比声音慢这么一点人感觉不到
+        // (ITU 容限是 −45ms 超前 / +125ms 滞后);余量不够的话,一个区间的前半段还没有生成帧、后半段才有,会"一会卡一会流畅"
+        val wanted = lsfgWanted(cfg)
+        val lsfgActive = lsfg != null && wanted
+        val frcDelay = frcDelayFor(cfg)
         val presentAt = vsyncNs + period + (if (tsInDisplayClock == true) 0L else -interval) // 到达时间时钟下,显示"前一帧间隔"的画面
         val nowNs = presentAt - frcDelay
         // A = 上屏时间之前(含)的最后一帧;B = 之后的第一帧
         var ai = -1
         for (i in ring.indices) if (ring[i].ts <= nowNs) ai = i
-        val needNext = cfg.frc != "off"
         val a = ring.getOrNull(ai)
         val b = ring.getOrNull(ai + 1)
         if (a == null) { if (ring.isNotEmpty()) scheduleVsync(); return }
-        if (needNext && b == null && trace.enabled) trace.underrun++
+        if (wanted && b == null && trace.enabled) trace.underrun++
         // 覆盖率:每当 A 换成新的一帧,说明"上一个区间"放完了,看那个区间(前一帧 → A)有没有生成帧
         if (a.id != lastCountedA) {
             lastCountedA = a.id
-            if (lsfgActive && a.id > lsfgStartId + 2 && frcNeeded()) { covTotal++; if (a.gen.isNotEmpty()) covOk++ }
+            if (lsfgActive && a.id > lsfgStartId + 2 && frcNeeded(cfg)) { covTotal++; if (a.gen.isNotEmpty()) covOk++ }
         }
 
-        // 插帧系数
-        var t = 0f
-        var mode = 0
-        var lsfgIdx = -1
-        var lsfgTaken = false
+        var generating = false
         var showTex = a.img.id
-        if (needNext && b != null && interval > 0 && b.ts > a.ts) {
+        if (wanted && b != null && interval > 0 && b.ts > a.ts) {
             val dt = b.ts - a.ts
             val refreshHz = 1e9 / period
             val srcHz = 1e9 / dt
             if (dt in 4_000_000L..120_000_000L && refreshHz > srcHz * 1.3) {
-                t = ((nowNs - a.ts).toDouble() / dt).toFloat().coerceIn(0f, 1f)
-                mode = if (isMc(effFrc(cfg)) && b.mv != null) 2 else 1
-                if (b.gen.isNotEmpty() && effFrc(cfg) == "lsfg") {
+                if (b.gen.isNotEmpty()) {
                     // LSFG:每个真实帧之间有 k 张生成帧,共 n = k + 1 个"相位"(第 0 个是真实帧本身)。
                     // 不能直接用 floor(t * n) 按时间取相位:源帧率 × n 正好等于屏幕刷新率时(24fps × 5 = 120Hz),
                     // 每个 vsync 的采样点落在相位边界附近,时钟的微小漂移 / 抖动会让相位时而重复、时而跳过,
                     // 表现就是"一会流畅一会卡"。改用相位累加器(锁相环):每个 vsync 前进 n × 源帧率 / 刷新率 个相位,
                     // 再慢慢向真实时间靠拢(±0.3 个相位的死区内不修正),整数倍时每个 vsync 恰好前进一个相位,节奏均匀。
-                    lsfgTaken = true
+                    generating = true
+                    val t = ((nowNs - a.ts).toDouble() / dt).coerceIn(0.0, 1.0)
                     val n = b.gen.size + 1
                     val step = n * srcHz / refreshHz
                     val ptrue = a.id.toDouble() * n + t * n
@@ -636,24 +543,17 @@ class VideoRenderer(
                         showTex = tex
                     } else { // 相位对应的帧 / 生成帧不全:退回按时间取
                         if (trace.enabled) trace.phMissing++
-                        val ix = min((t * n + 1e-3f).toInt(), n - 1)
+                        val ix = min((t * n + 1e-3).toInt(), n - 1)
                         showTex = if (ix == 0) a.img.id else b.gen[ix - 1].id
                     }
-                    mode = 0; t = 0f
-                } else if (cfg.frcMultiplier > 0) {
-                    // 固定倍率:每个源帧之间只出 N 个画面(N 不超过 刷新率 / 源帧率),其余刷新重复上一个画面(也省 GPU)
-                    val n = min(cfg.frcMultiplier, max(1, floor(refreshHz / srcHz + 0.1).toInt()))
-                    if (n <= 1) { t = 0f; mode = 0 } else t = floor(t * n + 1e-3f) / n
-                }
+                } else if (lsfgActive && trace.enabled) trace.noGen++ // 这个区间没有生成帧,保持显示 A
             }
         }
-        if (!lsfgTaken) { lsfgPf = Double.NaN; trace.phaseReset() }
-        if (lsfgActive && !lsfgTaken && b != null && mode == 1 && trace.enabled) trace.noGen++ // 这个区间没有生成帧,退回了帧混合
-        if (lsfgTaken) lsfgIdx = 0
-        val key = "${a.id}/${if (mode == 0) 0 else (t * 64).toInt()}/$mode/${b?.mv != null}/$showTex"
+        if (!generating) { lsfgPf = Double.NaN; trace.phaseReset() }
+        val key = "${a.id}/$showTex"
         if (key == lastDrawKey && !dirty) {
             if (trace.enabled) trace.skipped++
-            if (ring.isNotEmpty() && (needNext || b != null)) scheduleVsync()
+            if (ring.isNotEmpty() && (wanted || b != null)) scheduleVsync()
             return
         }
         lastDrawKey = key
@@ -666,80 +566,64 @@ class VideoRenderer(
         GLES30.glViewport(d.x, d.y, d.w, d.h)
         Gl.use(pFinal)
         Gl.bindTex(0, showTex); GLES20.glUniform1i(Gl.loc(pFinal, "uA"), 0)
-        val bi = if (mode != 0) b!!.img.id else a.img.id
-        Gl.bindTex(1, bi); GLES20.glUniform1i(Gl.loc(pFinal, "uB"), 1)
-        val mvTex = if (mode == 2) b!!.mv!! else null
-        Gl.bindTex(2, mvTex?.id ?: a.img.id); GLES20.glUniform1i(Gl.loc(pFinal, "uMV"), 2)
         // 局部平均亮度(1/8 分辨率亮度)用来在大面积亮区压低 HDR 增益
-        val la = a.pyr?.d3; val lb = if (mode != 0) b!!.pyr?.d3 else la
-        Gl.bindTex(3, la?.id ?: a.img.id); GLES20.glUniform1i(Gl.loc(pFinal, "uLA"), 3)
-        Gl.bindTex(4, lb?.id ?: a.img.id); GLES20.glUniform1i(Gl.loc(pFinal, "uLB"), 4)
-        GLES20.glUniform1f(Gl.loc(pFinal, "uT"), t)
-        GLES20.glUniform1i(Gl.loc(pFinal, "uMode"), mode)
-        val mvSlot = if (mode == 2) b else null
-        GLES20.glUniform2f(Gl.loc(pFinal, "uD1Size"), (mvSlot?.mvUW ?: 1).toFloat(), (mvSlot?.mvUH ?: 1).toFloat())
-        GLES20.glUniform1i(Gl.loc(pFinal, "uCand"), when (effFrc(cfg)) { "mc_fast" -> 1; "mc_hq" -> 9; else -> 5 })
+        val la = a.pyr?.d3
+        Gl.bindTex(1, la?.id ?: showTex); GLES20.glUniform1i(Gl.loc(pFinal, "uLA"), 1)
         GLES20.glUniform1i(Gl.loc(pFinal, "uHasArea"), if (la != null) 1 else 0)
         GLES20.glUniform1i(Gl.loc(pFinal, "uHdr"), if (hdrActive(cfg)) 1 else 0)
         GLES20.glUniform1f(Gl.loc(pFinal, "uPeak"), cfg.hdrPeakNits.toFloat())
         Gl.draw()
-        if (probeLeft > 0) debugProbe(a, mode, t, d)
         val tS0 = System.nanoTime()
         EGL14.eglSwapBuffers(dpy, win)
         trace.swap(tDraw0, tS0, System.nanoTime(), period)
         shown++
-        updateStats(cfg, if (lsfgIdx >= 0) 2 else mode, a)
-        if (ring.isNotEmpty() && (needNext || b != null)) scheduleVsync()
+        updateStats(cfg, generating, a)
+        if (ring.isNotEmpty() && (wanted || b != null)) scheduleVsync()
     }
 
-    private fun updateStats(cfg: EnhanceConfig, mode: Int, a: Slot) {
+    private fun updateStats(cfg: EnhanceConfig, generating: Boolean, a: Slot) {
         val nowMs = SystemClock.elapsedRealtime()
         if (nowMs - lastStatsAt < 1000) return
         val secs = if (lastStatsAt == 0L) 1.0 else (nowMs - lastStatsAt) / 1000.0
         lastStatsAt = nowMs
         val fps = shown / secs
         shown = 0
+        val wanted = lsfgWanted(cfg)
+        val engine = if (cfg.lowPower) "LSFG·低功耗" else "LSFG"
         stats = buildString {
             append("增强渲染:")
             append(
                 when (cfg.upscale) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K-S"; "anime4k_m" -> "Anime4K-M"; else -> "" }.let { if (it.isNotEmpty() && degraded) "$it(已因性能停用)" else it }
             )
-            if (cfg.frc != "off") {
-                val e = effFrc(cfg)
-                append(" 补帧(${frcLabel(e)})${if (mode == 0) "·待机" else ""}${if (e != cfg.frc) "·已降级" else ""}")
-            }
+            if (cfg.frcOn) append(" 补帧($engine)${if (!generating) "·待机" else ""}${if (lsfgGaveUp) "·已因性能停用" else ""}")
             if (hdrActive(cfg)) append(" HDR(PQ,${cfg.hdrPeakNits}nit)") else if (cfg.hdr != "off") append(" HDR:显示器/表面不支持")
             append("\n输出 ${"%.0f".format(fps)}fps  源 ${a.img.w}×${a.img.h}  处理 ${"%.1f".format(ingestEma)}ms  屏幕 ${"%.0f".format(1e9 / period)}Hz")
-            flowEngine?.takeIf { cfg.frc == "flow" }?.let { append("  光流 ${"%.1f".format(it.avgMs)}ms") }
         }
         val srcFps = ingestedWin / secs
         ingestedWin = 0
-        // 向系统申请刷新率:补帧时保持屏幕高刷(固定倍率时申请 源帧率 × 倍率);不补帧时释放
-        val srcHz = if (interval > 0) 1e9 / interval else 0.0
-        // 固定申请这块屏的最高刷新率(以前固定倍率时申请 源帧率 × 倍率,源帧率估计值一抖就在 144 / 142 之间改来改去,
-        // 每次改申请系统都会重新选刷新率,日志里屏幕在 120Hz / 60Hz 之间来回切)
-        val hint = if (cfg.frc == "off") 0f else maxRefreshRate
+        // 向系统申请刷新率:补帧时固定申请目标刷新率(标准 = 这块屏 ≤120Hz 里最高的,低功耗 = 60Hz);不补帧时释放。
+        // 固定值而不是跟着源帧率算:源帧率估计值一抖,申请值就在 144 / 142 之间改来改去,每次改系统都会重新选刷新率
+        val hint = if (!cfg.frcOn) 0f else targetHz(cfg).toFloat()
         if (abs(hint - lastHint) > 1f) { lastHint = hint; onRateHint(hint) }
-        val eNow = effFrc(cfg)
         val note = when {
-            cfg.frc == "lsfg" && eNow != "lsfg" -> " · LSFG 未启用:" + lsfgWhy()
-            eNow != cfg.frc -> " · 已降级"
+            cfg.frcOn && !wanted -> " · LSFG 未启用:" + lsfgWhy()
+            cfg.frcOn && Lsfg.state != 2 -> " · 正在提取着色器"
             else -> ""
         }
-        val engine = frcLabel(eNow) + if (eNow == "lsfg") {
-            " ×${(lsfg?.generated ?: 0) + 1} 精度${(min(cfg.lsfgFlowScale, lsfgScaleCap) * 100).toInt()}%" + (if (lsfgCoverage >= 0) " 覆盖${lsfgCoverage}%" else "")
+        val detail = if (lsfg != null) {
+            " ×${(lsfg?.generated ?: 0) + 1} 精度${(lsfgScale(cfg) * 100).toInt()}%" + (if (lsfgCoverage >= 0) " 覆盖${lsfgCoverage}%" else "")
         } else ""
         fpsText = when {
-            cfg.frc == "off" -> ""
-            mode == 0 -> "补帧待机 ${"%.0f".format(srcFps)}fps · $engine$note"
-            else -> "补帧 ${"%.0f".format(srcFps)} → ${"%.0f".format(fps)} fps · $engine$note"
+            !cfg.frcOn -> ""
+            !generating -> "补帧待机 ${"%.0f".format(srcFps)}fps · $engine$detail$note"
+            else -> "补帧 ${"%.0f".format(srcFps)} → ${"%.0f".format(fps)} fps · $engine$detail$note"
         }
-        if (cfg.frc != "off" && trace.flushDue(nowMs)) {
-            val header = "配置=${cfg.frc}(实际 $eNow) 倍率=${cfg.frcMultiplier} k=${lsfg?.generated ?: 0} 精度=${(min(cfg.lsfgFlowScale, lsfgScaleCap) * 100).toInt()}% " +
-                "性能模式=${cfg.lsfgPerf} 自动降级=${cfg.frcAdaptive}(已降${frcDemote}档) | 屏幕 ${"%.1f".format(1e9 / period)}Hz(间隔 ${"%.2f".format(period / 1e6)}ms,最高 ${"%.0f".format(maxRefreshRate)}Hz) | " +
+        if (cfg.frcOn && trace.flushDue(nowMs)) {
+            val header = "配置=${cfg.frc} 倍率=${cfg.frcMultiplier} k=${lsfg?.generated ?: 0} 精度=${(lsfgScale(cfg) * 100).toInt()}% " +
+                "性能模式=${cfg.lsfgPerf || cfg.lowPower} 自动降级=${cfg.frcAdaptive}(已停用=$lsfgGaveUp) | 屏幕 ${"%.1f".format(1e9 / period)}Hz(间隔 ${"%.2f".format(period / 1e6)}ms,目标 ${"%.0f".format(targetHz(cfg))}Hz) | " +
                 "源 ${"%.2f".format(srcFps)}fps ${a.img.w}×${a.img.h} 输出 ${"%.1f".format(fps)}fps | 热状态=${thermalStatus()} | ingest 平均 ${"%.1f".format(ingestEma)}ms"
             val extra = "覆盖=${if (lsfgCoverage >= 0) "$lsfgCoverage%" else "-"} 精度上限=${(lsfgScaleCap * 100).toInt()}% 会话=${if (lsfg != null) "有" else "无"} 失败=$lsfgFail"
-            trace.flush(nowMs, header, extra, eNow == "lsfg")
+            trace.flush(nowMs, header, extra, true)
         }
     }
 
@@ -757,19 +641,14 @@ class VideoRenderer(
         else -> "等待第一帧"
     }
 
-    private fun frcLabel(m: String) = when (m) {
-        "blend" -> "混合"; "mc_fast" -> "运动补偿·轻量"; "mc_hq" -> "运动补偿·高质量"; "flow" -> "光流·DIS"; "lsfg" -> "LSFG"; else -> "运动补偿"
-    }
-
     // ---------------------------------------------------------------- LSFG
 
-    /** 每个真实帧之间要生成几张:固定倍率 m → m-1 张;自动 → 补到这块屏的最高刷新率附近。不超过屏幕能显示的。 */
-    /** 补帧时画面整体晚多少上屏(ns)。 */
-    private fun frcDelayFor(cfg: EnhanceConfig, lsfgActive: Boolean): Long = when {
-        cfg.frc == "off" -> 0L
-        lsfgActive -> min((if (interval > 0) interval else 41_000_000L) * 3 / 2, 80_000_000L)
-        else -> min(if (interval > 0) interval else 41_000_000L, 50_000_000L)
-    }
+    /** 补帧开着、而且(暂时)还有希望用上 LSFG:着色器还在提取也算(上屏延迟先留出来,提取完不会跳一下)。 */
+    private fun lsfgWanted(cfg: EnhanceConfig): Boolean = cfg.frcOn && Lsfg.state != 3 && lsfgFail < 2 && !lsfgGaveUp
+
+    /** 补帧时画面整体晚多少上屏(ns);源帧率已经够高(不需要补帧)时不延迟。 */
+    private fun frcDelayFor(cfg: EnhanceConfig): Long =
+        if (!lsfgWanted(cfg) || !frcNeeded(cfg)) 0L else min((if (interval > 0) interval else 41_000_000L) * 3 / 2, 80_000_000L)
 
     /** 绝对相位 ph(= 真实帧 id × n + 第几张)对应的纹理:第 0 张是真实帧,其余是下一帧上挂着的生成帧;帧或生成帧不全返回 null。 */
     private fun phaseTex(ph: Long, n: Int): Int? {
@@ -783,7 +662,7 @@ class VideoRenderer(
     }
 
     private var lsfgK = 0
-    private var lsfgKKey = -1
+    private var lsfgKKey = ""
     private var lsfgKSrc = 0.0
 
     /** 把实测的源帧率归到常见的标准值(23.976 / 24 / 25 / 29.97 / 30 / 50 / 59.94 / 60…),差在 3% 以内算同一档。 */
@@ -793,22 +672,22 @@ class VideoRenderer(
     /**
      * 每个真实帧之间生成几张。**定下来就不再变**:以前每次都用瞬时帧间隔 + 屏幕最高刷新率重新算(144 / 28.8 = 5.0,144 / 29 = 4.97),
      * k 在 3 和 4 之间来回跳,每跳一次就重建 LSFG 会话(分配缓冲、建 Vulkan 管线,渲染线程卡 0.4 ~ 0.5 秒)—— 日志里就是每秒一次的大卡顿。
-     * 现在:固定倍率 m → k = m - 1(不再按屏幕上限砍,屏幕显示不下的相位上屏时自然跳过);自动 → 补到 120Hz(最高刷新率不到 115 就补到 60Hz)附近,
-     * 按标准化后的源帧率算一次;只有倍率设置变了、或源帧率变化超过 30%(换视频 / 变速)才重算。
+     * 现在:标准模式 固定倍率 m → k = m - 1,自动 → 补到目标刷新率(这块屏 ≤120Hz 里最高的)附近;低功耗模式 → 补到 60fps 附近(倍率设置忽略);
+     * 按标准化后的源帧率算一次;只有模式 / 倍率设置变了、或源帧率变化超过 30%(换视频 / 变速)才重算。
      */
     private fun lsfgGenerated(cfg: EnhanceConfig): Int {
         if (interval <= 0L) return 0
         val src = stdRate(1e9 / interval)
-        if (lsfgK > 0 && lsfgKKey == cfg.frcMultiplier && abs(src - lsfgKSrc) / lsfgKSrc < 0.3) return lsfgK
-        // 目标刷新率就是向系统申请的那个(maxRefreshRate,同分辨率下 ≤ 120Hz 里最高的);倍率不超过 刷新率 / 源帧率
-        // (30fps 在 120Hz 上 ×5 = 150 > 120,多生成的相位上屏时只能跳过,白白多花 GPU 时间 —— 日志里 k=4 时生成耗时 29.5ms 贴着 33ms 的帧间隔,k=3 只要 23ms)。
-        val target = maxRefreshRate.toDouble()
-        val cap = max(2, floor(target / src + 0.15).toInt())
-        val m = if (cfg.frcMultiplier > 0) min(cfg.frcMultiplier, cap) else cap
+        val key = "${cfg.frc}/${if (cfg.lowPower) 0 else cfg.frcMultiplier}"
+        if (lsfgK > 0 && lsfgKKey == key && abs(src - lsfgKSrc) / lsfgKSrc < 0.3) return lsfgK
+        // 倍率不超过 目标刷新率 / 源帧率(30fps 在 120Hz 上 ×5 = 150 > 120,多生成的相位上屏时只能跳过,白白多花 GPU 时间 ——
+        // 日志里 k=4 时生成耗时 29.5ms 贴着 33ms 的帧间隔,k=3 只要 23ms)。低功耗:24fps → ×2 = 48,30fps → ×2 = 60,25fps → ×2 = 50。
+        val cap = max(2, floor(targetHz(cfg) / src + 0.15).toInt())
+        val m = if (!cfg.lowPower && cfg.frcMultiplier > 0) min(cfg.frcMultiplier, cap) else cap
         lsfgK = (m - 1).coerceIn(1, 7)
-        lsfgKKey = cfg.frcMultiplier
+        lsfgKKey = key
         lsfgKSrc = src
-        AppLog.i("frc", "LSFG 每帧生成数定为 $lsfgK(倍率 ${if (cfg.frcMultiplier > 0) "${cfg.frcMultiplier}" else "自动"},源帧率按 ${"%.3f".format(src)}fps 计)")
+        AppLog.i("frc", "LSFG 每帧生成数定为 $lsfgK(${if (cfg.lowPower) "低功耗,目标 60fps" else "倍率 ${if (cfg.frcMultiplier > 0) "${cfg.frcMultiplier}" else "自动"}"},源帧率按 ${"%.3f".format(src)}fps 计)")
         return lsfgK
     }
 
@@ -841,18 +720,19 @@ class VideoRenderer(
     private fun submitLsfg(slot: Slot, cfg: EnhanceConfig) {
         val k = lsfgGenerated(cfg)
         if (k < 1) return
-        val scale = min(cfg.lsfgFlowScale, lsfgScaleCap)
-        val key = "$scale/${cfg.lsfgPerf}"
+        val scale = lsfgScale(cfg)
+        val perf = cfg.lsfgPerf || cfg.lowPower
+        val key = "$scale/$perf"
         var s = lsfg
         if (s != null && (s.w != slot.img.w || s.h != slot.img.h || s.generated != k || s.key != key)) { stopLsfg(); s = null }
         if (s == null) {
             val app = Assets.app ?: return
             val ns = LsfgSession(slot.img.w, slot.img.h, k, key)
-            if (!ns.create(Lsfg.cacheDir(app), scale, cfg.lsfgPerf)) {
+            if (!ns.create(Lsfg.cacheDir(app), scale, perf)) {
                 lsfgLastError = LsfgNative.nativeLastError().ifEmpty { "启动失败" }
                 ns.destroy()
                 lsfgFail++
-                AppLog.w("lsfg", "LSFG 启动失败 $lsfgFail 次(${lsfgLastError});两次失败后本次播放改用光流")
+                AppLog.w("lsfg", "LSFG 启动失败 $lsfgFail 次(${lsfgLastError});两次失败后本次播放不再补帧")
                 return
             }
             lsfg = ns; s = ns; lsfgFail = 0; lsfgLastError = ""
@@ -894,7 +774,7 @@ class VideoRenderer(
         if (rc != 0) {
             lsfgLastError = LsfgNative.nativeLastError()
             AppLog.w("lsfg", "生成失败(代码 $rc):$lsfgLastError")
-            if (rc == -2) { lsfgFail = 99; stopLsfg(); AppLog.w("lsfg", "Vulkan 设备丢失,本次播放改用光流") }
+            if (rc == -2) { lsfgFail = 99; stopLsfg(); AppLog.w("lsfg", "Vulkan 设备丢失,本次播放不再补帧") }
             return
         }
         val slot = ring.firstOrNull { it.id == id }
@@ -918,7 +798,7 @@ class VideoRenderer(
             // 这一帧的区间(前一帧 → 这一帧)什么时候开始上屏:前一帧的时间戳 + 延迟;生成帧在那之后才就绪就是"晚了"
             val prevSlot = ring.firstOrNull { it.id == id - 1 }
             if (prevSlot != null && consecutive) {
-                val late = (nowN - (prevSlot.ts + frcDelayFor(config, true))) / 1e6
+                val late = (nowN - (prevSlot.ts + frcDelayFor(config))) / 1e6
                 if (late > 0) { trace.genLateN++; trace.genLate.add(late) }
             }
         }
@@ -955,19 +835,12 @@ void main() {
 }
 """
 
-        /** 上屏:插帧(运动补偿 / 混合)→ SDR→HDR 逆色调映射(PQ,BT.2020)→ 输出。 */
+        /** 上屏:SDR→HDR 逆色调映射(PQ,BT.2020)→ 输出(补帧的画面已经由 LSFG 生成,这里只负责显示)。 */
         private const val FINAL_FRAG = """#version 300 es
 precision highp float;
 precision highp sampler2D;
 uniform sampler2D uA;
-uniform sampler2D uB;
-uniform sampler2D uMV;
 uniform sampler2D uLA;
-uniform sampler2D uLB;
-uniform float uT;
-uniform int uMode;       // 0 单帧 1 混合 2 运动补偿
-uniform vec2 uD1Size;
-uniform int uCand;       // 运动补偿时每个像素比较的相邻块向量个数:1 轻量 / 5 标准 / 9 高质量
 uniform int uHasArea;
 uniform int uHdr;
 uniform float uPeak;
@@ -979,42 +852,13 @@ vec3 pq(vec3 nits) {
     return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), vec3(78.84375));
 }
 
-vec3 interp() {
-    if (uMode == 0) return texture(uA, vPos).rgb;
-    vec3 a0 = texture(uA, vPos).rgb;
-    vec3 b0 = texture(uB, vPos).rgb;
-    vec3 z = mix(a0, b0, uT);
-    if (uMode == 1) return z;
-    if (dot(abs(a0 - b0), vec3(1.0)) < 0.03) return z;   // 两帧几乎一样(静止区域):不用做运动补偿,省掉十次采样
-    // 运动补偿:A 沿运动场前移 t,B 后移 (1-t)。物体边缘处自己那个块的向量常常不准(块里一半是背景),
-    // 所以在自己与上下左右 4 个相邻块的向量里,逐像素挑"A、B 对得最齐"的那一个。
-    ivec2 msz = textureSize(uMV, 0);
-    ivec2 c0 = ivec2(floor(vPos * vec2(msz)));
-    ivec2 offs[9] = ivec2[9](ivec2(0, 0), ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1), ivec2(1, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(-1, -1));
-    float dMC = 1e9; vec3 a = a0; vec3 b = b0;
-    for (int k = 0; k < 9; k++) {
-        if (k >= uCand) break;
-        vec2 v = texelFetch(uMV, clamp(c0 + offs[k], ivec2(0), msz - 1), 0).xy / uD1Size;
-        vec3 ca = texture(uA, vPos - uT * v).rgb;
-        vec3 cb = texture(uB, vPos + (1.0 - uT) * v).rgb;
-        float d = dot(abs(ca - cb), vec3(1.0)) + (k == 0 ? 0.0 : 0.01);
-        if (d < dMC) { dMC = d; a = ca; b = cb; }
-    }
-    float dZ = dot(abs(a0 - b0), vec3(1.0));
-    vec3 mc = mix(a, b, uT);
-    vec3 hold = uT < 0.5 ? a0 : b0;
-    // 补偿后的匹配比不补偿更差 → 退回混合;两种都差(遮挡 / 场景切换)→ 直接保持最近的帧,避免重影
-    vec3 r = mix(mc, z, smoothstep(0.02, 0.12, dMC - dZ));
-    return mix(r, hold, smoothstep(0.20, 0.45, min(dMC, dZ)));
-}
-
 void main() {
-    vec3 c = interp();
+    vec3 c = texture(uA, vPos).rgb;
     if (uHdr == 0) { outColor = vec4(c, 1.0); return; }
     // SDR → HDR:解码 gamma 得到相对亮度,对高光做扩展(阴影和中间调不动),大面积亮区少扩展(避免整屏刺眼),BT.709→BT.2020,PQ 编码
     vec3 lin = pow(max(c, 0.0), vec3(2.4));
     float L = dot(lin, vec3(0.2126, 0.7152, 0.0722));
-    float area = uHasArea == 1 ? mix(texture(uLA, vPos).r, texture(uLB, vPos).r, uT) : L;
+    float area = uHasArea == 1 ? texture(uLA, vPos).r : L;
     float areaLin = pow(max(area, 0.0), 2.4);
     float k = max(uPeak / 203.0 - 1.0, 0.0);
     float gain = 1.0 + k * pow(clamp(L, 0.0, 1.0), 4.0) * (1.0 - smoothstep(0.35, 0.75, areaLin));
