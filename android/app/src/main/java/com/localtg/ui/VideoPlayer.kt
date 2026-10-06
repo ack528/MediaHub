@@ -521,7 +521,7 @@ fun VideoPage(
         }
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = cfg.enhFrc, frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, lsfgFp32 = cfg.lsfgFp32, trace = cfg.frcTrace, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH)
+        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = if (com.localtg.render.Lsfg.deviceSupported) cfg.enhFrc else "off", frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, lsfgFp32 = cfg.lsfgFp32, trace = cfg.frcTrace, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH)
         var enhFailed by remember(item.id) { mutableStateOf(false) }
         // HDR 片源本身不处理;转码播放的是 H.264 SDR,可以处理
         val useEnh = enh.active && !enhFailed && item.video?.hdr.isNullOrEmpty() && android.os.Build.VERSION.SDK_INT >= 26
@@ -933,6 +933,9 @@ fun VideoPage(
                         MenuNote("FSR 适合真人 / 影视;动漫 = Anime4K。视频高度超过 ${cfg.enhMaxH}p 不处理。")
                         val frcs = listOf("off", "lsfg_low", "lsfg")
                         MenuLabel("补帧(LSFG)")
+                        if (!com.localtg.render.Lsfg.deviceSupported) {
+                            MenuNote(com.localtg.render.Lsfg.UNSUPPORTED_TEXT, com.localtg.ui.tg.LocalTg.current.danger)
+                        } else {
                         MenuChips(listOf("关闭", "低功耗", "标准"), frcs.indexOf(cfg.enhFrc).coerceAtLeast(0)) { i -> c.settings.update { copy(enhFrc = frcs[i]) } }
                         MenuNote(
                             when (cfg.enhFrc) {
@@ -941,7 +944,8 @@ fun VideoPage(
                                 else -> "把 24 / 30 帧视频补到更高帧率。"
                             },
                         )
-                        if (cfg.enhFrc != "off") {
+                        }
+                        if (cfg.enhFrc != "off" && com.localtg.render.Lsfg.deviceSupported) {
                             val tg = com.localtg.ui.tg.LocalTg.current
                             when (com.localtg.render.Lsfg.state) {
                                 1 -> MenuNote("正在提取着色器(只有第一次需要几秒)…", tg.warn)

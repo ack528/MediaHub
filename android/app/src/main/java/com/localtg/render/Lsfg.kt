@@ -37,6 +37,22 @@ object LsfgNative {
 object Lsfg {
     private const val MARKER = "extracted-v1"
 
+    /**
+     * 补帧(LSFG)只在高通处理器(骁龙 / Adreno)上启用。天玑 / Mali 等在实测里生成耗时远超帧间隔、覆盖率上不去、画面抖动,
+     * 检测到非高通处理器直接禁用补帧(设置里的补帧选项、播放器菜单、着色器提取、渲染器全部关掉)。
+     * 判断:SoC 厂商(Android 12+)/ 硬件名 / SoC 型号,任意一个是高通就算。
+     */
+    val deviceSupported: Boolean by lazy {
+        val mf = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MANUFACTURER.orEmpty() else ""
+        val model = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL.orEmpty() else ""
+        val hw = android.os.Build.HARDWARE.orEmpty().lowercase()
+        val ok = mf.equals("QTI", true) || mf.contains("qualcomm", true) || hw.contains("qcom") || hw.contains("qti") ||
+            Regex("""^(SM|SDM|SXR|QCM|QCS|SG|SA)\d""", RegexOption.IGNORE_CASE).containsMatchIn(model)
+        AppLog.i("lsfg", "处理器检测:厂商=$mf 型号=$model 硬件=$hw → ${if (ok) "高通,可用补帧" else "非高通,禁用补帧"}")
+        ok
+    }
+    const val UNSUPPORTED_TEXT = "检测到非高通处理器,补帧已禁用(补帧只在骁龙 / Adreno 上验证过,天玑 / Mali 等性能跟不上)"
+
     /** 0 还没准备 / 1 准备中 / 2 就绪 / 3 不可用(原因见 [error]) */
     @Volatile var state = 0; private set
     @Volatile var error = ""; private set

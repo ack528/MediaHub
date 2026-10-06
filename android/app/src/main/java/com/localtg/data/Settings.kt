@@ -131,7 +131,8 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
         runBlocking { ctx.settingsDataStore.data.first()[key]?.let { AppJson.decodeFromString<AppSettings>(it) } }
     }.getOrNull()?.let { s ->
         // 补帧只保留 LSFG:旧版本的 blend / mc* / flow 等值一律回到"关闭"
-        if (s.enhFrc in setOf("off", "lsfg", "lsfg_low")) s else s.copy(enhFrc = "off")
+        // 非高通处理器不支持补帧:一律关闭
+        if (s.enhFrc in setOf("off", "lsfg", "lsfg_low") && (s.enhFrc == "off" || com.localtg.render.Lsfg.deviceSupported)) s else s.copy(enhFrc = "off")
     } ?: AppSettings()
 
     val value: AppSettings get() = state.value

@@ -220,7 +220,7 @@ class VideoRenderer(
 
     /** 这次播放里 LSFG 能不能用:没提取完着色器 / 不可用 / 多次启动失败 / 性能不够已停用 都不行。 */
     private fun lsfgUsable(cfg: EnhanceConfig): Boolean {
-        if (!cfg.frcOn) return false
+        if (!cfg.frcOn || !Lsfg.deviceSupported) return false
         lsfgRetryIfDue()
         val app = Assets.app
         if (app != null) Lsfg.prepareAsync(app) // 正常情况下应用启动时已经在提取了;这里是保险
@@ -747,6 +747,7 @@ class VideoRenderer(
 
     /** LSFG 没启用的原因(显示在右上角小字里,方便在真机上判断为什么回退)。 */
     private fun lsfgWhy(): String = when {
+        !Lsfg.deviceSupported -> "非高通处理器,已禁用"
         Lsfg.state == 1 -> "正在提取着色器"
         Lsfg.state == 3 -> Lsfg.error.take(40)
         lsfgFail >= 2 -> lsfgLastError.take(40).ifEmpty { "启动失败" }
@@ -757,7 +758,7 @@ class VideoRenderer(
     // ---------------------------------------------------------------- LSFG
 
     /** 补帧开着、而且(暂时)还有希望用上 LSFG:着色器还在提取也算(上屏延迟先留出来,提取完不会跳一下)。 */
-    private fun lsfgWanted(cfg: EnhanceConfig): Boolean { lsfgRetryIfDue(); return cfg.frcOn && Lsfg.state != 3 && lsfgFail < 2 && !lsfgGaveUp }
+    private fun lsfgWanted(cfg: EnhanceConfig): Boolean { lsfgRetryIfDue(); return cfg.frcOn && Lsfg.deviceSupported && Lsfg.state != 3 && lsfgFail < 2 && !lsfgGaveUp }
 
     /** 因性能停用补帧 30 秒后自动再试一次(跟不上多半是一时的:刚开始播放 / 系统繁忙 / 发热降频后恢复)。 */
     private fun lsfgRetryIfDue() {

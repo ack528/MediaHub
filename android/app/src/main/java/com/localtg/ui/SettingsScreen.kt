@@ -330,9 +330,16 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
         desc = "高分辨率视频超分计算量很大;超过这个高度的视频直接显示",
     ) { u { copy(enhMaxH = it) } }
     Header("补帧(LSFG)")
+    val frcSupported = com.localtg.render.Lsfg.deviceSupported
+    if (!frcSupported) {
+        Text(
+            com.localtg.render.Lsfg.UNSUPPORTED_TEXT, fontSize = 13.sp, color = LocalTg.current.danger,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+    }
     ChoiceRow(
         "补帧方式", s.enhFrc,
-        listOf(
+        if (!frcSupported) listOf("off" to "关闭(此设备不支持)") else listOf(
             "off" to "关闭",
             "lsfg_low" to "LSFG 低功耗(目标 60 帧,省电发热小)",
             "lsfg" to "LSFG 标准(补到屏幕最高刷新率,效果最好,最费 GPU)",

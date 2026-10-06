@@ -160,13 +160,14 @@ object HardwareProbe {
         val lsfgLib = LsfgNative.load()
         val dllBundled = Lsfg.dllBundled(ctx)
         val lsfgLevel = when {
+            !Lsfg.deviceSupported -> 0
             !androidOk || vk.isEmpty() || !lsfgLib || !dllBundled -> 0
             adreno7 -> 2
             else -> 1
         }
         lines += HwLine(
             "LSFG 帧生成(内置)", lsfgLevel,
-            "原生库 ${if (lsfgLib) "已加载" else "没有加载"};Lossless.dll ${if (dllBundled) "已内置" else "安装包里没有"};" +
+            (if (!Lsfg.deviceSupported) Lsfg.UNSUPPORTED_TEXT + "。" else "") + "原生库 ${if (lsfgLib) "已加载" else "没有加载"};Lossless.dll ${if (dllBundled) "已内置" else "安装包里没有"};" +
                 "Android 10+(${if (androidOk) "满足" else "不满足"});Vulkan ${if (vk.isEmpty()) "不支持" else vk};" +
                 if (adreno7) "Adreno 7xx+(官方验证过的 GPU)" else "当前 GPU 不是 Adreno 7xx+(官方只在这类 GPU 上验证过,Mali / 天玑看驱动,试试再说)",
         )

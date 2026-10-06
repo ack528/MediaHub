@@ -84,7 +84,7 @@ class App : Application(), SingletonImageLoader.Factory {
         container = AppContainer(this)
         com.localtg.render.Assets.app = applicationContext
         // 内置了 Lossless.dll 的话,启动时就在后台提取着色器(只有第一次要几秒;之后读缓存),播放补帧时不用再等
-        if (com.localtg.render.Lsfg.dllBundled(this)) com.localtg.render.Lsfg.prepareAsync(this)
+        if (com.localtg.render.Lsfg.deviceSupported && com.localtg.render.Lsfg.dllBundled(this)) com.localtg.render.Lsfg.prepareAsync(this)
         AppLog.init(this, container.settings.value.logLevel)
         AppLog.installCrashHandler()
         AppLog.i("app", "启动\n" + AppLog.deviceInfo().trimEnd() + "\n设置: " + container.settings.value)
