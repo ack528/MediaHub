@@ -461,13 +461,13 @@ class VideoRenderer(
         if (!choreoPosted) scheduleVsync()
     }
 
-    /** 自动降级的一个档位:光流精度 + 输入分辨率比例。 */
-    private class Rung(val flow: Float, val input: Float)
+    /** 自动降级的一个档位:光流精度 + 输入分辨率比例 + 生成倍数除以几(2 = 倍数减半,例如 ×4 → ×2)。 */
+    private class Rung(val flow: Float, val input: Float, val nDiv: Int = 1)
 
     /**
-     * 档位表:先把光流精度从设置值一档档降到 25%,再降输入分辨率(整个帧生成都在更小的画面上做:75% → 50%,
-     * 像素数是原来的 56% / 25%;生成的中间帧画面略糊,上屏时按线性插值放大,真实帧仍然是原分辨率)。
-     * 1.12.x 的 Mali-G1 日志:1080p、k = 3、光流精度 50% 时 worker 要 60 ~ 120ms(帧间隔 33ms),只降光流精度不够,所以加了输入分辨率这一维。
+     * 档位表:光流精度从设置值一档档降到 25% → 生成倍数减半(×4 → ×2,耗时大约是原来的 60%,而且 60 / 120Hz 都是整数倍,节奏照样均匀)→
+     * 输入分辨率 75% → 50%(像素数 56% / 25%;生成的中间帧略糊,上屏时线性插值放大,真实帧仍是原分辨率)。
+     * 1.12.x 的 Mali-G1 日志:1080p、k = 3、光流精度 50% 时 worker 要 60 ~ 120ms,只降光流精度不够。
      */
     private fun ladder(cfg: EnhanceConfig): List<Rung> {
         val base = if (cfg.lowPower) lowFlowScale else cfg.lsfgFlowScale
@@ -475,9 +475,12 @@ class VideoRenderer(
         l += Rung(base, 1f)
         var last = base
         for (f in flowSteps) if (f < base - 0.01f) { l += Rung(f, 1f); last = f }
-        l += Rung(last, 0.75f); l += Rung(last, 0.5f)
+        l += Rung(last, 1f, 2); l += Rung(last, 0.75f, 2); l += Rung(last, 0.5f, 2)
         return l
     }
+
+    /** 档位对"每帧生成几张"的影响:倍数 n = k + 1 除以 nDiv(至少 ×2,即 k ≥ 1)。 */
+    private fun adjustK(kFull: Int, r: Rung): Int = if (r.nDiv <= 1) kFull else max(1, (kFull + 1) / r.nDiv - 1)
 
     private fun rung(cfg: EnhanceConfig): Rung = ladder(cfg).let { it[lsfgStep.coerceIn(0, it.lastIndex)] }
 
@@ -497,7 +500,14 @@ class VideoRenderer(
             AppLog.w("lsfg", "LSFG $why;光流精度降到 ${(l[cur].flow * 100).toInt()}% 后生成耗时 ${"%.1f".format(prevMs)}ms → ${"%.1f".format(ema)}ms 没有变快,退回 ${(l[prev].flow * 100).toInt()}%,以后只降输入分辨率")
             return
         }
-        val next = (cur + 1..l.lastIndex).firstOrNull { !(lsfgSkipFlow && l[it].flow < l[cur].flow - 0.01f) }
+        val kFull = lsfgK.coerceAtLeast(1)
+        val hopeless = interval > 0 && ema > interval / 1e6 * 1.3 // 生成耗时比帧间隔长 30% 以上:一点点降光流精度没用,直接降倍数
+        val next = (cur + 1..l.lastIndex).firstOrNull {
+            val r = l[it]; val c = l[cur]
+            !(lsfgSkipFlow && r.flow < c.flow - 0.01f) &&                                                  // 光流精度降了不快 → 不再降光流
+                !(r.nDiv > c.nDiv && r.nDiv > 1 && adjustK(kFull, r) == adjustK(kFull, c) && r.input >= c.input) && // 倍数已经是 ×2,减半没有效果
+                !(hopeless && r.nDiv == c.nDiv && r.input >= c.input && r.flow < c.flow)                        // 严重超时:跳过光流精度档
+        }
         if (next != null) {
             lsfgPrevStep = cur
             lsfgStep = next
@@ -543,7 +553,7 @@ class VideoRenderer(
             if (d in 3_000_000L..60_000_000L) {
                 if (measuredPeriod == 0L) measuredPeriod = d
                 else if (abs(d - measuredPeriod) > measuredPeriod / 4) {
-                    if (++deviant >= 3) {
+                    if (++deviant >= 2) {
                         AppLog.i("frc", "屏幕刷新间隔变化 %.2fms(%.0fHz)→ %.2fms(%.0fHz)".format(measuredPeriod / 1e6, 1e9 / measuredPeriod, d / 1e6, 1e9 / d))
                         measuredPeriod = d; deviant = 0
                     }
@@ -551,6 +561,10 @@ class VideoRenderer(
                 else { deviant = 0; measuredPeriod = (measuredPeriod * 7 + d) / 8 }
             }
         }
+        // 这一次 vsync 距上一次的实际间隔:相位按它推进,而不是按"测出来的刷新周期" ——
+        // vivo / OPPO 的系统会在 60Hz / 120Hz 之间来回切屏(日志里每隔几秒一次),切换后的前几帧测出来的周期是旧的,
+        // 相位推进快了一倍或慢了一半,切换点上就是一次明显的顿挫 / 跳帧("低功耗下画面抖动非常严重")
+        val dtV = if (lastVsync != 0L) (vsyncNs - lastVsync).takeIf { it in 3_000_000L..60_000_000L } ?: period else period
         lastVsync = vsyncNs
         val cfg = config
         // 补帧要用到"下一帧",而 ExoPlayer 只会在上屏前 ~50ms 才释放帧,几乎没有前瞻余量;
@@ -590,13 +604,14 @@ class VideoRenderer(
                     generating = true
                     val t = ((nowNs - a.ts).toDouble() / dt).coerceIn(0.0, 1.0)
                     val n = b.gen.size + 1
-                    val step = n * srcHz / refreshHz
+                    val step = n * srcHz * dtV / 1e9 // 这个 vsync 实际过去了 dtV,相位前进 n × 源帧率 × dtV
                     val ptrue = a.id.toDouble() * n + t * n
                     if (lsfgPf.isNaN() || lsfgPfN != n || abs(ptrue - lsfgPf) > 2.5) { lsfgPf = ptrue; lsfgPfN = n }
                     else {
                         lsfgPf += step
                         val err = ptrue - lsfgPf
-                        if (abs(err) > 0.3) lsfgPf += (err - 0.3 * Math.signum(err)) * 0.1
+                        // 校正要又松又慢:帧时间戳本身有几毫秒的抖动(切屏时更大),追得太紧反而把抖动搬到画面上;死区 ±0.6 个相位,每次只补 3%
+                        if (abs(err) > 0.6) lsfgPf += (err - 0.6 * Math.signum(err)) * 0.03
                     }
                     val ph = floor(lsfgPf).toLong()
                     trace.phase(ph)
@@ -827,8 +842,9 @@ class VideoRenderer(
 
     /** 真正提交一帧(worker 空闲时才会调用)。 */
     private fun submitLsfg(slot: Slot, cfg: EnhanceConfig) {
-        val k = lsfgGenerated(cfg)
-        if (k < 1) return
+        val kFull = lsfgGenerated(cfg)
+        if (kFull < 1) return
+        val k = adjustK(kFull, rung(cfg))
         val scale = lsfgScale(cfg)
         val perf = cfg.lsfgPerf || cfg.lowPower
         val inScale = lsfgInScale(cfg)
