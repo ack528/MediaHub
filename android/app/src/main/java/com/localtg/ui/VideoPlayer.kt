@@ -205,6 +205,9 @@ fun VideoPage(
     var stats by remember { mutableStateOf("") }
     var enhStats by remember { mutableStateOf("") }
     var frcText by remember { mutableStateOf("") }
+    val meter = remember { LoadMeter() }
+    var loadLine1 by remember { mutableStateOf("") } // 加载提示:速度
+    var loadLine2 by remember { mutableStateOf("") } // 加载提示:预计剩余时间
     var enhView by remember { mutableStateOf<com.localtg.render.EnhancedVideoView?>(null) }
     val decoderName = remember { arrayOf("") }
     val dropped = remember { longArrayOf(0) }
@@ -247,7 +250,8 @@ fun VideoPage(
         var p: ExoPlayer? = null
         val loudness = arrayOfNulls<android.media.audiofx.LoudnessEnhancer>(1)
         if (isCurrent && resumeMs >= 0 && !blocked) {
-            val pl = createPlayer(ctx, c, c.settings.value, useSoftware, modeOverride)
+            meter.reset()
+            val pl = createPlayer(ctx, c, c.settings.value, useSoftware, modeOverride, meter)
             p = pl
             pl.addListener(object : Player.Listener {
                 // 音量增益:挂在播放器的音频会话上
@@ -358,6 +362,54 @@ fun VideoPage(
     // 不完整的视频:提醒一下,播放到被截断处会停止
     LaunchedEffect(isCurrent, item.id) {
         if (isCurrent && item.flags.truncated && !blocked) showHud(Hud(TgIcons.Warning, "文件不完整(下载可能中断),播放到被截断处会停止"))
+    }
+
+    // 加载提示:点开视频到出画面(以及中途卡住缓冲)时,显示下载速度和预计还要多久。
+    // 预计剩余 = 还差多少秒的缓冲才能开始 / 恢复播放 × 每秒媒体占多少字节 ÷ 下载速度;每秒媒体多少字节优先用 文件大小 / 时长,
+    // 其次文件记录的码率,转码用转码码率,都没有就用已经下载的字节数 / 已缓冲的时长实测。
+    LaunchedEffect(player, firstFrame, state, transcodeBitrate) {
+        val pl = player
+        if (pl == null || (firstFrame && state != Player.STATE_BUFFERING) || state == Player.STATE_ENDED) { loadLine1 = ""; loadLine2 = ""; return@LaunchedEffect }
+        val bm = c.settings.value.bufferMode
+        val targetMs = if (!firstFrame) (if (bm == "small") 1000L else 2500L) else (if (bm == "small") 2000L else if (bm == "large") 5000L else 5000L)
+        var lastBytes = meter.bytes
+        var lastT = android.os.SystemClock.elapsedRealtime()
+        var speed = 0.0 // 字节 / 秒
+        var startBuf = pl.totalBufferedDuration
+        while (true) {
+            delay(500)
+            val now = android.os.SystemClock.elapsedRealtime()
+            val b = meter.bytes
+            val inst = (b - lastBytes) * 1000.0 / (now - lastT).coerceAtLeast(1)
+            speed = if (speed == 0.0) inst else speed * 0.6 + inst * 0.4
+            lastBytes = b; lastT = now
+            val bufMs = pl.totalBufferedDuration
+            val durMs = pl.duration.takeIf { it > 0 } ?: item.durationMs ?: 0L
+            val bytesPerMs = when {
+                transcodeBitrate != null -> transcodeBitrate!! / 8000.0
+                item.size > 0 && durMs > 0 -> item.size.toDouble() / durMs
+                (item.video?.bitrateKbps ?: 0L) > 0 -> item.video!!.bitrateKbps / 8.0
+                bufMs > 0 && b > 0 -> b.toDouble() / bufMs
+                else -> 0.0
+            }
+            fun spd(v: Double) = if (v >= 1024 * 1024) "%.1f MB/s".format(v / 1024 / 1024) else "%.0f KB/s".format(v / 1024)
+            loadLine1 = when {
+                b == 0L -> "正在连接…"
+                speed < 1024 -> "加载中 · 速度很慢"
+                else -> "加载中 · " + spd(speed)
+            }
+            val needMs = (targetMs - bufMs).coerceAtLeast(0L)
+            loadLine2 = when {
+                b == 0L -> ""
+                needMs == 0L -> "即将开始"
+                bytesPerMs <= 0.0 -> "已加载 ${formatSize(b)}"
+                speed < 1024 -> "已加载 ${formatSize(b)}"
+                else -> {
+                    val sec = (needMs * bytesPerMs / speed).toLong().coerceAtLeast(1)
+                    "已加载 ${formatSize(b)} · 预计还需 " + (if (sec >= 60) "${sec / 60} 分 ${sec % 60} 秒" else "$sec 秒")
+                }
+            }
+        }
     }
 
     // 睡眠定时 / A-B 循环 / 技术信息
@@ -670,8 +722,19 @@ fun VideoPage(
         }
 
         // 缓冲圈
-        if (state == Player.STATE_BUFFERING && firstFrame) {
-            CircularProgressIndicator(Modifier.align(Alignment.Center).size(44.dp), color = Color.White)
+        if (player != null && !blocked && error == null && state != Player.STATE_ENDED && (state == Player.STATE_BUFFERING || !firstFrame)) {
+            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(Modifier.size(44.dp), color = Color.White)
+                if (loadLine1.isNotEmpty()) {
+                    Column(
+                        Modifier.padding(top = 14.dp).clip(RoundedCornerShape(10.dp)).background(Color(0x99000000)).padding(horizontal = 14.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(loadLine1, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        if (loadLine2.isNotEmpty()) Text(loadLine2, color = Color(0xCCFFFFFF), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
+                    }
+                }
+            }
         }
 
         // HUD(手势提示)

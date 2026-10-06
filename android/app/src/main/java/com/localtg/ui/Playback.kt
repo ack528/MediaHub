@@ -5,6 +5,9 @@ import android.media.MediaCodecList
 import android.os.Build
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -43,8 +46,19 @@ fun codecSelector(mode: String): MediaCodecSelector = MediaCodecSelector { mime,
 /** 后向缓冲时长(毫秒):和进度条上"已缓冲"区域的起点估算一致。 */
 fun backBufferMs(mode: String): Long = when (mode) { "small" -> 0L; "large" -> 60_000L; else -> 20_000L }
 
+/** 统计从网络下载了多少字节(加载提示里的"加载速度 / 预计剩余时间"用)。 */
+class LoadMeter : TransferListener {
+    private val total = java.util.concurrent.atomic.AtomicLong(0)
+    val bytes: Long get() = total.get()
+    fun reset() { total.set(0) }
+    override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {}
+    override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {}
+    override fun onBytesTransferred(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean, bytesTransferred: Int) { if (isNetwork) total.addAndGet(bytesTransferred.toLong()) }
+    override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {}
+}
+
 /** 按设置创建播放器。forceSoftware = 上一次硬解失败后的自动重试。 */
-fun createPlayer(ctx: Context, c: AppContainer, s: AppSettings, forceSoftware: Boolean, modeOverride: String? = null): ExoPlayer {
+fun createPlayer(ctx: Context, c: AppContainer, s: AppSettings, forceSoftware: Boolean, modeOverride: String? = null, meter: LoadMeter? = null): ExoPlayer {
     val renderers = DefaultRenderersFactory(ctx).apply {
         setEnableDecoderFallback(s.decoderFallback)
         val mode = modeOverride ?: if (forceSoftware && s.decoderMode != "sw_only") "sw_first" else s.decoderMode
@@ -69,7 +83,7 @@ fun createPlayer(ctx: Context, c: AppContainer, s: AppSettings, forceSoftware: B
     }
     val player = ExoPlayer.Builder(ctx, renderers)
         .setTrackSelector(selector)
-        .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(c.http)))
+        .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(c.http).apply { if (meter != null) setTransferListener(meter) }))
         .setLoadControl(load)
         .setSeekBackIncrementMs(s.seekBackSec * 1000L)
         .setSeekForwardIncrementMs(s.seekForwardSec * 1000L)
