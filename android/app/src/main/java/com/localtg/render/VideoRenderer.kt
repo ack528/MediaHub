@@ -470,7 +470,7 @@ class VideoRenderer(
         val prevMs = scaleHist[prev]
         if (prev > cur + 0.01f && prevMs != null && ema > 0 && ema >= prevMs * 0.95) {
             lsfgScaleFloor = prev; lsfgScaleCap = prev; lsfgPrevScale = 0f
-            AppLog.w("lsfg", "LSFG $why;光流精度从 ${(prev * 100).toInt()}% 降到 ${(cur * 100).toInt()}% 后生成耗时 %.1fms → %.1fms 没有变快,退回 ${(prev * 100).toInt()}%,不再往下降".format(prevMs, ema))
+            AppLog.w("lsfg", "LSFG $why;光流精度从 ${(prev * 100).toInt()}% 降到 ${(cur * 100).toInt()}% 后生成耗时 ${"%.1f".format(prevMs)}ms → ${"%.1f".format(ema)}ms 没有变快,退回 ${(prev * 100).toInt()}%,不再往下降")
             return
         }
         if (ema > 0) scaleHist[cur] = ema
@@ -478,7 +478,7 @@ class VideoRenderer(
         if (next != null) {
             lsfgPrevScale = cur
             lsfgScaleCap = next
-            AppLog.w("lsfg", "LSFG $why,光流精度从 ${(cur * 100).toInt()}% 降到 ${(next * 100).toInt()}%(当前生成耗时 %.1fms),重建会话".format(ema))
+            AppLog.w("lsfg", "LSFG $why,光流精度从 ${(cur * 100).toInt()}% 降到 ${(next * 100).toInt()}%(当前生成耗时 ${"%.1f".format(ema)}ms),重建会话")
         } else if (++lsfgBadStreak >= 4) {
             lsfgGaveUp = true; lsfgGaveUpAt = SystemClock.elapsedRealtime()
             AppLog.w("lsfg", "LSFG $why,光流精度已经不能再降且连续 $lsfgBadStreak 次不达标,暂时停用补帧(30 秒后自动再试)")
@@ -758,7 +758,8 @@ class VideoRenderer(
      * 按标准化后的源帧率算一次;只有模式 / 倍率设置变了、或源帧率变化超过 30%(换视频 / 变速)才重算。
      */
     private fun lsfgGenerated(cfg: EnhanceConfig): Int {
-        if (interval <= 0L) return 0
+        // 刚开始的十几帧源帧间隔的估计还没稳(日志里 12.98 → 17.96 → 25 → 30fps,k 从 7 → 5 → 3 连续重建了三次会话),等估计稳了再定
+        if (interval <= 0L || frames < 12) return 0
         val src = stdRate(1e9 / interval)
         val key = "${cfg.frc}/${if (cfg.lowPower) 0 else cfg.frcMultiplier}"
         if (lsfgK > 0 && lsfgKKey == key && abs(src - lsfgKSrc) / lsfgKSrc < 0.3) return lsfgK
