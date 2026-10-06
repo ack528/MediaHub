@@ -814,7 +814,7 @@ fun VideoPage(
                 open = panel.isNotEmpty() && !inPip,
                 title = when (page) {
                     "speed" -> "倍速"; "sub" -> "字幕"; "audio" -> "音轨"; "loop" -> "循环"; "enhance" -> "画质增强"
-                    "quality" -> "画质与解码"; "more" -> "更多"; "sleep" -> "睡眠定时"; else -> null
+                    "quality" -> "画质与解码"; "more" -> "更多"; "sleep" -> "睡眠定时"; "info" -> "媒体信息"; else -> null
                 },
                 onBack = { panel = "main" },
                 onClose = { panel = "" },
@@ -929,12 +929,35 @@ fun VideoPage(
                         }
                         panel = ""
                     }
+                    "info" -> {
+                        val v = pp?.videoFormat
+                        MenuInfo("文件", item.name)
+                        MenuInfo("大小", formatSize(item.size))
+                        MenuInfo("时长", fmt(pp?.duration ?: 0L))
+                        MenuInfo("时间", formatDateTime(item.takenAt))
+                        MenuInfo("解码器", decoderName[0].ifEmpty { "—" })
+                        if (v != null) {
+                            MenuDivider()
+                            MenuInfo("视频", listOfNotNull(codecName(v.sampleMimeType), v.codecs?.let { "($it)" }).joinToString(" "))
+                            MenuInfo("分辨率", "${v.width}×${v.height}" + (if (v.frameRate > 0) "  ${"%.2f".format(v.frameRate)} fps" else ""))
+                            if (v.bitrate > 0) MenuInfo("码率", "${v.bitrate / 1000} kbps")
+                            if (v.colorInfo != null) MenuInfo("色彩", v.colorInfo.toString())
+                        }
+                        if (audioOpts.isNotEmpty() || subOpts.isNotEmpty()) MenuDivider()
+                        audioOpts.forEachIndexed { i, o -> MenuInfo(if (i == 0) "音轨" else "", (if (o.selected) "● " else "○ ") + o.label) }
+                        subOpts.forEachIndexed { i, o -> MenuInfo(if (i == 0) "字幕" else "", o.label) }
+                        item.video?.let { vi ->
+                            MenuDivider()
+                            MenuInfo("容器", vi.container.ifEmpty { "—" })
+                            MenuInfo("HDR", vi.hdr.ifEmpty { "无" })
+                        }
+                    }
                     "more" -> {
                         MenuRow("跳转到指定时间", arrow = false) { panel = ""; dialog = "jump" }
                         MenuRow("小窗播放", arrow = false) { panel = ""; enterPip() }
                         MenuRow("睡眠定时", if (ui.sleepAt != 0L) "已设置" else "关闭") { panel = "sleep" }
                         if (!c.isLocal) MenuRow("保存到手机", arrow = false) { panel = ""; scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, item) } }
-                        MenuRow("媒体信息", arrow = false) { panel = ""; dialog = "info" }
+                        MenuRow("媒体信息") { panel = "info" }
                     }
                     else -> {
                         MenuRow("倍速", speedText) { panel = "speed" }
@@ -971,7 +994,6 @@ fun VideoPage(
             AppLog.i("player", "倍速 ${v}x")
         }
         "jump" -> JumpDialog(p?.duration ?: 0L, { dialog = "" }) { ms -> p?.seekTo(ms); dialog = "" }
-        "info" -> InfoDialog(item, p, tracks, decoderName[0], { dialog = "" })
     }
 }
 
@@ -1198,32 +1220,5 @@ private fun JumpDialog(durationMs: Long, onDismiss: () -> Unit, onJump: (Long) -
             }) { Text("跳转") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
-}
-
-@Composable
-private fun InfoDialog(item: Item, p: ExoPlayer?, tracks: Tracks, decoder: String, onDismiss: () -> Unit) {
-    val text = buildString {
-        append("文件:").append(item.name).append('\n')
-        append("大小:").append(formatSize(item.size)).append("    时长:").append(fmt(p?.duration ?: 0L)).append('\n')
-        append("时间:").append(formatDateTime(item.takenAt)).append('\n')
-        append("视频解码器:").append(decoder.ifEmpty { "—" }).append('\n')
-        p?.videoFormat?.let { v ->
-            append("\n视频\n  编码 ").append(codecName(v.sampleMimeType)).append(if (v.codecs != null) " (${v.codecs})" else "").append('\n')
-            append("  分辨率 ${v.width}×${v.height}")
-            if (v.frameRate > 0) append("  ${"%.2f".format(v.frameRate)} fps")
-            if (v.bitrate > 0) append("  ${v.bitrate / 1000} kbps")
-            append('\n')
-            if (v.colorInfo != null) append("  色彩 ").append(v.colorInfo.toString()).append('\n')
-        }
-        trackOpts(tracks, C.TRACK_TYPE_AUDIO).forEach { append("\n音轨  ").append(if (it.selected) "● " else "○ ").append(it.label) }
-        val subs = trackOpts(tracks, C.TRACK_TYPE_TEXT)
-        if (subs.isNotEmpty()) { append("\n"); subs.forEach { append("\n字幕  ").append(it.label) } }
-        item.video?.let { vi -> append("\n\n容器 ").append(vi.container).append("    HDR ").append(vi.hdr.ifEmpty { "无" }) }
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss, title = { Text("媒体信息") },
-        text = { Text(text, fontSize = 13.sp, modifier = Modifier.verticalScroll(rememberScrollState())) },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
 }
