@@ -364,7 +364,7 @@ fun VideoPage(
         if (isCurrent && item.flags.truncated && !blocked) showHud(Hud(TgIcons.Warning, "文件不完整(下载可能中断),播放到被截断处会停止"))
     }
 
-    // 加载提示:点开视频到出画面(以及中途卡住缓冲)时,显示下载速度和预计还要多久。
+    // 加载提示:点开视频到出画面(以及中途卡住缓冲)超过 3 秒后,显示下载速度和预计还要多久。
     // 预计剩余 = 还差多少秒的缓冲才能开始 / 恢复播放 × 每秒媒体占多少字节 ÷ 下载速度;每秒媒体多少字节优先用 文件大小 / 时长,
     // 其次文件记录的码率,转码用转码码率,都没有就用已经下载的字节数 / 已缓冲的时长实测。
     LaunchedEffect(player, firstFrame, state, transcodeBitrate) {
@@ -375,7 +375,7 @@ fun VideoPage(
         var lastBytes = meter.bytes
         var lastT = android.os.SystemClock.elapsedRealtime()
         var speed = 0.0 // 字节 / 秒
-        var startBuf = pl.totalBufferedDuration
+        val t0 = lastT
         while (true) {
             delay(500)
             val now = android.os.SystemClock.elapsedRealtime()
@@ -393,17 +393,14 @@ fun VideoPage(
                 else -> 0.0
             }
             fun spd(v: Double) = if (v >= 1024 * 1024) "%.1f MB/s".format(v / 1024 / 1024) else "%.0f KB/s".format(v / 1024)
-            loadLine1 = when {
-                b == 0L -> "正在连接…"
-                speed < 1024 -> "加载中 · 速度很慢"
-                else -> "加载中 · " + spd(speed)
-            }
+            // 加载不到 3 秒就不显示速度和预计时间(大多数视频几百毫秒就开始了,一闪而过的数字反而烦人)
+            if (now - t0 < 3000) { loadLine1 = ""; loadLine2 = ""; continue }
+            loadLine1 = if (b == 0L) "正在连接…" else "加载中 · " + spd(speed)
             val needMs = (targetMs - bufMs).coerceAtLeast(0L)
             loadLine2 = when {
                 b == 0L -> ""
                 needMs == 0L -> "即将开始"
-                bytesPerMs <= 0.0 -> "已加载 ${formatSize(b)}"
-                speed < 1024 -> "已加载 ${formatSize(b)}"
+                bytesPerMs <= 0.0 || speed < 1024 -> "已加载 ${formatSize(b)} · 正在估算剩余时间"
                 else -> {
                     val sec = (needMs * bytesPerMs / speed).toLong().coerceAtLeast(1)
                     "已加载 ${formatSize(b)} · 预计还需 " + (if (sec >= 60) "${sec / 60} 分 ${sec % 60} 秒" else "$sec 秒")
