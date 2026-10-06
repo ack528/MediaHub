@@ -130,9 +130,15 @@ class VideoRenderer(
     private var lsfgStopPending = false
     private var lsfgLastId = -1L            // 最近一个成功生成的帧的 id
     private var lsfgExec: java.util.concurrent.ExecutorService? = null
-    private var lsfgSeen = 0                // 统计窗口:来过的帧 / 丢掉的帧 / 生成成功的
-    private var lsfgDropped = 0
     private var lsfgOk = 0
+    private lateinit var pool8: Gl.Pool     // 生成帧用 RGBA8 的纹理池(比 16F 省 4 倍带宽,每帧要拷 k 张)
+    private val flowSteps = floatArrayOf(1f, 0.75f, 0.5f, 0.35f, 0.25f)
+    @Volatile private var lsfgScaleCap = 1f // 自动调低后的光流精度上限
+    private var lsfgStartId = Long.MAX_VALUE // 当前会话从哪一帧开始(前几个区间还在预热,不计覆盖率)
+    private var lastCountedA = -1L
+    private var covTotal = 0                // 统计窗口:上屏的帧区间数 / 其中有生成帧的区间数
+    private var covOk = 0
+    @Volatile private var lsfgCoverage = -1 // 最近一个窗口的覆盖率(%),显示在右上角
     @Volatile private var lsfgLastError = ""
 
     private var lastHint = -1f
@@ -173,7 +179,8 @@ class VideoRenderer(
     fun setVideoSize(w: Int, h: Int, par: Float) { vw = w; vh = h; vpar = if (par > 0f) par else 1f; poke() }
     fun setResizeMode(m: String) { resizeMode = m; poke() }
     fun setConfig(c: EnhanceConfig) {
-        if (c.frc != config.frc) frcDemote = 0
+        if (c.frc != config.frc) { frcDemote = 0; lsfgScaleCap = 1f; lsfgCoverage = -1 }
+        if (c.lsfgFlowScale != config.lsfgFlowScale) lsfgScaleCap = 1f
         config = c; poke()
     }
 
@@ -279,6 +286,7 @@ class VideoRenderer(
         halfOk = glExt.contains("GL_EXT_color_buffer_float") || glExt.contains("GL_EXT_color_buffer_half_float")
         AppLog.i("enhance", "GL: ${GLES30.glGetString(GLES30.GL_RENDERER)} / ${GLES30.glGetString(GLES30.GL_VERSION)};浮点渲染=$halfOk HDR 表面=$hdrSurface")
         pool = Gl.Pool(halfOk)
+        pool8 = Gl.Pool(false)
         grid = GridPool()
 
         pOes = Gl.program(OES_FRAG)
@@ -462,12 +470,23 @@ class VideoRenderer(
             }
         }
         // LSFG 来不及:最近 24 个帧里超过一半没处理上(worker 一直忙),说明这块 GPU 跑不动这个设置 → 降一档
-        if (eff == "lsfg" && lsfgSeen >= 24) {
-            if (lsfgDropped * 2 > lsfgSeen && cfg.frcAdaptive) {
-                frcDemote++
-                AppLog.w("lsfg", "LSFG 来不及:最近 $lsfgSeen 帧里丢了 $lsfgDropped 帧(生成速度跟不上源帧率),自动降级为 ${effFrc(cfg)}。可以在设置里把「LSFG 光流精度」调低或降低倍率")
-            }
-            lsfgSeen = 0; lsfgDropped = 0
+        // 画面"一会卡一会流畅"就是有的区间有生成帧、有的没有(生成速度偶尔跟不上)。按覆盖率调整:低于 85% 就先降光流精度(逐档 100→75→50→35→25%),
+        // 到最低档还不够再降级到光流
+        if (eff == "lsfg" && covTotal >= 24) {
+            val cov = covOk * 100 / covTotal
+            lsfgCoverage = cov
+            if (cov < 85 && cfg.frcAdaptive) {
+                val cur = min(cfg.lsfgFlowScale, lsfgScaleCap)
+                val next = flowSteps.firstOrNull { it < cur - 0.01f }
+                if (next != null) {
+                    lsfgScaleCap = next
+                    AppLog.w("lsfg", "LSFG 覆盖率只有 $cov%(最近 $covTotal 个区间里 $covOk 个有生成帧),光流精度从 ${(cur * 100).toInt()}% 降到 ${(next * 100).toInt()}%,重建会话")
+                } else {
+                    frcDemote++
+                    AppLog.w("lsfg", "LSFG 覆盖率只有 $cov% 且光流精度已是最低,自动降级为 ${effFrc(cfg)}")
+                }
+            } else AppLog.d("lsfg", "LSFG 覆盖率 $cov%")
+            covTotal = 0; covOk = 0
         }
         if (!choreoPosted) scheduleVsync()
     }
@@ -507,7 +526,7 @@ class VideoRenderer(
         pool.release(s.img)
         me?.release(s.pyr)
         if (s.mvOwn) s.mv?.delete() else grid.release(s.mv)
-        s.gen.forEach { pool.release(it) }
+        s.gen.forEach { pool8.release(it) }
         s.gen.clear()
         s.luma = null
     }
@@ -539,7 +558,13 @@ class VideoRenderer(
         val cfg = config
         // 补帧要用到"下一帧",而 ExoPlayer 只会在上屏前 ~50ms 才释放帧,几乎没有前瞻余量;
         // 所以补帧时让画面整体晚一个源帧间隔(最多 50ms)上屏 —— 视频比声音慢 ≤50ms,人感觉不到(ITU 容限是 −45ms 超前 / +125ms 滞后)
-        val frcDelay = if (cfg.frc != "off") min(if (interval > 0) interval else 41_000_000L, 50_000_000L) else 0L
+        // LSFG 的生成有延迟(几十毫秒),多留一点余量,否则一个区间的前半段还没有生成帧、后半段才有,会"一会卡一会流畅"
+        val lsfgActive = lsfg != null && effFrc(cfg) == "lsfg"
+        val frcDelay = when {
+            cfg.frc == "off" -> 0L
+            lsfgActive -> min((if (interval > 0) interval else 41_000_000L) * 3 / 2, 80_000_000L)
+            else -> min(if (interval > 0) interval else 41_000_000L, 50_000_000L)
+        }
         val presentAt = vsyncNs + period + (if (tsInDisplayClock == true) 0L else -interval) // 到达时间时钟下,显示"前一帧间隔"的画面
         val nowNs = presentAt - frcDelay
         // A = 上屏时间之前(含)的最后一帧;B = 之后的第一帧
@@ -549,6 +574,11 @@ class VideoRenderer(
         val a = ring.getOrNull(ai)
         val b = ring.getOrNull(ai + 1)
         if (a == null) { if (ring.isNotEmpty()) scheduleVsync(); return }
+        // 覆盖率:每当 A 换成新的一帧,说明"上一个区间"放完了,看那个区间(前一帧 → A)有没有生成帧
+        if (a.id != lastCountedA) {
+            lastCountedA = a.id
+            if (lsfgActive && a.id > lsfgStartId + 2 && frcNeeded()) { covTotal++; if (a.gen.isNotEmpty()) covOk++ }
+        }
 
         // 插帧系数
         var t = 0f
@@ -650,7 +680,9 @@ class VideoRenderer(
             eNow != cfg.frc -> " · 已降级"
             else -> ""
         }
-        val engine = frcLabel(eNow) + if (eNow == "lsfg") " ×${(lsfg?.generated ?: 0) + 1}" else ""
+        val engine = frcLabel(eNow) + if (eNow == "lsfg") {
+            " ×${(lsfg?.generated ?: 0) + 1} 精度${(min(cfg.lsfgFlowScale, lsfgScaleCap) * 100).toInt()}%" + (if (lsfgCoverage >= 0) " 覆盖${lsfgCoverage}%" else "")
+        } else ""
         fpsText = when {
             cfg.frc == "off" -> ""
             mode == 0 -> "补帧待机 ${"%.0f".format(srcFps)}fps · $engine$note"
@@ -697,16 +729,17 @@ class VideoRenderer(
      * 丢帧太多(来不及)会自动降级。生成帧是"前一个被处理的帧 → 这一帧"之间的,只有两帧连续(中间没丢帧)时才有效。
      */
     private fun runLsfg(slot: Slot, cfg: EnhanceConfig) {
-        if (lsfgBusy) { lsfgDropped++; lsfgSeen++; return }
+        if (lsfgBusy) return // worker 还在读输入 AHB,这一帧没有生成帧(覆盖率里体现)
         val k = lsfgGenerated(cfg)
         if (k < 1) return
-        val key = "${cfg.lsfgFlowScale}/${cfg.lsfgPerf}"
+        val scale = min(cfg.lsfgFlowScale, lsfgScaleCap)
+        val key = "$scale/${cfg.lsfgPerf}"
         var s = lsfg
         if (s != null && (s.w != slot.img.w || s.h != slot.img.h || s.generated != k || s.key != key)) { stopLsfg(); s = null }
         if (s == null) {
             val app = Assets.app ?: return
             val ns = LsfgSession(slot.img.w, slot.img.h, k, key)
-            if (!ns.create(Lsfg.cacheDir(app), cfg.lsfgFlowScale, cfg.lsfgPerf)) {
+            if (!ns.create(Lsfg.cacheDir(app), scale, cfg.lsfgPerf)) {
                 lsfgLastError = LsfgNative.nativeLastError().ifEmpty { "启动失败" }
                 ns.destroy()
                 lsfgFail++
@@ -714,9 +747,10 @@ class VideoRenderer(
                 return
             }
             lsfg = ns; s = ns; lsfgFail = 0; lsfgLastError = ""
-            AppLog.i("lsfg", "LSFG 会话已建立 ${slot.img.w}×${slot.img.h} 每帧生成 $k 张")
+            lsfgStartId = slot.id
+            covTotal = 0; covOk = 0
+            AppLog.i("lsfg", "LSFG 会话已建立 ${slot.img.w}×${slot.img.h} 每帧生成 $k 张 光流精度 ${(scale * 100).toInt()}%")
         }
-        lsfgSeen++
         s.writeInput(pBlit, slot.img.id) // 含 glFinish:GL 写完,Vulkan 才能安全地读
         lsfgBusy = true
         val sess = s
@@ -747,7 +781,7 @@ class VideoRenderer(
         val slot = ring.firstOrNull { it.id == id }
         if (slot != null && consecutive && sess.counter > 0) { // 第一帧只是预热(前一帧还不存在)
             for (i in 0 until k) {
-                val t = pool.acquire(slot.img.w, slot.img.h)
+                val t = pool8.acquire(slot.img.w, slot.img.h)
                 Gl.target(t)
                 Gl.use(pBlit)
                 Gl.bindTex(0, sess.output(i))
