@@ -351,6 +351,10 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
         desc = "只对「LSFG 帧生成」有效:内部光流的分辨率比例。1080p 以上建议 50% 以下;下一次开始播放生效",
     ) { u { copy(lsfgFlowScale = it) } }
     SwitchRow("LSFG 性能模式", "用 LSFG 3.1P(更轻量的变体)。关闭后用标准的 3.1,画质略好但更费 GPU", s.lsfgPerf) { u { copy(lsfgPerf = it) } }
+    SwitchRow(
+        "补帧详细日志", "补帧时每 2 秒把统计写进日志(标签 frc):源帧间隔、vsync 抖动、上屏节奏(相位重复 / 跳过)、LSFG 生成耗时、覆盖率、热状态…," +
+            "异常时立即写一行。卡顿时打开,到「设置 → 日志与诊断」分享日志给开发者分析", s.frcTrace,
+    ) { u { copy(frcTrace = it) } }
     SwitchRow("补帧跟不上时自动降级", "补帧耗时持续超过帧间隔时,自动降一档(高质量 → 标准 → 轻量 → 帧混合),避免掉帧", s.enhFrcAdaptive) { u { copy(enhFrcAdaptive = it) } }
     SwitchRow("右上角显示帧率", "补帧时在画面右上角用小字显示“源帧率 → 输出帧率”;源帧率已接近屏幕刷新率时显示“补帧待机”", s.enhFpsOverlay) { u { copy(enhFpsOverlay = it) } }
     Header("SDR 转 HDR")

@@ -107,6 +107,7 @@ data class AppSettings(
     val hwReport: String = "",                 // 最近一次"硬件支持检测"的结果(JSON)
     val lsfgFlowScale: Float = 0.5f,           // LSFG 内部光流精度(越小越快,画质略降)
     val lsfgPerf: Boolean = true,              // LSFG 性能模式(3.1P)
+    val frcTrace: Boolean = true,              // 补帧详细日志(每 2 秒一组汇总 + 异常事件,排查卡顿用)
     val enhFrcAdaptive: Boolean = true,        // 补帧跟不上时自动降一档
     val enhFpsOverlay: Boolean = true,         // 补帧时在画面右上角显示 源帧率 → 输出帧率
     val enhHdr: String = "off",                // off / auto(显示器支持 HDR 才启用)/ on

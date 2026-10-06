@@ -35,6 +35,8 @@ data class EnhanceConfig(
     val lsfgFlowScale: Float = 0.5f,
     /** LSFG:性能模式(3.1P) */
     val lsfgPerf: Boolean = true,
+    /** 补帧详细日志(每 2 秒一组汇总 + 异常事件,标签 frc) */
+    val trace: Boolean = false,
     /** 补帧跟不上时自动降级:mc_hq → mc → mc_fast → blend */
     val frcAdaptive: Boolean = true,
     /** off | auto(显示器支持 HDR 才启用)| on */
@@ -105,6 +107,7 @@ class VideoRenderer(
         var luma: ByteArray? = null   // 光流用:1/4 分辨率亮度(8 位)
         var mvOwn = false             // mv 是自己上传的光流纹理(不是纹理池里的),释放时要直接删除
         val gen = ArrayList<Gl.Tex>() // LSFG:前一帧 → 这一帧 之间生成的中间帧
+        val arrivalNs = System.nanoTime() // 这一帧到达渲染器的时刻(统计生成延迟用)
     }
     private val ring = ArrayList<Slot>()
     private var nextId = 1L
@@ -128,6 +131,7 @@ class VideoRenderer(
     private var pBlit = 0
     private var lsfgBusy = false            // worker 正在生成(只在渲染线程读写)
     private var lsfgStopPending = false
+    private val trace = FrcTrace()
     private var lsfgLastId = -1L            // 最近一个成功生成的帧的 id
     private var lsfgPf = Double.NaN         // 相位累加器(单位:相位 = 真实帧 id × n + 第几张)
     private var lsfgPfN = 0
@@ -181,6 +185,7 @@ class VideoRenderer(
     fun setVideoSize(w: Int, h: Int, par: Float) { vw = w; vh = h; vpar = if (par > 0f) par else 1f; poke() }
     fun setResizeMode(m: String) { resizeMode = m; poke() }
     fun setConfig(c: EnhanceConfig) {
+        trace.enabled = c.trace
         if (c.frc != config.frc) { frcDemote = 0; lsfgScaleCap = 1f; lsfgCoverage = -1 }
         if (c.lsfgFlowScale != config.lsfgFlowScale) lsfgScaleCap = 1f
         config = c; poke()
@@ -254,6 +259,7 @@ class VideoRenderer(
     // ---------------------------------------------------------------- EGL / GL 初始化
 
     private fun init() {
+        trace.enabled = config.trace
         dpy = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         val ver = IntArray(2)
         check(EGL14.eglInitialize(dpy, ver, 0, ver, 1)) { "eglInitialize 失败" }
@@ -386,6 +392,7 @@ class VideoRenderer(
     private fun ingest() {
         val s = st ?: return
         val t0 = SystemClock.elapsedRealtimeNanos()
+        val tn0 = System.nanoTime()
         try {
             s.updateTexImage()
         } catch (e: Exception) {
@@ -399,6 +406,7 @@ class VideoRenderer(
             AppLog.i("enhance", "帧时间戳时钟:${if (tsInDisplayClock == true) "上屏时间(可前瞻插帧)" else "解码时间戳(退回到达时间 + 延迟一帧)"}")
         }
         if (tsInDisplayClock != true) ts = now
+        trace.src(ts, now)
         val w = vw; val h = vh
         if (w <= 0 || h <= 0) return
         val cfg = config
@@ -451,6 +459,7 @@ class VideoRenderer(
         }
         ring.add(slot)
         while (ring.size > 5) retire(ring.removeAt(0))
+        if (trace.enabled) trace.ingestCpu.add((System.nanoTime() - tn0) / 1e6)
 
         // 自适应:每 8 帧测一次处理耗时(glFinish 才能量出 GPU 时间);连续超过帧间隔的 85% 就停用超分
         if (frames % 8L == 0L) {
@@ -546,13 +555,20 @@ class VideoRenderer(
     }
 
     private fun draw(vsyncNs: Long) {
+        val tDraw0 = System.nanoTime()
         // 实测 vsync 间隔:省电模式 / 久不触摸系统会把刷新率降下来(例如 120 → 60 → 30Hz),要跟着调整;
         // 连续 3 次偏离当前值 25% 以上才切换,单次掉帧(间隔变成两倍)不算
         if (lastVsync != 0L) {
             val d = vsyncNs - lastVsync
+            if (d in 3_000_000L..300_000_000L) trace.vsync(d, period)
             if (d in 3_000_000L..60_000_000L) {
                 if (measuredPeriod == 0L) measuredPeriod = d
-                else if (abs(d - measuredPeriod) > measuredPeriod / 4) { if (++deviant >= 3) { measuredPeriod = d; deviant = 0 } }
+                else if (abs(d - measuredPeriod) > measuredPeriod / 4) {
+                    if (++deviant >= 3) {
+                        AppLog.i("frc", "屏幕刷新间隔变化 %.2fms(%.0fHz)→ %.2fms(%.0fHz)".format(measuredPeriod / 1e6, 1e9 / measuredPeriod, d / 1e6, 1e9 / d))
+                        measuredPeriod = d; deviant = 0
+                    }
+                }
                 else { deviant = 0; measuredPeriod = (measuredPeriod * 7 + d) / 8 }
             }
         }
@@ -562,11 +578,7 @@ class VideoRenderer(
         // 所以补帧时让画面整体晚一个源帧间隔(最多 50ms)上屏 —— 视频比声音慢 ≤50ms,人感觉不到(ITU 容限是 −45ms 超前 / +125ms 滞后)
         // LSFG 的生成有延迟(几十毫秒),多留一点余量,否则一个区间的前半段还没有生成帧、后半段才有,会"一会卡一会流畅"
         val lsfgActive = lsfg != null && effFrc(cfg) == "lsfg"
-        val frcDelay = when {
-            cfg.frc == "off" -> 0L
-            lsfgActive -> min((if (interval > 0) interval else 41_000_000L) * 3 / 2, 80_000_000L)
-            else -> min(if (interval > 0) interval else 41_000_000L, 50_000_000L)
-        }
+        val frcDelay = frcDelayFor(cfg, lsfgActive)
         val presentAt = vsyncNs + period + (if (tsInDisplayClock == true) 0L else -interval) // 到达时间时钟下,显示"前一帧间隔"的画面
         val nowNs = presentAt - frcDelay
         // A = 上屏时间之前(含)的最后一帧;B = 之后的第一帧
@@ -576,6 +588,7 @@ class VideoRenderer(
         val a = ring.getOrNull(ai)
         val b = ring.getOrNull(ai + 1)
         if (a == null) { if (ring.isNotEmpty()) scheduleVsync(); return }
+        if (needNext && b == null && trace.enabled) trace.underrun++
         // 覆盖率:每当 A 换成新的一帧,说明"上一个区间"放完了,看那个区间(前一帧 → A)有没有生成帧
         if (a.id != lastCountedA) {
             lastCountedA = a.id
@@ -612,10 +625,12 @@ class VideoRenderer(
                         if (abs(err) > 0.3) lsfgPf += (err - 0.3 * Math.signum(err)) * 0.1
                     }
                     val ph = floor(lsfgPf).toLong()
+                    trace.phase(ph)
                     val tex = phaseTex(ph, n)
                     if (tex != null) {
                         showTex = tex
                     } else { // 相位对应的帧 / 生成帧不全:退回按时间取
+                        if (trace.enabled) trace.phMissing++
                         val ix = min((t * n + 1e-3f).toInt(), n - 1)
                         showTex = if (ix == 0) a.img.id else b.gen[ix - 1].id
                     }
@@ -627,10 +642,12 @@ class VideoRenderer(
                 }
             }
         }
-        if (!lsfgTaken) lsfgPf = Double.NaN
+        if (!lsfgTaken) { lsfgPf = Double.NaN; trace.phaseReset() }
+        if (lsfgActive && !lsfgTaken && b != null && mode == 1 && trace.enabled) trace.noGen++ // 这个区间没有生成帧,退回了帧混合
         if (lsfgTaken) lsfgIdx = 0
         val key = "${a.id}/${if (mode == 0) 0 else (t * 64).toInt()}/$mode/${b?.mv != null}/$showTex"
         if (key == lastDrawKey && !dirty) {
+            if (trace.enabled) trace.skipped++
             if (ring.isNotEmpty() && (needNext || b != null)) scheduleVsync()
             return
         }
@@ -662,7 +679,9 @@ class VideoRenderer(
         GLES20.glUniform1f(Gl.loc(pFinal, "uPeak"), cfg.hdrPeakNits.toFloat())
         Gl.draw()
         if (probeLeft > 0) debugProbe(a, mode, t, d)
+        val tS0 = System.nanoTime()
         EGL14.eglSwapBuffers(dpy, win)
+        trace.swap(tDraw0, tS0, System.nanoTime(), period)
         shown++
         updateStats(cfg, if (lsfgIdx >= 0) 2 else mode, a)
         if (ring.isNotEmpty() && (needNext || b != null)) scheduleVsync()
@@ -712,6 +731,19 @@ class VideoRenderer(
             mode == 0 -> "补帧待机 ${"%.0f".format(srcFps)}fps · $engine$note"
             else -> "补帧 ${"%.0f".format(srcFps)} → ${"%.0f".format(fps)} fps · $engine$note"
         }
+        if (cfg.frc != "off" && trace.flushDue(nowMs)) {
+            val header = "配置=${cfg.frc}(实际 $eNow) 倍率=${cfg.frcMultiplier} k=${lsfg?.generated ?: 0} 精度=${(min(cfg.lsfgFlowScale, lsfgScaleCap) * 100).toInt()}% " +
+                "性能模式=${cfg.lsfgPerf} 自动降级=${cfg.frcAdaptive}(已降${frcDemote}档) | 屏幕 ${"%.1f".format(1e9 / period)}Hz(间隔 ${"%.2f".format(period / 1e6)}ms,最高 ${"%.0f".format(maxRefreshRate)}Hz) | " +
+                "源 ${"%.2f".format(srcFps)}fps ${a.img.w}×${a.img.h} 输出 ${"%.1f".format(fps)}fps | 热状态=${thermalStatus()} | ingest 平均 ${"%.1f".format(ingestEma)}ms"
+            val extra = "覆盖=${if (lsfgCoverage >= 0) "$lsfgCoverage%" else "-"} 精度上限=${(lsfgScaleCap * 100).toInt()}% 会话=${if (lsfg != null) "有" else "无"} 失败=$lsfgFail"
+            trace.flush(nowMs, header, extra, eNow == "lsfg")
+        }
+    }
+
+    /** 系统热状态:0 无 / 1 轻微 / 2 中等 / 3 严重 / 4 危急 / 5 紧急 / 6 关机(Android 10+)。 */
+    private fun thermalStatus(): String {
+        if (android.os.Build.VERSION.SDK_INT < 29) return "?"
+        return runCatching { Assets.app?.getSystemService(android.os.PowerManager::class.java)?.currentThermalStatus?.toString() }.getOrNull() ?: "?"
     }
 
     /** LSFG 没启用的原因(显示在右上角小字里,方便在真机上判断为什么回退)。 */
@@ -729,6 +761,13 @@ class VideoRenderer(
     // ---------------------------------------------------------------- LSFG
 
     /** 每个真实帧之间要生成几张:固定倍率 m → m-1 张;自动 → 补到这块屏的最高刷新率附近。不超过屏幕能显示的。 */
+    /** 补帧时画面整体晚多少上屏(ns)。 */
+    private fun frcDelayFor(cfg: EnhanceConfig, lsfgActive: Boolean): Long = when {
+        cfg.frc == "off" -> 0L
+        lsfgActive -> min((if (interval > 0) interval else 41_000_000L) * 3 / 2, 80_000_000L)
+        else -> min(if (interval > 0) interval else 41_000_000L, 50_000_000L)
+    }
+
     /** 绝对相位 ph(= 真实帧 id × n + 第几张)对应的纹理:第 0 张是真实帧,其余是下一帧上挂着的生成帧;帧或生成帧不全返回 null。 */
     private fun phaseTex(ph: Long, n: Int): Int? {
         val fa = Math.floorDiv(ph, n.toLong())
@@ -764,7 +803,7 @@ class VideoRenderer(
      * 丢帧太多(来不及)会自动降级。生成帧是"前一个被处理的帧 → 这一帧"之间的,只有两帧连续(中间没丢帧)时才有效。
      */
     private fun runLsfg(slot: Slot, cfg: EnhanceConfig) {
-        if (lsfgBusy) return // worker 还在读输入 AHB,这一帧没有生成帧(覆盖率里体现)
+        if (lsfgBusy) { if (trace.enabled) trace.busyDrops++; return } // worker 还在读输入 AHB,这一帧没有生成帧(覆盖率里体现)
         val k = lsfgGenerated(cfg)
         if (k < 1) return
         val scale = min(cfg.lsfgFlowScale, lsfgScaleCap)
@@ -786,21 +825,31 @@ class VideoRenderer(
             covTotal = 0; covOk = 0
             AppLog.i("lsfg", "LSFG 会话已建立 ${slot.img.w}×${slot.img.h} 每帧生成 $k 张 光流精度 ${(scale * 100).toInt()}%")
         }
+        val tw0 = System.nanoTime()
         s.writeInput(pBlit, slot.img.id) // 含 glFinish:GL 写完,Vulkan 才能安全地读
+        if (trace.enabled) trace.writeIn.add((System.nanoTime() - tw0) / 1e6)
         lsfgBusy = true
         val sess = s
         val id = slot.id
         val consecutive = id - 1 == lsfgLastId
         val ex = lsfgExec ?: java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-present") }.also { lsfgExec = it }
         ex.execute {
+            val tp0 = System.nanoTime()
             val rc = try { LsfgNative.nativePresent() } catch (e: Throwable) { -1 }
-            handler.post { onLsfgDone(sess, id, rc, consecutive, k) }
+            val pms = (System.nanoTime() - tp0) / 1e6
+            handler.post { onLsfgDone(sess, id, rc, consecutive, k, pms) }
         }
     }
 
     /** worker 做完(渲染线程)。 */
-    private fun onLsfgDone(sess: LsfgSession, id: Long, rc: Int, consecutive: Boolean, k: Int) {
+    private fun onLsfgDone(sess: LsfgSession, id: Long, rc: Int, consecutive: Boolean, k: Int, presentMs: Double) {
+        val td0 = System.nanoTime()
         lsfgBusy = false
+        if (trace.enabled) {
+            trace.present.add(presentMs)
+            if (interval > 0 && presentMs > interval / 1e6) trace.event("LSFG 生成耗时 %.1fms,超过源帧间隔 %.1fms(帧 %d,后面的帧会因为 worker 忙被放弃)".format(presentMs, interval / 1e6, id))
+            if (rc != 0) trace.presentFail++
+        }
         if (released) return
         if (lsfg !== sess || lsfgStopPending) {
             lsfgStopPending = false
@@ -826,6 +875,17 @@ class VideoRenderer(
             }
             dirty = true
             if (!choreoPosted) scheduleVsync()
+        }
+        if (trace.enabled && slot != null) {
+            val nowN = System.nanoTime()
+            trace.doneCost.add((nowN - td0) / 1e6)
+            trace.genAge.add((nowN - slot.arrivalNs) / 1e6)
+            // 这一帧的区间(前一帧 → 这一帧)什么时候开始上屏:前一帧的时间戳 + 延迟;生成帧在那之后才就绪就是"晚了"
+            val prevSlot = ring.firstOrNull { it.id == id - 1 }
+            if (prevSlot != null && consecutive) {
+                val late = (nowN - (prevSlot.ts + frcDelayFor(config, true))) / 1e6
+                if (late > 0) { trace.genLateN++; trace.genLate.add(late) }
+            }
         }
         sess.counter++
         lsfgLastId = id

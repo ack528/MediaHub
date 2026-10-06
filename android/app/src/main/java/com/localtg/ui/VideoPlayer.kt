@@ -320,7 +320,7 @@ fun VideoPage(
                 }
                 override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
                     dropped[0] += droppedFrames
-                    AppLog.d("player", "丢帧 $droppedFrames / ${elapsedMs}ms")
+                    if (c.settings.value.frcTrace && c.settings.value.enhFrc != "off") AppLog.i("frc", "! 解码器丢帧 $droppedFrames 帧 / ${elapsedMs}ms(来源:播放器解码 / 释放,不是补帧)") else AppLog.d("player", "丢帧 $droppedFrames / ${elapsedMs}ms")
                 }
             })
             val br = transcodeBitrate
@@ -474,7 +474,7 @@ fun VideoPage(
         }
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = cfg.enhFrc, frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH)
+        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = cfg.enhFrc, frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, trace = cfg.frcTrace, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH)
         var enhFailed by remember(item.id) { mutableStateOf(false) }
         // HDR 片源本身不处理;转码播放的是 H.264 SDR,可以处理
         val useEnh = enh.active && !enhFailed && item.video?.hdr.isNullOrEmpty() && android.os.Build.VERSION.SDK_INT >= 26
