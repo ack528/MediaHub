@@ -196,7 +196,7 @@ private fun ViewerPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Uni
 private fun BrowsePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
     Header("打开文件夹")
     SwitchRow(
-        "左右滑动切换群组", "在群里向左滑进入文件夹列表里的下一个群,向右滑回到上一个(顺序和点开时的列表一致,含盘符标签过滤和排序)。从屏幕左边缘向右滑仍然是返回",
+        "左右滑动切换盘符", "在主界面(文件夹列表)向左 / 向右滑动,切换到下一个 / 上一个盘符(第一页是「全部」),和点顶部的盘符标签一样。在群里不会横向切换",
         s.swipeGroups,
     ) { u { copy(swipeGroups = it) } }
     SwitchRow("记住浏览位置", "再次打开同一个文件夹时回到上次退出的位置,并记住排序、网格 / 聊天、过滤", s.rememberPosition) { u { copy(rememberPosition = it) } }

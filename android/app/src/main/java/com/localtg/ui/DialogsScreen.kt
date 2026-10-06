@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -113,14 +114,16 @@ fun DialogsScreen(
     var confirmLogout by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler(drawer.isOpen) { scope.launch { drawer.close() } }
 
-    // 盘符 = Telegram 的聊天分组标签
+    // 盘符 = Telegram 的聊天分组标签;主界面左右滑动切换盘符(页 0 = 全部,后面每个盘符一页)
     val labels = remember(all) { all.map { it.rootLabel }.distinct().sorted() }
-    var tab by remember(activeId) { mutableIntStateOf(0) } // 0 = 全部
     val st = com.localtg.ui.tg.LocalSettings.current
-    val inTab = if (tab == 0 || tab > labels.size) all else all.filter { it.rootLabel == labels[tab - 1] }
-    val shown = remember(inTab, st.dialogSort, st.dialogMinCount) {
+    val pageCount = if (labels.size > 1) labels.size + 1 else 1
+    val pager = androidx.compose.foundation.pager.rememberPagerState { pageCount }
+    LaunchedEffect(activeId) { pager.scrollToPage(0) } // 换服务器回到"全部"
+    fun listFor(t: Int): List<Dialog> {
+        val inTab = if (t == 0 || t > labels.size) all else all.filter { it.rootLabel == labels[t - 1] }
         val f = if (st.dialogMinCount > 0) inTab.filter { it.mediaCount >= st.dialogMinCount } else inTab
-        when (st.dialogSort) {
+        return when (st.dialogSort) {
             "name" -> f.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
             "path" -> f.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.pathDisplay })
             "count" -> f.sortedByDescending { it.mediaCount }
@@ -131,6 +134,7 @@ fun DialogsScreen(
     fun go(f: () -> Unit) { scope.launch { drawer.close(); f() } }
     ModalNavigationDrawer(
         drawerState = drawer,
+        gesturesEnabled = drawer.isOpen || pager.currentPage == 0, // 不在第一页时,横向滑动留给盘符切换;菜单按钮随时可以打开侧边栏
         drawerContent = {
             AppDrawer(
                 c, onSearch = { go(onSearch) }, onRefresh = { go { vm.refresh() } }, onSettings = { go(onSettings) },
@@ -151,8 +155,8 @@ fun DialogsScreen(
                 }
                 if (labels.size > 1) {
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-                        FolderTab("全部", tab == 0) { tab = 0 }
-                        labels.forEachIndexed { i, l -> FolderTab(l, tab == i + 1) { tab = i + 1 } }
+                        FolderTab("全部", pager.currentPage == 0) { scope.launch { pager.animateScrollToPage(0) } }
+                        labels.forEachIndexed { i, l -> FolderTab(l, pager.currentPage == i + 1) { scope.launch { pager.animateScrollToPage(i + 1) } } }
                     }
                 }
             }
@@ -161,19 +165,24 @@ fun DialogsScreen(
             androidx.compose.material3.pulltorefresh.PullToRefreshBox(
                 isRefreshing = loading && all.isNotEmpty(), onRefresh = { vm.refresh() }, modifier = Modifier.weight(1f).fillMaxWidth(),
             ) {
-                when {
-                    shown.isEmpty() && loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                    shown.isEmpty() && error != null -> Column(
-                        Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(error!!, color = MaterialTheme.colorScheme.error)
-                        TextButton(onClick = { vm.refresh() }) { Text("重试") }
-                    }
-                    shown.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("没有可显示的文件夹", color = tg.message)
-                    }
-                    else -> LazyColumn(Modifier.fillMaxSize()) {
-                        items(shown, key = { it.id }) { d -> Box(Modifier.animateItem()) { DialogRow(d, c, onClick = { c.chatSiblings = shown.map { it.id }; onOpen(d) }) } }
+                androidx.compose.foundation.pager.HorizontalPager(
+                    pager, Modifier.fillMaxSize(), userScrollEnabled = st.swipeGroups && pageCount > 1, beyondViewportPageCount = 0,
+                ) { page ->
+                    val shown = remember(all, page, labels, st.dialogSort, st.dialogMinCount) { listFor(page) }
+                    when {
+                        shown.isEmpty() && loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                        shown.isEmpty() && error != null -> Column(
+                            Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text(error!!, color = MaterialTheme.colorScheme.error)
+                            TextButton(onClick = { vm.refresh() }) { Text("重试") }
+                        }
+                        shown.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("没有可显示的文件夹", color = tg.message)
+                        }
+                        else -> LazyColumn(Modifier.fillMaxSize()) {
+                            items(shown, key = { it.id }) { d -> Box(Modifier.animateItem()) { DialogRow(d, c, onClick = { c.chatSiblings = shown.map { it.id }; onOpen(d) }) } }
+                        }
                     }
                 }
             }

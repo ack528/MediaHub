@@ -342,24 +342,12 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
 }
 
 /**
- * 聊天页外面套一层横向 Pager:在群里左右滑动,切换到文件夹列表里的下一个 / 上一个群(顺序和点开时列表上的一致,含盘符标签过滤和排序)。
- * 每一页是一个完整的 ChatScreen(各有各的 ViewModel 和浏览位置);只组合当前页和正在滑入的页。
- * 设置里「左右滑动切换群组」可关闭。
+ * 群页入口。1.10.0 曾在群里左右滑动切换群组,现在改成在主界面(文件夹列表)左右滑动切换盘符,群里不再横向滑动。
+ * (保留这一层只是为了不改调用处。)
  */
 @Composable
 fun ChatPager(c: AppContainer, startId: String, titleHint: String?, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
-    val cfg = LocalSettings.current
-    val ids = remember(startId) { c.chatSiblings.takeIf { startId in it } ?: listOf(startId) }
-    val pager = androidx.compose.foundation.pager.rememberPagerState(initialPage = ids.indexOf(startId).coerceAtLeast(0)) { ids.size }
-    androidx.compose.foundation.pager.HorizontalPager(
-        pager, Modifier.fillMaxSize(), beyondViewportPageCount = 0, key = { ids[it] },
-        userScrollEnabled = cfg.swipeGroups && ids.size > 1,
-    ) { page ->
-        ChatScreen(
-            c, ids[page], titleHint = if (ids[page] == startId) titleHint else null, active = pager.settledPage == page,
-            onBack = onBack, onOpenViewer = onOpenViewer,
-        )
-    }
+    ChatScreen(c, startId, titleHint = titleHint, active = true, onBack = onBack, onOpenViewer = onOpenViewer)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

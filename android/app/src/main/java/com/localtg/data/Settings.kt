@@ -39,7 +39,7 @@ data class AppSettings(
     val defaultSortDir: String = "auto",       // auto / asc(升序) / desc(降序)
     val gridSpacing: Int = 1,                  // 网格间距(dp)
     val gridThumbWidth: Int = 480,             // 网格缩略图宽度(像素),越大越清晰也越费流量
-    val swipeGroups: Boolean = true,           // 在群里左右滑动切换到下一个 / 上一个群(按文件夹列表的顺序)
+    val swipeGroups: Boolean = true,           // 主界面左右滑动切换盘符(全部 / C: / D: …)
     val showVideoName: Boolean = true,         // 视频缩略图左下角显示文件名(小字)
     val showDuration: Boolean = true,          // 视频缩略图上显示时长
     val chatSpacing: Int = 3,                  // 聊天流里相邻气泡的间距(dp)
