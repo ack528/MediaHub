@@ -121,7 +121,10 @@ class VideoRenderer(
     @Volatile var stats = ""; private set
     /** 补帧时显示在画面右上角的小字:源帧率 → 输出帧率 */
     @Volatile var fpsText = ""; private set
-    @Volatile private var lsfgGaveUp = false // 光流精度已经降到最低还是跟不上:本次播放停用补帧
+    @Volatile private var lsfgGaveUp = false // 光流精度已经降到最低还是持续跟不上:暂时停用补帧(30 秒后自动再试)
+    private var lsfgBadStreak = 0            // 光流精度已是最低时,连续"不达标"的评估窗口数
+    private var lsfgWindows = 0              // 当前会话已经评估过几个覆盖率窗口(第一个窗口含会话建立的停顿,不算数)
+    private var lsfgGaveUpAt = 0L
     private var ingestedWin = 0
     private var lsfg: LsfgSession? = null
     private var lsfgFail = 0
@@ -184,7 +187,7 @@ class VideoRenderer(
     fun setResizeMode(m: String) { resizeMode = m; poke() }
     fun setConfig(c: EnhanceConfig) {
         trace.enabled = c.trace
-        if (c.frc != config.frc) { lsfgGaveUp = false; lsfgScaleCap = 1f; lsfgCoverage = -1 }
+        if (c.frc != config.frc) { lsfgGaveUp = false; lsfgBadStreak = 0; lsfgScaleCap = 1f; lsfgCoverage = -1 }
         if (c.lsfgFlowScale != config.lsfgFlowScale) lsfgScaleCap = 1f
         config = c; poke()
     }
@@ -199,6 +202,7 @@ class VideoRenderer(
     /** 这次播放里 LSFG 能不能用:没提取完着色器 / 不可用 / 多次启动失败 / 性能不够已停用 都不行。 */
     private fun lsfgUsable(cfg: EnhanceConfig): Boolean {
         if (!cfg.frcOn) return false
+        lsfgRetryIfDue()
         val app = Assets.app
         if (app != null) Lsfg.prepareAsync(app) // 正常情况下应用启动时已经在提取了;这里是保险
         return Lsfg.state == 2 && lsfgFail < 2 && !lsfgGaveUp
@@ -429,8 +433,10 @@ class VideoRenderer(
         if (lsfgOn && covTotal >= 24) {
             val cov = covOk * 100 / covTotal
             lsfgCoverage = cov
-            if (cov < 85 && cfg.frcAdaptive) lowerLsfgQuality(cfg, "覆盖率只有 $cov%(最近 $covTotal 个区间里 $covOk 个有生成帧)")
-            else AppLog.d("lsfg", "LSFG 覆盖率 $cov%")
+            // 会话刚建立后的第一个窗口含建立时的停顿(分配缓冲、建管线,约 0.5 秒),只记录不处罚
+            if (lsfgWindows++ == 0) AppLog.i("lsfg", "LSFG 第一个覆盖率窗口 $cov%(含会话建立的停顿,不作为降级依据)")
+            else if (cov < 85 && cfg.frcAdaptive) lowerLsfgQuality(cfg, "覆盖率只有 $cov%(最近 $covTotal 个区间里 $covOk 个有生成帧)")
+            else { lsfgBadStreak = 0; AppLog.d("lsfg", "LSFG 覆盖率 $cov%") }
             covTotal = 0; covOk = 0
         }
         if (!choreoPosted) scheduleVsync()
@@ -443,9 +449,12 @@ class VideoRenderer(
         if (next != null) {
             lsfgScaleCap = next
             AppLog.w("lsfg", "LSFG $why,光流精度从 ${(cur * 100).toInt()}% 降到 ${(next * 100).toInt()}%,重建会话")
+        } else if (++lsfgBadStreak >= 4) {
+            // 精度已经最低,而且连续 4 次评估都不达标才停用(低功耗模式固定最低精度,一次偶发的卡顿不能就把补帧关掉)
+            lsfgGaveUp = true; lsfgGaveUpAt = SystemClock.elapsedRealtime()
+            AppLog.w("lsfg", "LSFG $why,光流精度已是最低且连续 $lsfgBadStreak 次不达标,暂时停用补帧(30 秒后自动再试)")
         } else {
-            lsfgGaveUp = true
-            AppLog.w("lsfg", "LSFG $why,且光流精度已是最低,本次播放停用补帧")
+            AppLog.w("lsfg", "LSFG $why,光流精度已是最低(第 $lsfgBadStreak / 4 次),继续观察")
         }
     }
 
@@ -615,7 +624,16 @@ class VideoRenderer(
         } else ""
         fpsText = when {
             !cfg.frcOn -> ""
-            !generating -> "补帧待机 ${"%.0f".format(srcFps)}fps · $engine$detail$note"
+            !generating -> {
+                // 待机的原因:源帧率已经够(不需要补)/ 会话还没建立 / 这一帧区间还没有生成帧
+                val why = when {
+                    !wanted -> ""
+                    !frcNeeded(cfg) -> " · 源帧率已够,无需补帧(目标 ${"%.0f".format(targetHz(cfg))}Hz)"
+                    lsfg == null -> " · 等待 LSFG 会话(${lsfgWhy()})"
+                    else -> " · 等生成帧"
+                }
+                "补帧待机 ${"%.0f".format(srcFps)}fps · $engine$detail$note$why"
+            }
             else -> "补帧 ${"%.0f".format(srcFps)} → ${"%.0f".format(fps)} fps · $engine$detail$note"
         }
         if (cfg.frcOn && trace.flushDue(nowMs)) {
@@ -638,13 +656,22 @@ class VideoRenderer(
         Lsfg.state == 1 -> "正在提取着色器"
         Lsfg.state == 3 -> Lsfg.error.take(40)
         lsfgFail >= 2 -> lsfgLastError.take(40).ifEmpty { "启动失败" }
+        lsfgGaveUp -> "性能跟不上,已暂停(稍后自动重试)"
         else -> "等待第一帧"
     }
 
     // ---------------------------------------------------------------- LSFG
 
     /** 补帧开着、而且(暂时)还有希望用上 LSFG:着色器还在提取也算(上屏延迟先留出来,提取完不会跳一下)。 */
-    private fun lsfgWanted(cfg: EnhanceConfig): Boolean = cfg.frcOn && Lsfg.state != 3 && lsfgFail < 2 && !lsfgGaveUp
+    private fun lsfgWanted(cfg: EnhanceConfig): Boolean { lsfgRetryIfDue(); return cfg.frcOn && Lsfg.state != 3 && lsfgFail < 2 && !lsfgGaveUp }
+
+    /** 因性能停用补帧 30 秒后自动再试一次(跟不上多半是一时的:刚开始播放 / 系统繁忙 / 发热降频后恢复)。 */
+    private fun lsfgRetryIfDue() {
+        if (lsfgGaveUp && SystemClock.elapsedRealtime() - lsfgGaveUpAt > 30_000) {
+            lsfgGaveUp = false; lsfgBadStreak = 0; lsfgScaleCap = 1f; lsfgCoverage = -1
+            AppLog.i("lsfg", "停用补帧已满 30 秒,重新尝试")
+        }
+    }
 
     /** 补帧时画面整体晚多少上屏(ns);源帧率已经够高(不需要补帧)时不延迟。 */
     private fun frcDelayFor(cfg: EnhanceConfig): Long =
@@ -737,7 +764,7 @@ class VideoRenderer(
             }
             lsfg = ns; s = ns; lsfgFail = 0; lsfgLastError = ""
             lsfgStartId = slot.id
-            covTotal = 0; covOk = 0
+            covTotal = 0; covOk = 0; lsfgWindows = 0
             AppLog.i("lsfg", "LSFG 会话已建立 ${slot.img.w}×${slot.img.h} 每帧生成 $k 张 光流精度 ${(scale * 100).toInt()}%")
         }
         val tw0 = System.nanoTime()

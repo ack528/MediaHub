@@ -221,7 +221,7 @@ fun VideoPage(
     var hud by remember { mutableStateOf<Hud?>(null) }
     var hudTick by remember { mutableIntStateOf(0) }
     var dialog by remember { mutableStateOf("") }   // audio / text / speed / sleep / jump / info
-    var panel by remember { mutableStateOf("") }   // 播放设置面板:"" 关闭 / main / quality / enhance / decoder
+    var panel by remember { mutableStateOf("") }   // 右上角菜单:"" 关闭 / main / speed / sub / audio / loop / enhance / quality / sleep / more
     var remaining by remember { mutableStateOf(false) }
 
     fun showHud(h: Hud) { hud = h; hudTick++ }
@@ -447,7 +447,7 @@ fun VideoPage(
         showHud(Hud(null, (if (sign > 0) "▶▶ +" else "◀◀ −") + steps * seekStep + " 秒"))
     }
 
-    val showControls = ui.chrome && !inPip && panel.isEmpty()
+    val showControls = ui.chrome && !inPip
     // ---- 退出动画:SurfaceView 不会跟着页面一起缩放 / 淡出(它在窗口后面"挖洞"显示),
     // 所以页面开始退出(返回手势一开始 / 点返回)时,把当前画面截成一张位图盖在上面,再把 SurfaceView 藏起来,
     // 缩放和淡出就作用在这张位图上,效果和别的页面一致。手势取消时恢复。
@@ -697,7 +697,7 @@ fun VideoPage(
             RoundBtn(TgIcons.Replay, "重播", 64.dp, Modifier.align(Alignment.Center)) { pl?.let { it.seekTo(0); it.play() } }
         }
 
-        // ---------------- 顶栏(返回、标题、字幕(有才显示)、画质增强、播放设置;其余选项都收进播放设置面板)
+        // ---------------- 顶栏(返回、标题、字幕(有才显示)、更多;其余选项都在「更多」的右上角浮层里)
         AnimatedVisibility(
             showControls, Modifier.align(Alignment.TopStart),
             enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
@@ -718,9 +718,8 @@ fun VideoPage(
                 if (!locked) {
                     val accent = com.localtg.ui.tg.LocalTg.current.accent
                     val enhOn = cfg.enhUpscale != "off" || cfg.enhFrc != "off" || cfg.enhHdr != "off"
-                    if (trackOpts(tracks, C.TRACK_TYPE_TEXT).isNotEmpty()) CtrlIcon(TgIcons.Subtitles, "字幕") { dialog = "text" }
-                    CtrlIcon(TgIcons.AutoAwesome, "画质增强", tint = if (enhOn) accent else Color.White) { panel = "enhance" }
-                    CtrlIcon(TgIcons.Tune, "播放设置") { panel = "main" }
+                    if (trackOpts(tracks, C.TRACK_TYPE_TEXT).isNotEmpty()) CtrlIcon(TgIcons.Subtitles, "字幕") { panel = "sub" }
+                    CtrlIcon(TgIcons.More, "更多", tint = if (enhOn) accent else Color.White) { panel = if (panel.isEmpty()) "main" else "" }
                 }
             }
         }
@@ -800,123 +799,164 @@ fun VideoPage(
             }
         }
 
-        // ---------------- 播放设置面板(顶栏右侧的「播放设置」「画质增强」按钮打开;磁贴 + 分组行 + 二级页)
+        // ---------------- 右上角「更多」菜单(⋮ 按钮下面弹出的小浮层:一级是纯文字行,二级在同一个浮层里换内容)
         run {
             val lastPage = remember { arrayOf("main") }
             if (panel.isNotEmpty()) lastPage[0] = panel
             val page = panel.ifEmpty { lastPage[0] }
             val subOpts = trackOpts(tracks, C.TRACK_TYPE_TEXT)
             val audioOpts = trackOpts(tracks, C.TRACK_TYPE_AUDIO)
-            val subOff = pl?.trackSelectionParameters?.disabledTrackTypes?.contains(C.TRACK_TYPE_TEXT) != false || subOpts.none { it.selected }
+            val pp = pl
+            val subOff = pp?.trackSelectionParameters?.disabledTrackTypes?.contains(C.TRACK_TYPE_TEXT) != false || subOpts.none { it.selected }
             val soft = decoderName[0].let { it.startsWith("c2.android") || it.startsWith("OMX.google") }
-            PlayerPanelHost(
+            val speedText = "${"%.2f".format(speed).trimEnd('0').trimEnd('.')}x"
+            PlayerMenuHost(
                 open = panel.isNotEmpty() && !inPip,
-                title = when (page) { "quality" -> "播放画质"; "enhance" -> "画质增强"; "decoder" -> "解码方式"; else -> "播放设置" },
-                canBack = panel.isNotEmpty() && page != "main",
+                title = when (page) {
+                    "speed" -> "倍速"; "sub" -> "字幕"; "audio" -> "音轨"; "loop" -> "循环"; "enhance" -> "画质增强"
+                    "quality" -> "画质与解码"; "more" -> "更多"; "sleep" -> "睡眠定时"; else -> null
+                },
                 onBack = { panel = "main" },
                 onClose = { panel = "" },
             ) {
                 when (page) {
-                    "quality" -> {
-                        // 转码只改码率,不改分辨率
-                        val rates = listOf<Int?>(null, 1_500_000, 3_000_000, 6_000_000, 12_000_000, 20_000_000)
-                        PanelOptions(rates.map { r -> (if (r == null) "原画(直接播放)" else "服务端转码 ${"%.1f".format(r / 1_000_000f)} Mbps") to (r == transcodeBitrate) }) { i ->
-                            panel = ""
-                            if (rates[i] != transcodeBitrate) {
-                                resumeMs = pl?.currentPosition ?: 0L
-                                useSoftware = false
-                                transcodeBitrate = rates[i]
-                                AppLog.i("player", "手动切换画质:" + (rates[i]?.let { "转码 ${it / 1000}kbps" } ?: "原画"))
-                            }
-                        }
-                        PanelNote("转码只调整码率,分辨率不变;手机解不了的格式会自动转码。切换后从当前位置重新加载。")
+                    "speed" -> {
+                        val row1 = listOf(0.5f, 0.75f, 1f, 1.25f); val row2 = listOf(1.5f, 2f, 3f, 4f)
+                        Spacer(Modifier.height(4.dp))
+                        MenuChips(row1.map { "${it.toString().removeSuffix(".0")}x" }, row1.indexOfFirst { abs(it - speed) < 0.01f }) { i -> speed = row1[i]; pp?.let { it.playbackParameters = it.playbackParameters.withSpeed(speed) } }
+                        Spacer(Modifier.height(4.dp))
+                        MenuChips(row2.map { "${it.toString().removeSuffix(".0")}x" }, row2.indexOfFirst { abs(it - speed) < 0.01f }) { i -> speed = row2[i]; pp?.let { it.playbackParameters = it.playbackParameters.withSpeed(speed) } }
+                        MenuDivider()
+                        MenuRow("自定义…", "当前 $speedText") { panel = ""; dialog = "speed" }
                     }
-                    "decoder" -> {
-                        PanelOptions(listOf("硬件解码优先(省电,默认)" to !soft, "软件解码优先(兼容性好,费电)" to soft)) { i ->
+                    "sub" -> {
+                        if (subOpts.isEmpty()) MenuNote("此视频没有内嵌字幕")
+                        else MenuOptions(listOf("关闭" to subOff) + subOpts.map { it.label to (it.selected && !subOff) }) { i ->
+                            if (pp != null) {
+                                if (i == 0) pp.trackSelectionParameters = pp.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+                                else selectTrack(pp, subOpts[i - 1])
+                            }
                             panel = ""
-                            resumeMs = pl?.currentPosition ?: 0L
-                            modeOverride = if (i == 0) "hw_first" else "sw_first"
                         }
-                        PanelNote("当前解码器:${decoderName[0].ifEmpty { "—" }}。切换后从当前位置重新加载;硬解失败时也会自动改用软解。")
+                    }
+                    "audio" -> {
+                        if (audioOpts.isEmpty()) MenuNote("没有可选音轨")
+                        else MenuOptions(audioOpts.map { it.label to it.selected }) { i ->
+                            if (pp != null) { selectTrack(pp, audioOpts[i]); AppLog.i("player", "选择音轨 ${audioOpts[i].label}") }
+                            panel = ""
+                        }
+                    }
+                    "loop" -> {
+                        val abText = when { abA == null -> "A-B 循环:设置起点 A"; abB == null -> "A-B 循环:设置终点 B"; else -> "A-B 循环:取消(${fmt(abA!!)} – ${fmt(abB!!)})" }
+                        MenuOptions(listOf("不循环" to (!loop && abA == null), "单个循环" to loop, abText to (abA != null))) { i ->
+                            when (i) {
+                                0, 1 -> {
+                                    loop = i == 1; abA = null; abB = null
+                                    pp?.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                                }
+                                else -> {
+                                    val now = pp?.currentPosition ?: 0L
+                                    when {
+                                        abA == null -> { abA = now; showHud(Hud(TgIcons.Repeat, "起点 A ${fmt(now)}")) }
+                                        abB == null -> if (now > abA!!) { abB = now; loop = false; pp?.repeatMode = Player.REPEAT_MODE_OFF; showHud(Hud(TgIcons.Repeat, "循环 ${fmt(abA!!)} – ${fmt(now)}")) } else showHud(Hud(TgIcons.Repeat, "终点要在起点之后"))
+                                        else -> { abA = null; abB = null; showHud(Hud(TgIcons.Repeat, "已取消 A-B 循环")) }
+                                    }
+                                }
+                            }
+                            panel = ""
+                        }
                     }
                     "enhance" -> {
                         val ups = listOf("off", "fsr", "anime4k_s", "anime4k_m")
-                        PanelSection("超分")
-                        PanelSegmented(listOf("关闭", "FSR", "Anime4K S", "Anime4K M"), ups.indexOf(cfg.enhUpscale).coerceAtLeast(0)) { i -> c.settings.update { copy(enhUpscale = ups[i]) } }
-                        PanelNote("FSR 适合真人 / 影视,Anime4K 适合动画;视频高度超过 ${cfg.enhMaxH}p 时不处理,跟不上时会自动停用。")
+                        MenuLabel("超分")
+                        MenuChips(listOf("关闭", "FSR", "动漫·小", "动漫·中"), ups.indexOf(cfg.enhUpscale).coerceAtLeast(0)) { i -> c.settings.update { copy(enhUpscale = ups[i]) } }
+                        MenuNote("FSR 适合真人 / 影视;动漫 = Anime4K。视频高度超过 ${cfg.enhMaxH}p 不处理。")
                         val frcs = listOf("off", "lsfg_low", "lsfg")
-                        PanelSection("补帧(LSFG)")
-                        PanelSegmented(listOf("关闭", "低功耗 60 帧", "标准"), frcs.indexOf(cfg.enhFrc).coerceAtLeast(0)) { i -> c.settings.update { copy(enhFrc = frcs[i]) } }
-                        PanelNote(
+                        MenuLabel("补帧(LSFG)")
+                        MenuChips(listOf("关闭", "低功耗", "标准"), frcs.indexOf(cfg.enhFrc).coerceAtLeast(0)) { i -> c.settings.update { copy(enhFrc = frcs[i]) } }
+                        MenuNote(
                             when (cfg.enhFrc) {
-                                "lsfg_low" -> "目标 60 帧(24 → 48、30 → 60),光流精度最低、固定请求 60Hz,省电发热小;60 帧视频不需要补。"
-                                "lsfg" -> "补到屏幕最高刷新率(最高 120Hz),效果最好,最费电、发热最大。倍率等细节在 设置 → 画质增强。"
-                                else -> "LSFG(Lossless Scaling 帧生成)把 24 / 30 帧视频补到更高帧率,画面更顺滑。"
+                                "lsfg_low" -> "低功耗:目标 60 帧,光流精度最低,省电发热小。"
+                                "lsfg" -> "标准:补到屏幕最高刷新率(≤120Hz),最顺滑,最费电。"
+                                else -> "把 24 / 30 帧视频补到更高帧率。"
                             },
                         )
                         if (cfg.enhFrc != "off") {
                             val tg = com.localtg.ui.tg.LocalTg.current
                             when (com.localtg.render.Lsfg.state) {
-                                1 -> PanelNote("正在提取着色器(只有第一次需要几秒)…", tg.warn)
-                                3 -> PanelNote("LSFG 不可用:" + com.localtg.render.Lsfg.error, tg.danger)
+                                1 -> MenuNote("正在提取着色器(只有第一次需要几秒)…", tg.warn)
+                                3 -> MenuNote("LSFG 不可用:" + com.localtg.render.Lsfg.error, tg.danger)
                                 else -> {}
                             }
                         }
-                        PanelSection("HDR")
-                        PanelGroup {
-                            PanelSwitchRow(TgIcons.Brightness, "SDR 转 HDR", "屏幕支持 HDR 时把高光扩展到 HDR 亮度;HDR 片源本身不处理", cfg.enhHdr != "off") { on ->
-                                c.settings.update { copy(enhHdr = if (on) "auto" else "off") }
+                        MenuDivider()
+                        MenuSwitch("SDR 转 HDR", cfg.enhHdr != "off") { on -> c.settings.update { copy(enhHdr = if (on) "auto" else "off") } }
+                        MenuDivider()
+                        MenuRow("关闭全部增强", arrow = false) { c.settings.update { copy(enhUpscale = "off", enhFrc = "off", enhHdr = "off") } }
+                    }
+                    "quality" -> {
+                        // 转码只改码率,不改分辨率
+                        val rates = listOf<Int?>(null, 1_500_000, 3_000_000, 6_000_000, 12_000_000, 20_000_000)
+                        val names = listOf("原画", "1.5M", "3M", "6M", "12M", "20M")
+                        val cur = rates.indexOf(transcodeBitrate)
+                        fun pick(i: Int) {
+                            panel = ""
+                            if (rates[i] != transcodeBitrate) {
+                                resumeMs = pp?.currentPosition ?: 0L
+                                useSoftware = false
+                                transcodeBitrate = rates[i]
+                                AppLog.i("player", "手动切换画质:" + (rates[i]?.let { "转码 ${it / 1000}kbps" } ?: "原画"))
                             }
                         }
-                        Spacer(Modifier.height(12.dp))
-                        PanelGroup {
-                            PanelRow(TgIcons.Replay, "关闭全部增强") { c.settings.update { copy(enhUpscale = "off", enhFrc = "off", enhHdr = "off") } }
+                        MenuLabel("播放画质(转码只调码率,分辨率不变)")
+                        MenuChips(names.take(3), cur) { i -> pick(i) }
+                        Spacer(Modifier.height(4.dp))
+                        MenuChips(names.drop(3), cur - 3) { i -> pick(i + 3) }
+                        MenuLabel("解码方式")
+                        MenuChips(listOf("硬件解码", "软件解码"), if (decoderName[0].isEmpty()) -1 else if (soft) 1 else 0) { i ->
+                            panel = ""
+                            resumeMs = pp?.currentPosition ?: 0L
+                            modeOverride = if (i == 0) "hw_first" else "sw_first"
                         }
+                        MenuNote("当前解码器:${decoderName[0].ifEmpty { "—" }}。切换后从当前位置重新加载;硬解失败时也会自动改用软解。")
+                    }
+                    "sleep" -> MenuOptions(
+                        listOf("关闭" to (ui.sleepAt == 0L), "15 分钟" to false, "30 分钟" to false, "45 分钟" to false, "60 分钟" to false, "90 分钟" to false, "播完当前视频后停止" to (ui.sleepAt == -1L)),
+                    ) { i ->
+                        ui.sleepAt = when (i) {
+                            0 -> 0L; 6 -> -1L
+                            else -> android.os.SystemClock.elapsedRealtime() + listOf(0, 15, 30, 45, 60, 90)[i] * 60_000L
+                        }
+                        panel = ""
+                    }
+                    "more" -> {
+                        MenuRow("跳转到指定时间", arrow = false) { panel = ""; dialog = "jump" }
+                        MenuRow("小窗播放", arrow = false) { panel = ""; enterPip() }
+                        MenuRow("睡眠定时", if (ui.sleepAt != 0L) "已设置" else "关闭") { panel = "sleep" }
+                        if (!c.isLocal) MenuRow("保存到手机", arrow = false) { panel = ""; scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, item) } }
+                        MenuRow("媒体信息", arrow = false) { panel = ""; dialog = "info" }
                     }
                     else -> {
-                        TileGrid(
-                            listOf(
-                                PanelTile(TgIcons.Speed, "倍速", "${"%.2f".format(speed).trimEnd('0').trimEnd('.')}x", speed != 1f) { panel = ""; dialog = "speed" },
-                                PanelTile(TgIcons.Subtitles, "字幕", if (subOpts.isEmpty()) "无" else if (subOff) "关闭" else subOpts.firstOrNull { it.selected }?.label, !subOff && subOpts.isNotEmpty()) { panel = ""; dialog = "text" },
-                                PanelTile(TgIcons.AudioTrack, "音轨", audioOpts.firstOrNull { it.selected }?.label ?: "—") { panel = ""; dialog = "audio" },
-                                PanelTile(TgIcons.AspectRatio, "画面", when (resize) { "fit" -> "适应屏幕"; "zoom" -> "裁剪填满"; else -> "拉伸填满" }, resize != "fit") {
-                                    resize = when (resize) { "fit" -> "zoom"; "zoom" -> "fill"; else -> "fit" }
-                                },
-                                PanelTile(TgIcons.Timer, "睡眠定时", if (ui.sleepAt != 0L) "已设置" else "关闭", ui.sleepAt != 0L) { panel = ""; dialog = "sleep" },
-                                PanelTile(TgIcons.RepeatOne, "单个循环", if (loop) "开" else "关", loop) {
-                                    loop = !loop
-                                    pl?.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-                                },
-                                PanelTile(TgIcons.Repeat, "A-B 循环", when { abA == null -> "点一下设起点"; abB == null -> "点一下设终点"; else -> "循环中,点取消" }, abA != null) {
-                                    val now = pl?.currentPosition ?: 0L
-                                    when {
-                                        abA == null -> { abA = now; showHud(Hud(TgIcons.Repeat, "起点 A ${fmt(now)}")) }
-                                        abB == null -> if (now > abA!!) { abB = now; showHud(Hud(TgIcons.Repeat, "循环 ${fmt(abA!!)} – ${fmt(now)}")) } else showHud(Hud(TgIcons.Repeat, "终点要在起点之后"))
-                                        else -> { abA = null; abB = null; showHud(Hud(TgIcons.Repeat, "已取消 A-B 循环")) }
-                                    }
-                                },
-                                PanelTile(TgIcons.Schedule, "跳转", "到指定时间") { panel = ""; dialog = "jump" },
-                                PanelTile(TgIcons.Pip, "小窗", "画中画") { panel = ""; enterPip() },
-                            ),
-                        )
-                        PanelSection("画质与解码")
-                        PanelGroup {
-                            PanelRow(TgIcons.Hd, "播放画质", transcodeBitrate?.let { "转码 ${"%.1f".format(it / 1_000_000f)} Mbps" } ?: "原画") { panel = "quality" }
-                            PanelRow(
-                                TgIcons.AutoAwesome, "画质增强",
-                                listOfNotNull(
-                                    when (cfg.enhUpscale) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K S"; "anime4k_m" -> "Anime4K M"; else -> null },
-                                    when (cfg.enhFrc) { "lsfg" -> "补帧 标准"; "lsfg_low" -> "补帧 60 帧"; else -> null },
-                                    if (cfg.enhHdr != "off") "HDR" else null,
-                                ).joinToString(" · ").ifEmpty { "关闭" },
-                            ) { panel = "enhance" }
-                            PanelRow(TgIcons.Memory, "解码方式", if (decoderName[0].isEmpty()) "—" else if (soft) "软件解码" else "硬件解码") { panel = "decoder" }
+                        MenuRow("倍速", speedText) { panel = "speed" }
+                        MenuRow("字幕", if (subOpts.isEmpty()) "无" else if (subOff) "关闭" else subOpts.firstOrNull { it.selected }?.label) { panel = "sub" }
+                        MenuRow("音轨", audioOpts.firstOrNull { it.selected }?.label ?: "—") { panel = "audio" }
+                        MenuDivider()
+                        MenuRow("画面比例", when (resize) { "fit" -> "适应屏幕"; "zoom" -> "裁剪填满"; else -> "拉伸填满" }, arrow = false) {
+                            resize = when (resize) { "fit" -> "zoom"; "zoom" -> "fill"; else -> "fit" }
                         }
-                        PanelSection("工具")
-                        PanelGroup {
-                            if (!c.isLocal) PanelRow(TgIcons.Download, "保存到手机") { panel = ""; scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, item) } }
-                            PanelRow(TgIcons.Info, "媒体信息") { panel = ""; dialog = "info" }
-                        }
+                        MenuRow("循环", when { abA != null -> "A-B"; loop -> "单个循环"; else -> "关闭" }) { panel = "loop" }
+                        MenuDivider()
+                        MenuRow(
+                            "画质增强",
+                            listOfNotNull(
+                                when (cfg.enhUpscale) { "fsr" -> "FSR"; "anime4k_s", "anime4k_m" -> "动漫"; else -> null },
+                                when (cfg.enhFrc) { "lsfg" -> "补帧"; "lsfg_low" -> "补帧·低功耗"; else -> null },
+                                if (cfg.enhHdr != "off") "HDR" else null,
+                            ).joinToString(" · ").ifEmpty { "关闭" },
+                        ) { panel = "enhance" }
+                        MenuRow("画质与解码", (transcodeBitrate?.let { "转码 ${"%.1f".format(it / 1_000_000f)}M" } ?: "原画") + if (decoderName[0].isEmpty()) "" else if (soft) " · 软解" else " · 硬解") { panel = "quality" }
+                        MenuDivider()
+                        MenuRow("更多") { panel = "more" }
                     }
                 }
             }
@@ -926,39 +966,9 @@ fun VideoPage(
     // ---------------- 对话框
     val p = player
     when (dialog) {
-        "audio" -> {
-            val opts = trackOpts(tracks, C.TRACK_TYPE_AUDIO)
-            PickDialog("音轨", opts.map { it.label to it.selected }.ifEmpty { listOf("没有可选音轨" to false) }, { dialog = "" }) { i ->
-                if (p != null && i in opts.indices) { selectTrack(p, opts[i]); AppLog.i("player", "选择音轨 ${opts[i].label}") }
-                dialog = ""
-            }
-        }
-        "text" -> {
-            val opts = trackOpts(tracks, C.TRACK_TYPE_TEXT)
-            val off = p?.trackSelectionParameters?.disabledTrackTypes?.contains(C.TRACK_TYPE_TEXT) != false || opts.none { it.selected }
-            val rows = listOf("关闭字幕" to off) + opts.map { it.label to (it.selected && !off) }
-            PickDialog(if (opts.isEmpty()) "字幕(此视频没有内嵌字幕)" else "字幕", rows, { dialog = "" }) { i ->
-                if (p != null) {
-                    if (i == 0) p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
-                    else selectTrack(p, opts[i - 1])
-                }
-                dialog = ""
-            }
-        }
         "speed" -> SpeedDialog(speed, { dialog = "" }) { v ->
             speed = v; p?.let { it.playbackParameters = it.playbackParameters.withSpeed(v) }
             AppLog.i("player", "倍速 ${v}x")
-        }
-        "sleep" -> PickDialog(
-            "睡眠定时",
-            listOf("关闭" to (ui.sleepAt == 0L), "15 分钟" to false, "30 分钟" to false, "45 分钟" to false, "60 分钟" to false, "90 分钟" to false, "播完当前视频后停止" to (ui.sleepAt == -1L)),
-            { dialog = "" },
-        ) { i ->
-            ui.sleepAt = when (i) {
-                0 -> 0L; 6 -> -1L
-                else -> android.os.SystemClock.elapsedRealtime() + listOf(0, 15, 30, 45, 60, 90)[i] * 60_000L
-            }
-            dialog = ""
         }
         "jump" -> JumpDialog(p?.duration ?: 0L, { dialog = "" }) { ms -> p?.seekTo(ms); dialog = "" }
         "info" -> InfoDialog(item, p, tracks, decoderName[0], { dialog = "" })
@@ -1142,25 +1152,6 @@ private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggl
             modifier = Modifier.width(60.dp).clickable(onClick = onToggleRemaining), textAlign = androidx.compose.ui.text.style.TextAlign.End,
         )
     }
-}
-
-@Composable
-private fun PickDialog(title: String, rows: List<Pair<String, Boolean>>, onDismiss: () -> Unit, onPick: (Int) -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                rows.forEachIndexed { i, (label, sel) ->
-                    Row(Modifier.fillMaxWidth().clickable { onPick(i) }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = sel, onClick = { onPick(i) })
-                        Text(label, modifier = Modifier.padding(start = 4.dp))
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
 }
 
 @Composable

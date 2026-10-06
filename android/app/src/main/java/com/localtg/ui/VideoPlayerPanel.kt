@@ -5,13 +5,9 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -22,12 +18,10 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -45,8 +39,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,165 +51,126 @@ import com.localtg.ui.tg.LocalTg
 import com.localtg.ui.tg.TgIcons
 
 /*
- * 播放器的"播放设置"面板:以前右上角是一个有十几项的下拉菜单,现在分成
- *   顶栏:返回 / 标题 / (有字幕才显示)字幕 / 画质增强 / 播放设置;
- *   面板:快捷磁贴(倍速、字幕、音轨、画面比例、睡眠定时、单个循环、A-B 循环、跳转、小窗)+ 分组的行(播放画质、画质增强、解码方式、保存、媒体信息),
- *        行点进去是二级页(选项列表 / 分段选择 / 开关),带返回。
- * 面板画在播放页自己的组合里(不是 Dialog 窗口),所以沉浸模式不会被打断,视频画面一直在后面。
- * 横屏时是右侧 380dp 宽的侧边面板,竖屏时是底部面板(最高 72% 屏幕高度)。
+ * 播放器右上角的「更多」菜单(1.12.1 重做:1.12.0 的整块面板 + 图标磁贴太大、图标要想一会才懂,改回右上角的小浮层 + 纯文字行):
+ *   - 从右上角的 ⋮ 按钮下面弹出,宽 280dp,最高不超过屏幕的 78%,超出滚动;不压暗画面,点浮层外面关闭;
+ *   - 一级:倍速 / 字幕 / 音轨 / 画面比例 / 循环 / 画质增强 / 画质与解码 / 更多(每行 "名称 …… 当前值 ›",一眼能看懂);
+ *   - 二级:同一个浮层里换内容,顶上是返回箭头 + 标题(选项列表打勾、分段选择、开关)。
+ * 画在播放页自己的组合里(不是 Dialog 窗口),沉浸模式不会被打断。
  */
 
-private val PanelBg = Color(0xF2151517)
-private val TileBg = Color(0x14FFFFFF)
+private val MenuBg = Color(0xF21B1B1D)
 private val TextDim = Color(0x99FFFFFF)
+private val Line = Color(0x1AFFFFFF)
 
-/** 面板容器:背景遮罩 + 侧边 / 底部面板 + 标题栏(二级页有返回箭头)+ 可滚动内容。 */
+/** 浮层容器。title = null 表示一级页(没有返回箭头)。 */
 @Composable
-internal fun PlayerPanelHost(
-    open: Boolean, title: String, canBack: Boolean,
-    onBack: () -> Unit, onClose: () -> Unit,
+internal fun PlayerMenuHost(
+    open: Boolean, title: String?, onBack: () -> Unit, onClose: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    BackHandler(enabled = open) { if (canBack) onBack() else onClose() }
+    BackHandler(enabled = open) { if (title != null) onBack() else onClose() }
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val landscape = maxWidth > maxHeight
-        AnimatedVisibility(open, enter = fadeIn(tween(160)), exit = fadeOut(tween(140))) {
+        if (open) {
+            // 全屏透明遮罩:点浮层外面关闭,横向拖动不漏给下面的翻页
             Box(
-                Modifier.fillMaxSize().background(Color(0x66000000))
-                    .pointerInput(Unit) { detectHorizontalDragGestures { c, _ -> c.consume() } } // 横向拖动不能漏给下面的翻页(切到上一个 / 下一个视频)
+                Modifier.fillMaxSize()
+                    .pointerInput(Unit) { detectHorizontalDragGestures { c, _ -> c.consume() } }
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClose),
             )
         }
-        val shape = if (landscape) RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp) else RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
         AnimatedVisibility(
             open,
-            modifier = Modifier.align(if (landscape) Alignment.CenterEnd else Alignment.BottomCenter),
-            enter = if (landscape) slideInHorizontally(tween(220)) { it } + fadeIn(tween(160)) else slideInVertically(tween(220)) { it } + fadeIn(tween(160)),
-            exit = if (landscape) slideOutHorizontally(tween(180)) { it } + fadeOut(tween(140)) else slideOutVertically(tween(180)) { it } + fadeOut(tween(140)),
+            modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 50.dp, end = 8.dp),
+            enter = fadeIn(tween(120)) + scaleIn(tween(150), initialScale = 0.9f, transformOrigin = TransformOrigin(1f, 0f)),
+            exit = fadeOut(tween(100)) + scaleOut(tween(120), targetScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
         ) {
             Column(
                 Modifier
-                    .then(if (landscape) Modifier.width(minOf(380.dp, maxWidth * 0.55f)).fillMaxHeight() else Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.72f))
-                    .clip(shape).background(PanelBg)
-                    .pointerInput(Unit) { detectTapGestures { } } // 吃掉面板上的点击,不让它落到遮罩上把面板关了
-                    .pointerInput(Unit) { detectHorizontalDragGestures { c, _ -> c.consume() } }
-                    .then(if (landscape) Modifier.statusBarsPadding() else Modifier)
-                    .navigationBarsPadding(),
+                    .width(minOf(280.dp, maxWidth - 16.dp))
+                    .heightIn(max = maxHeight * 0.78f)
+                    .shadow(12.dp, RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(14.dp)).background(MenuBg)
+                    .pointerInput(Unit) { detectTapGestures { } } // 吃掉浮层上的点击,不让它落到遮罩上把浮层关了
+                    .pointerInput(Unit) { detectHorizontalDragGestures { c, _ -> c.consume() } },
             ) {
-                Row(Modifier.fillMaxWidth().padding(start = if (canBack) 6.dp else 20.dp, end = 6.dp, top = 8.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (canBack) PanelIcon(TgIcons.Back, "返回", onBack)
-                    Text(title, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f).padding(start = if (canBack) 4.dp else 0.dp))
-                    PanelIcon(TgIcons.Close, "关闭", onClose)
-                }
-                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 16.dp), content = content)
-            }
-        }
-    }
-}
-
-@Composable
-private fun PanelIcon(icon: ImageVector, desc: String, onClick: () -> Unit) {
-    Box(Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-        Icon(icon, desc, tint = Color.White, modifier = Modifier.size(22.dp))
-    }
-}
-
-/** 分组标题。 */
-@Composable
-internal fun PanelSection(title: String) {
-    Text(title, color = TextDim, fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 4.dp, top = 14.dp, bottom = 8.dp))
-}
-
-/** 快捷磁贴。 */
-internal class PanelTile(val icon: ImageVector, val label: String, val value: String? = null, val active: Boolean = false, val onClick: () -> Unit)
-
-/** 3 列的磁贴网格(最后一行不满用空位补齐,保证每个磁贴一样宽)。 */
-@Composable
-internal fun TileGrid(tiles: List<PanelTile>, columns: Int = 3) {
-    val accent = LocalTg.current.accent
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        tiles.chunked(columns).forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEach { t ->
-                    Column(
-                        Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
-                            .background(if (t.active) accent.copy(alpha = 0.22f) else TileBg)
-                            .then(if (t.active) Modifier.border(BorderStroke(1.dp, accent.copy(alpha = 0.55f)), RoundedCornerShape(14.dp)) else Modifier)
-                            .clickable(onClick = t.onClick).padding(vertical = 12.dp, horizontal = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Icon(t.icon, null, tint = if (t.active) accent else Color.White, modifier = Modifier.size(24.dp))
-                        Text(t.label, color = Color.White, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
-                        Text(t.value ?: " ", color = if (t.active) accent else TextDim, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (title != null) {
+                    Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 14.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(36.dp).clip(CircleShape).clickable(onClick = onBack), contentAlignment = Alignment.Center) {
+                            Icon(TgIcons.Back, "返回", tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                        Text(title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 4.dp))
                     }
                 }
-                repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(vertical = 4.dp), content = content)
             }
         }
     }
 }
 
-/** 分组里的一行:图标 + 标题 + 当前值 + 右箭头。多行放进 [PanelGroup] 里连成一张圆角卡片。 */
+/** 一行:名称 + 当前值(右对齐,淡色)+ 箭头(进二级页时)。 */
 @Composable
-internal fun PanelRow(icon: ImageVector, title: String, value: String? = null, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
-        Text(title, color = Color.White, fontSize = 15.sp, modifier = Modifier.padding(start = 14.dp).weight(1f))
-        if (value != null) Text(value, color = TextDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp).weight(1f, fill = false))
-        Icon(TgIcons.ChevronRight, null, tint = TextDim, modifier = Modifier.padding(start = 4.dp).size(20.dp))
+internal fun MenuRow(title: String, value: String? = null, arrow: Boolean = true, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, color = Color.White, fontSize = 14.sp)
+        Box(Modifier.weight(1f))
+        if (value != null) Text(value, color = TextDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 12.dp).weight(1f, fill = false))
+        if (arrow) Icon(TgIcons.ChevronRight, null, tint = TextDim, modifier = Modifier.padding(start = 2.dp).size(18.dp))
     }
 }
 
-/** 把几行 [PanelRow] / [PanelSwitchRow] 包成一张圆角卡片。 */
+/** 分组之间的细线。 */
 @Composable
-internal fun PanelGroup(content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(TileBg), content = content)
+internal fun MenuDivider() {
+    Box(Modifier.padding(vertical = 4.dp).fillMaxWidth().height(0.5.dp).background(Line))
 }
 
-/** 单选列表(选中的行右边打勾,强调色)。 */
+/** 小标题(二级页里分段)。 */
 @Composable
-internal fun PanelOptions(options: List<Pair<String, Boolean>>, onPick: (Int) -> Unit) {
+internal fun MenuLabel(text: String) {
+    Text(text, color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 6.dp))
+}
+
+/** 单选列表:选中的行强调色 + 打勾。 */
+@Composable
+internal fun MenuOptions(options: List<Pair<String, Boolean>>, onPick: (Int) -> Unit) {
     val accent = LocalTg.current.accent
-    PanelGroup {
-        options.forEachIndexed { i, (label, selected) ->
-            Row(Modifier.fillMaxWidth().clickable { onPick(i) }.padding(horizontal = 14.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(label, color = if (selected) accent else Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
-                if (selected) Icon(TgIcons.Check, null, tint = accent, modifier = Modifier.size(20.dp))
-            }
+    options.forEachIndexed { i, (label, selected) ->
+        Row(Modifier.fillMaxWidth().clickable { onPick(i) }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = if (selected) accent else Color.White, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            if (selected) Icon(TgIcons.Check, null, tint = accent, modifier = Modifier.padding(start = 8.dp).size(18.dp))
         }
     }
 }
 
-/** 分段选择(几个并排的选项,选中的填充强调色)。 */
+/** 分段选择:几个并排的文字选项,选中的填充强调色。selected = -1 表示都不选中。 */
 @Composable
-internal fun PanelSegmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+internal fun MenuChips(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
     val accent = LocalTg.current.accent
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(TileBg).padding(3.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(9.dp)).background(Color(0x14FFFFFF)).padding(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
         options.forEachIndexed { i, label ->
             val on = i == selected
             Box(
-                Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(if (on) accent else Color.Transparent)
-                    .clickable { onSelect(i) }.padding(vertical = 10.dp, horizontal = 2.dp),
+                Modifier.weight(1f).clip(RoundedCornerShape(7.dp)).background(if (on) accent else Color.Transparent)
+                    .clickable { onSelect(i) }.padding(vertical = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(label, color = if (on) Color.White else Color(0xCCFFFFFF), fontSize = 13.sp, fontWeight = if (on) FontWeight.Medium else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(label, color = if (on) Color.White else Color(0xCCFFFFFF), fontSize = 12.5.sp, fontWeight = if (on) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
             }
         }
     }
 }
 
-/** 带说明的开关行。 */
+/** 开关行。 */
 @Composable
-internal fun PanelSwitchRow(icon: ImageVector, title: String, desc: String? = null, checked: Boolean, onChange: (Boolean) -> Unit) {
+internal fun MenuSwitch(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     val accent = LocalTg.current.accent
-    Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
-        Column(Modifier.padding(start = 14.dp).weight(1f)) {
-            Text(title, color = Color.White, fontSize = 15.sp)
-            if (desc != null) Text(desc, color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
-        }
+    Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(start = 16.dp, end = 10.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
         Switch(
-            checked, onChange,
+            checked, onChange, modifier = Modifier.padding(start = 8.dp),
             colors = SwitchDefaults.colors(checkedTrackColor = accent, checkedThumbColor = Color.White, uncheckedTrackColor = Color(0x33FFFFFF), uncheckedThumbColor = Color(0xCCFFFFFF), uncheckedBorderColor = Color.Transparent),
         )
     }
@@ -222,6 +178,6 @@ internal fun PanelSwitchRow(icon: ImageVector, title: String, desc: String? = nu
 
 /** 小字说明。 */
 @Composable
-internal fun PanelNote(text: String, color: Color = TextDim) {
-    Text(text, color = color, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 8.dp))
+internal fun MenuNote(text: String, color: Color = TextDim) {
+    Text(text, color = color, fontSize = 11.5.sp, lineHeight = 16.sp, modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 2.dp))
 }
