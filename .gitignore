@@ -50,3 +50,8 @@ bugs/
 
 # 克隆下来读源码用的开源参考项目
 参考项目/
+
+# ---- LSFG(Lossless Scaling 帧生成):复制来的源码和用户自己的 Lossless.dll,绝不提交 / 分发 ----
+android/app/src/main/cpp/lsfg/vendor/
+android/app/src/main/assets/lsfg/
+android/app/.cxx/

@@ -474,7 +474,7 @@ fun VideoPage(
         }
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = cfg.enhFrc, frcMultiplier = cfg.enhFrcMultiplier, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH)
+        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = cfg.enhFrc, frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH)
         var enhFailed by remember(item.id) { mutableStateOf(false) }
         // HDR 片源本身不处理;转码播放的是 H.264 SDR,可以处理
         val useEnh = enh.active && !enhFailed && item.video?.hdr.isNullOrEmpty() && android.os.Build.VERSION.SDK_INT >= 26
@@ -877,6 +877,7 @@ fun VideoPage(
                 "补帧:运动补偿·轻量(省电)" to (s.enhFrc == "mc_fast"),
                 "补帧:运动补偿·高质量" to (s.enhFrc == "mc_hq"),
                 "补帧:光流(OpenCV DIS)" to (s.enhFrc == "flow"),
+                "补帧:LSFG(Lossless Scaling)" to (s.enhFrc == "lsfg"),
                 "SDR→HDR" to (s.enhHdr != "off"),
             )
             PickDialog("画质增强(点选后立即生效;再点一次取消)", rows, { dialog = "" }) { i ->
@@ -892,6 +893,7 @@ fun VideoPage(
                         6 -> copy(enhFrc = if (enhFrc == "mc_fast") "off" else "mc_fast")
                         7 -> copy(enhFrc = if (enhFrc == "mc_hq") "off" else "mc_hq")
                         8 -> copy(enhFrc = if (enhFrc == "flow") "off" else "flow")
+                        9 -> copy(enhFrc = if (enhFrc == "lsfg") "off" else "lsfg")
                         else -> copy(enhHdr = if (enhHdr != "off") "off" else "auto")
                     }
                 }

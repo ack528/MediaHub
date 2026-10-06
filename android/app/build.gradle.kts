@@ -14,8 +14,8 @@ android {
         applicationId = "com.localtg"
         minSdk = 26
         targetSdk = 37
-        versionCode = 23
-        versionName = "1.10.0"
+        versionCode = 24
+        versionName = "1.11.0"
         // OpenCV 的原生库每个架构 ~30MB:发布版只带 arm64(真机),调试版再加 x86_64(模拟器)
         ndk { abiFilters += listOf("arm64-v8a") }
     }
@@ -43,6 +43,24 @@ android {
             isMinifyEnabled = false
             isShrinkResources = false
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+        }
+    }
+    // LSFG 帧生成的原生部分(CMake + NDK):只有运行过 tools\setup-lsfg.ps1、源码复制进来之后才启用;没有就是纯 Kotlin 工程
+    ndkVersion = "27.0.12077973"
+    if (file("src/main/cpp/lsfg/vendor/lsfg-vk-android/framegen/CMakeLists.txt").exists()) {
+        defaultConfig {
+            externalNativeBuild {
+                cmake {
+                    cppFlags += listOf("-std=c++20", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-ffunction-sections", "-fdata-sections")
+                    arguments += listOf("-DANDROID_STL=c++_shared", "-DANDROID_PLATFORM=android-29")
+                }
+            }
+        }
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
         }
     }
     buildFeatures { compose = true }

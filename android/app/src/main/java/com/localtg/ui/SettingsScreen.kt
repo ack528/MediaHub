@@ -82,7 +82,7 @@ fun SettingsScreen(c: AppContainer, section: String?, onBack: () -> Unit, onOpen
         "codecs-info" -> "本机解码器"
         "log-view" -> "应用日志"
         "enhance-hw" -> "硬件支持检测"
-        "lsfg" -> "LSFG-Android(外部补帧)"
+        "lsfg" -> "LSFG 帧生成"
         else -> SECTIONS.firstOrNull { it.first == section }?.second ?: "设置"
     }
     Column(Modifier.fillMaxSize()) {
@@ -318,7 +318,7 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
     )
     NavRow("硬件支持检测", "实测这部手机能不能流畅超分 / 补帧,并给出推荐设置") { onOpen("enhance-hw") }
-    NavRow("LSFG-Android(外部补帧)", "Lossless Scaling 的帧生成,独立 App,可以叠加在本应用上") { onOpen("lsfg") }
+    NavRow("LSFG 帧生成", "内置的 Lossless Scaling 帧生成:状态、着色器提取") { onOpen("lsfg") }
     Header("实时超分")
     ChoiceRow(
         "超分算法", s.enhUpscale,
@@ -336,15 +336,21 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
             "off" to "关闭", "blend" to "帧混合(最省电,轻微拖影)", "mc_fast" to "运动补偿·轻量(省电,适合 1080p 以上)",
             "mc" to "运动补偿(平衡)", "mc_hq" to "运动补偿·高质量(最顺滑,最费电)",
             "flow" to "光流·OpenCV DIS(逐像素光流,边缘最干净)",
+            "lsfg" to "LSFG 帧生成(Lossless Scaling,效果最好,最费 GPU)",
         ),
         desc = "把 24 / 30 帧视频补到屏幕刷新率(60 / 120 Hz),画面更顺滑(类似电视的“流畅运动”)。运动补偿用 GPU 金字塔块匹配估计运动(和 AMD FSR 3 的光流同一类做法):轻量档只估到 1/4 分辨率、候选少;高质量档多一轮 1/8 像素精修、每个像素比较 9 个相邻块。快速运动和遮挡处可能有瑕疵",
     ) { u { copy(enhFrc = it) } }
     ChoiceRow(
         "补帧倍率", s.enhFrcMultiplier,
-        listOf(0 to "自动(补到屏幕刷新率)", 2 to "2 倍", 3 to "3 倍", 4 to "4 倍", 5 to "5 倍"),
+        listOf(0 to "自动(补到屏幕刷新率)", 2 to "2 倍", 3 to "3 倍", 4 to "4 倍", 5 to "5 倍", 6 to "6 倍", 8 to "8 倍"),
         desc = "固定倍率:24fps 视频 × 3 = 72fps。倍率超过 屏幕刷新率 ÷ 源帧率 时按能显示的最大倍率算;每个源帧之间只生成需要的画面,GPU 压力比“自动”小。" +
             "补帧时应用会请求系统保持高刷新率(固定倍率时请求 源帧率 × 倍率),屏幕因省电 / 久不触摸降刷新率时会按实测刷新率自动调整",
     ) { u { copy(enhFrcMultiplier = it) } }
+    ChoiceRow(
+        "LSFG 光流精度", s.lsfgFlowScale, listOf(0.25f to "25%(最快)", 0.5f to "50%(默认)", 0.75f to "75%", 1f to "100%(最准,最慢)"),
+        desc = "只对「LSFG 帧生成」有效:内部光流的分辨率比例。1080p 以上建议 50% 以下;下一次开始播放生效",
+    ) { u { copy(lsfgFlowScale = it) } }
+    SwitchRow("LSFG 性能模式", "用 LSFG 3.1P(更轻量的变体)。关闭后用标准的 3.1,画质略好但更费 GPU", s.lsfgPerf) { u { copy(lsfgPerf = it) } }
     SwitchRow("补帧跟不上时自动降级", "补帧耗时持续超过帧间隔时,自动降一档(高质量 → 标准 → 轻量 → 帧混合),避免掉帧", s.enhFrcAdaptive) { u { copy(enhFrcAdaptive = it) } }
     SwitchRow("右上角显示帧率", "补帧时在画面右上角用小字显示“源帧率 → 输出帧率”;源帧率已接近屏幕刷新率时显示“补帧待机”", s.enhFpsOverlay) { u { copy(enhFpsOverlay = it) } }
     Header("SDR 转 HDR")
@@ -417,46 +423,54 @@ private fun frcName(v: String) = when (v) {
 private fun LsfgPage(s: AppSettings) {
     val ctx = LocalContext.current
     val tg = LocalTg.current
-    val pm = ctx.packageManager
-    val pkg = remember {
-        runCatching {
-            pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
-                .firstOrNull { it.loadLabel(pm).toString().contains("LSFG", ignoreCase = true) }?.activityInfo?.packageName
-        }.getOrNull()
-    }
+    val scope = rememberCoroutineScope()
+    var tick by remember { mutableStateOf(0) }
     val report = remember(s.hwReport) { runCatching { AppJson.decodeFromString<HwReport>(s.hwReport) }.getOrNull() }
+    // 状态每 1 秒刷新一次(提取着色器在后台进行)
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(1000); tick++ } }
+    val lib = remember(tick) { com.localtg.render.LsfgNative.load() }
+    val bundled = remember { com.localtg.render.Lsfg.dllBundled(ctx) }
+    val st = remember(tick) { com.localtg.render.Lsfg.state }
     Text(
-        "LSFG-Android 是把 Lossless Scaling 的帧生成(lsfg-vk,Vulkan)搬到安卓的独立 App:用屏幕录制(MediaProjection)抓取画面," +
-            "在上层悬浮窗里显示生成的中间帧,倍率 2× ~ 8×。它是单独的应用,不能作为库嵌进本应用。",
+        "LSFG = Lossless Scaling 的帧生成(基于开源的 lsfg-vk,Vulkan 计算着色器)。本应用已经把你自己的 Lossless.dll 内置进安装包," +
+            "第一次用时在手机上提取里面的着色器并缓存,之后直接用:播放视频时把「补帧方式」选为「LSFG 帧生成」,倍率在「补帧倍率」里调(2 ~ 8 倍)。",
         fontSize = 13.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
     )
-    Header("本机")
-    InfoRow("是否已安装", if (pkg != null) "已安装($pkg)" else "没有检测到(名称里含 LSFG 的桌面应用)")
-    val ready = report?.lsfgReady
+    Header("状态")
+    InfoRow("原生库", if (lib) "已加载" else "没有加载(安装包没有编进 LSFG 原生部分,或设备架构不支持)")
+    InfoRow("Lossless.dll", if (bundled) "已内置在安装包里" else "安装包里没有(先运行 tools\\setup-lsfg.ps1 再重新打包)")
+    InfoRow(
+        "着色器缓存",
+        when (st) {
+            2 -> "已提取,可以使用"
+            1 -> "正在提取(第一次约几秒到几十秒)…"
+            3 -> "不可用:" + com.localtg.render.Lsfg.error
+            else -> "还没提取(第一次选用 LSFG 帧生成时自动提取)"
+        },
+    )
     InfoRow(
         "硬件条件",
-        when (ready) {
+        when (report?.lsfgReady) {
             true -> "满足:Android 10+、Vulkan、Adreno 7xx 及更新的 GPU"
-            false -> "不一定满足(它官方只在 Adreno 7xx+ 上验证过),详见「硬件支持检测」"
+            false -> "不一定满足(它官方只在 Adreno 7xx+ 上验证过,Mali / 天玑要看驱动),详见「硬件支持检测」"
             null -> "还没检测,先到「硬件支持检测」里检测一次"
         },
     )
     Header("操作")
-    ActionRow("打开 LSFG-Android", if (pkg != null) "切换到 LSFG-Android 里选择本应用并开始" else "需要先安装 LSFG-Android") {
-        pkg?.let { p -> pm.getLaunchIntentForPackage(p)?.let { ctx.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
+    ActionRow("现在提取着色器", "不用等到播放时;已经提取过的会跳过") {
+        com.localtg.render.Lsfg.prepareAsync(ctx)
     }
-    ActionRow("项目主页(用浏览器打开)", "github.com/FrankBarretta/LSFG-Android") {
-        runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/FrankBarretta/LSFG-Android")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    ActionRow("重新提取着色器", "清掉缓存后重新从内置的 Lossless.dll 提取(换了 DLL 或提取出错时用)", confirm = "清掉着色器缓存并重新提取?") {
+        com.localtg.render.Lsfg.reset(ctx)
+        com.localtg.render.Lsfg.prepareAsync(ctx)
     }
-    Header("注意")
+    Header("说明")
     Text(
-        "1. 它需要你自己拥有的 Lossless Scaling(Steam 购买)里的 Lossless.dll,首次使用时在它的界面里选择该文件,它在手机上提取着色器后删除 DLL。" +
-            "这个 DLL 受版权保护,不能随本应用分发,所以本应用无法内置这项技术。\n" +
-            "2. 屏幕捕获 + 悬浮窗会引入约 50 ~ 80ms 的画面延迟,播放视频时声音可能比画面早一点。\n" +
-            "3. 和本应用内置的补帧不要同时开:先把「补帧方式」设为关闭,避免对同一个画面补两次。\n" +
-            "4. 开启防截屏(设置 → 外观 → 禁止截屏和录屏)时它抓到的是黑屏,需要先关掉。\n" +
-            "5. 项目许可:仓库根目录 MIT,App 本体为自定义许可(不上架商店、不商用);lsfg-vk 近期改为 CC BY-NC-ND 4.0。",
+        "1. 帧生成在手机 GPU 上用 Vulkan 计算着色器实时进行,很费电、会发热;跟不上时「补帧跟不上时自动降级」会依次降到光流 / 块匹配 / 帧混合。\n" +
+            "2. 生成会让画面比声音晚约一个源帧间隔(最多 50ms),人感觉不到。\n" +
+            "3. 启动失败(设备不支持 / 驱动问题)两次后,本次播放自动改用光流,日志里有原因(设置 → 日志与诊断)。\n" +
+            "4. Lossless.dll 受版权保护:它在你自己的安装包里,只给你自己用,请不要把带它的 APK 发给别人。",
         color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
     )
 }

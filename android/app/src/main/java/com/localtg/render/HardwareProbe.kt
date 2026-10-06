@@ -166,17 +166,20 @@ object HardwareProbe {
             "$soc,$cores 核,$abi" + if (abi != "arm64-v8a" && abi != "x86_64") "(光流库只含 arm64-v8a / x86_64)" else "",
         )
 
-        // ---------------- LSFG-Android 前置条件
+        // ---------------- 内置 LSFG(Lossless Scaling 帧生成)
         val androidOk = Build.VERSION.SDK_INT >= 29
+        val lsfgLib = LsfgNative.load()
+        val dllBundled = Lsfg.dllBundled(ctx)
         val lsfgLevel = when {
-            !androidOk || vk.isEmpty() -> 0
+            !androidOk || vk.isEmpty() || !lsfgLib || !dllBundled -> 0
             adreno7 -> 2
             else -> 1
         }
         lines += HwLine(
-            "LSFG-Android(外部补帧 App)", lsfgLevel,
-            "需要 Android 10+(${if (androidOk) "满足" else "不满足"})、Vulkan(${if (vk.isEmpty()) "不支持" else vk})、Adreno 7xx 及更新的 GPU(${if (adreno7) "满足" else "当前 GPU 不是,官方只在 Adreno 7xx+ 上验证过"});" +
-                "另外要自备 Lossless Scaling 的 Lossless.dll。它是独立的屏幕叠加 App,不能嵌入本应用",
+            "LSFG 帧生成(内置)", lsfgLevel,
+            "原生库 ${if (lsfgLib) "已加载" else "没有加载"};Lossless.dll ${if (dllBundled) "已内置" else "安装包里没有"};" +
+                "Android 10+(${if (androidOk) "满足" else "不满足"});Vulkan ${if (vk.isEmpty()) "不支持" else vk};" +
+                if (adreno7) "Adreno 7xx+(官方验证过的 GPU)" else "当前 GPU 不是 Adreno 7xx+(官方只在这类 GPU 上验证过,Mali / 天玑看驱动,试试再说)",
         )
         lines += HwLine("厂商系统级补帧(MEMC / 插帧)", 3, "高通 Adreno Frame Motion Engine、联发科 MEMC 等没有给第三方应用的公开接口,本应用无法调用;如果手机系统自带“视频插帧”,可以在系统设置里为本应用单独打开")
 

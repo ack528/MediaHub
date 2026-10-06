@@ -27,10 +27,14 @@ import kotlin.math.min
 data class EnhanceConfig(
     /** off | fsr | anime4k_s | anime4k_m */
     val upscale: String = "off",
-    /** off | blend(帧混合)| mc_fast(运动补偿·轻量)| mc(运动补偿)| mc_hq(运动补偿·高质量)| flow(光流·OpenCV DIS) */
+    /** off | blend(帧混合)| mc_fast(运动补偿·轻量)| mc(运动补偿)| mc_hq(运动补偿·高质量)| flow(光流·OpenCV DIS)| lsfg(LSFG 帧生成) */
     val frc: String = "off",
-    /** 补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 5 = 固定倍数 */
+    /** 补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 8 = 固定倍数 */
     val frcMultiplier: Int = 0,
+    /** LSFG:内部光流精度(0.25 ~ 1.0,越小越快) */
+    val lsfgFlowScale: Float = 0.5f,
+    /** LSFG:性能模式(3.1P) */
+    val lsfgPerf: Boolean = true,
     /** 补帧跟不上时自动降级:mc_hq → mc → mc_fast → blend */
     val frcAdaptive: Boolean = true,
     /** off | auto(显示器支持 HDR 才启用)| on */
@@ -100,6 +104,7 @@ class VideoRenderer(
         var mvUH = 1
         var luma: ByteArray? = null   // 光流用:1/4 分辨率亮度(8 位)
         var mvOwn = false             // mv 是自己上传的光流纹理(不是纹理池里的),释放时要直接删除
+        val gen = ArrayList<Gl.Tex>() // LSFG:前一帧 → 这一帧 之间生成的中间帧
     }
     private val ring = ArrayList<Slot>()
     private var nextId = 1L
@@ -118,6 +123,9 @@ class VideoRenderer(
     private var ingestedWin = 0
     private var flowEngine: DisFlow? = null
     private var flowTried = false
+    private var lsfg: LsfgSession? = null
+    private var lsfgFail = 0
+    private var pBlit = 0
     private var lastHint = -1f
     private var measuredPeriod = 0L       // 实测的 vsync 间隔(省电模式 / 不触摸降帧时会变)
     private var deviant = 0
@@ -163,11 +171,17 @@ class VideoRenderer(
     /** 降级后实际使用的补帧方式。 */
     private fun effFrc(cfg: EnhanceConfig): String {
         var base = cfg.frc
+        if (base == "lsfg") {
+            val app = Assets.app
+            if (app != null) Lsfg.prepareAsync(app)
+            // 还没提取完着色器 / 不可用 / 多次启动失败:先用光流(不可用再往下降)
+            if (Lsfg.state != 2 || lsfgFail >= 2) base = "flow"
+        }
         if (base == "flow") {
             if (!flowTried) { flowTried = true; flowEngine = DisFlow.create { id, f, w, h -> handler.post { attachFlow(id, f, w, h) } } }
             if (flowEngine == null) base = "mc_hq" // 光流库不可用(架构不支持 / 加载失败):用块匹配的最高档
         }
-        val ladder = listOf("flow", "mc_hq", "mc", "mc_fast", "blend")
+        val ladder = listOf("lsfg", "flow", "mc_hq", "mc", "mc_fast", "blend")
         val i = ladder.indexOf(base)
         return if (i < 0) base else ladder[min(i + frcDemote, ladder.size - 1)]
     }
@@ -262,6 +276,7 @@ class VideoRenderer(
         pLuma = Gl.program(ChainShaders.LUMA)
         pMerge = Gl.program(ChainShaders.MERGE)
         pFinal = Gl.program(FINAL_FRAG)
+        pBlit = Gl.program(BLIT_FRAG)
         me = MotionEstimator(pool)
 
         val t = IntArray(1)
@@ -303,6 +318,7 @@ class VideoRenderer(
         ring.clear()
         runCatching { me?.destroy() }
         runCatching { flowEngine?.release() }
+        stopLsfg()
         runCatching { st?.release() }
         runCatching { inputSurface?.release() }
         if (dpy != EGL14.EGL_NO_DISPLAY) {
@@ -405,6 +421,7 @@ class VideoRenderer(
             val pp = prev?.pyr
             if (pl != null && pp != null && pp.d2.w == pyr.d2.w && pp.d2.h == pyr.d2.h) flowEngine?.submit(slot.id, pl, l, pyr.d2.w, pyr.d2.h)
         }
+        if (eff == "lsfg" && frcNeeded()) runLsfg(slot, cfg) else if (lsfg != null) stopLsfg()
         if (slot.mv != null && !slot.mvOwn && frames % 48L == 0L && AppLog.isDebug()) debugDumpMotion(slot.mv!!)
         if (frames % 120L == 0L && AppLog.isDebug()) probeLeft = 12
         if (prev != null) {
@@ -471,6 +488,8 @@ class VideoRenderer(
         pool.release(s.img)
         me?.release(s.pyr)
         if (s.mvOwn) s.mv?.delete() else grid.release(s.mv)
+        s.gen.forEach { pool.release(it) }
+        s.gen.clear()
         s.luma = null
     }
 
@@ -515,6 +534,8 @@ class VideoRenderer(
         // 插帧系数
         var t = 0f
         var mode = 0
+        var lsfgIdx = -1
+        var showTex = a.img.id
         if (needNext && b != null && interval > 0 && b.ts > a.ts) {
             val dt = b.ts - a.ts
             val refreshHz = 1e9 / period
@@ -522,14 +543,20 @@ class VideoRenderer(
             if (dt in 4_000_000L..120_000_000L && refreshHz > srcHz * 1.3) {
                 t = ((nowNs - a.ts).toDouble() / dt).toFloat().coerceIn(0f, 1f)
                 mode = if (isMc(effFrc(cfg)) && b.mv != null) 2 else 1
-                if (cfg.frcMultiplier > 0) {
+                if (b.gen.isNotEmpty() && effFrc(cfg) == "lsfg") {
+                    // LSFG:这一帧和前一帧之间有 k 张生成帧,按时间位置挑最近的那一张(第 0 张是前一帧本身)
+                    val n = b.gen.size + 1
+                    lsfgIdx = min((t * n + 1e-3f).toInt(), n - 1)
+                    showTex = if (lsfgIdx == 0) a.img.id else b.gen[lsfgIdx - 1].id
+                    mode = 0; t = 0f
+                } else if (cfg.frcMultiplier > 0) {
                     // 固定倍率:每个源帧之间只出 N 个画面(N 不超过 刷新率 / 源帧率),其余刷新重复上一个画面(也省 GPU)
                     val n = min(cfg.frcMultiplier, max(1, floor(refreshHz / srcHz + 0.1).toInt()))
                     if (n <= 1) { t = 0f; mode = 0 } else t = floor(t * n + 1e-3f) / n
                 }
             }
         }
-        val key = "${a.id}/${if (mode == 0) 0 else (t * 64).toInt()}/$mode/${b?.mv != null}"
+        val key = "${a.id}/${if (mode == 0) 0 else (t * 64).toInt()}/$mode/${b?.mv != null}/$lsfgIdx"
         if (key == lastDrawKey && !dirty) {
             if (ring.isNotEmpty() && (needNext || b != null)) scheduleVsync()
             return
@@ -543,7 +570,7 @@ class VideoRenderer(
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         GLES30.glViewport(d.x, d.y, d.w, d.h)
         Gl.use(pFinal)
-        Gl.bindTex(0, a.img.id); GLES20.glUniform1i(Gl.loc(pFinal, "uA"), 0)
+        Gl.bindTex(0, showTex); GLES20.glUniform1i(Gl.loc(pFinal, "uA"), 0)
         val bi = if (mode != 0) b!!.img.id else a.img.id
         Gl.bindTex(1, bi); GLES20.glUniform1i(Gl.loc(pFinal, "uB"), 1)
         val mvTex = if (mode == 2) b!!.mv!! else null
@@ -606,10 +633,73 @@ class VideoRenderer(
     }
 
     private fun frcLabel(m: String) = when (m) {
-        "blend" -> "混合"; "mc_fast" -> "运动补偿·轻量"; "mc_hq" -> "运动补偿·高质量"; "flow" -> "光流·DIS"; else -> "运动补偿"
+        "blend" -> "混合"; "mc_fast" -> "运动补偿·轻量"; "mc_hq" -> "运动补偿·高质量"; "flow" -> "光流·DIS"; "lsfg" -> "LSFG"; else -> "运动补偿"
+    }
+
+    // ---------------------------------------------------------------- LSFG
+
+    /** 每个真实帧之间要生成几张:固定倍率 m → m-1 张;自动 → 补到这块屏的最高刷新率附近。不超过屏幕能显示的。 */
+    private fun lsfgGenerated(cfg: EnhanceConfig): Int {
+        if (interval <= 0L) return 0
+        val srcHz = 1e9 / interval
+        val cap = max(2, floor(maxRefreshRate / srcHz + 0.15).toInt())
+        val m = if (cfg.frcMultiplier > 0) min(cfg.frcMultiplier, cap) else cap
+        return (m - 1).coerceIn(1, 7)
+    }
+
+    private fun stopLsfg() {
+        lsfg?.destroy()
+        lsfg = null
+    }
+
+    /** 把这一帧交给 LSFG(渲染进输入 AHB → 生成 → 把生成帧拷进纹理池),生成帧挂在这一帧上。同步执行(presentContext + waitIdle)。 */
+    private fun runLsfg(slot: Slot, cfg: EnhanceConfig) {
+        val k = lsfgGenerated(cfg)
+        if (k < 1) return
+        val key = "${cfg.lsfgFlowScale}/${cfg.lsfgPerf}"
+        var s = lsfg
+        if (s != null && (s.w != slot.img.w || s.h != slot.img.h || s.generated != k || s.key != key)) { stopLsfg(); s = null }
+        if (s == null) {
+            val app = Assets.app ?: return
+            val ns = LsfgSession(slot.img.w, slot.img.h, k, key)
+            if (!ns.create(Lsfg.cacheDir(app), cfg.lsfgFlowScale, cfg.lsfgPerf)) {
+                ns.destroy()
+                lsfgFail++
+                AppLog.w("lsfg", "LSFG 启动失败 $lsfgFail 次;两次失败后本次播放改用光流")
+                return
+            }
+            lsfg = ns; s = ns; lsfgFail = 0
+        }
+        s.writeInput(pBlit, slot.img.id)
+        val rc = LsfgNative.nativePresent()
+        if (rc != 0) {
+            if (rc == -2) { lsfgFail = 99; stopLsfg(); AppLog.w("lsfg", "Vulkan 设备丢失,本次播放改用光流") }
+            return
+        }
+        if (s.counter > 0) { // 第一帧只是预热(前一帧还不存在)
+            for (i in 0 until k) {
+                val t = pool.acquire(slot.img.w, slot.img.h)
+                Gl.target(t)
+                Gl.use(pBlit)
+                Gl.bindTex(0, s.output(i))
+                GLES20.glUniform1i(Gl.loc(pBlit, "uTex"), 0)
+                Gl.draw()
+                slot.gen.add(t)
+            }
+        }
+        s.counter++
     }
 
     companion object {
+        /** 直接拷贝(RGBA16F 纹理 ↔ AHB 纹理)。 */
+        private const val BLIT_FRAG = """#version 300 es
+precision highp float;
+uniform sampler2D uTex;
+in vec2 vPos;
+out vec4 outColor;
+void main() { outColor = vec4(texture(uTex, vPos).rgb, 1.0); }
+"""
+
         private const val OES_FRAG = """#version 300 es
 #extension GL_OES_EGL_image_external_essl3 : require
 precision highp float;
