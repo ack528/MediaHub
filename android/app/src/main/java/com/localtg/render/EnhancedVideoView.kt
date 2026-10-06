@@ -81,10 +81,12 @@ class EnhancedVideoView(context: Context) : SurfaceView(context), SurfaceHolder.
         val dm = display
         val hdr = if (Build.VERSION.SDK_INT >= 26) dm?.isHdr == true else false
         val rate = dm?.refreshRate ?: 60f
-        // 同分辨率下的最高刷新率:补帧时请求系统保持它
+        // 补帧时请求系统保持的刷新率:同分辨率下 ≤ 120Hz 里最高的 —— 120 是 24 / 30 / 60 / 120 的整数倍,上屏节奏均匀;
+        // 144 不是 30 / 60 的整数倍(30fps 补到 144 是 4.8 倍),而且更费电。没有 ≤ 120 的模式才用最高的。
         val maxRate = runCatching {
             val m = dm!!.mode
-            dm.supportedModes.filter { it.physicalWidth == m.physicalWidth && it.physicalHeight == m.physicalHeight }.maxOf { it.refreshRate }
+            val rates = dm.supportedModes.filter { it.physicalWidth == m.physicalWidth && it.physicalHeight == m.physicalHeight }.map { it.refreshRate }
+            rates.filter { it <= 120.5f }.maxOrNull() ?: rates.max()
         }.getOrDefault(rate).coerceAtLeast(rate)
         val nr = VideoRenderer(
             holder.surface, width, height, rate, hdr, config, maxRefreshRate = maxRate,
@@ -106,10 +108,27 @@ class EnhancedVideoView(context: Context) : SurfaceView(context), SurfaceHolder.
      * rate = 0 表示不再需要,恢复系统自己决定。
      */
     private fun applyRateHint(rate: Float) {
-        AppLog.i("enhance", "申请屏幕刷新率 ${if (rate > 0) "%.0f Hz".format(rate) else "(释放)"}")
+        // 同分辨率下刷新率最接近目标的显示模式:preferredDisplayModeId 比 preferredRefreshRate 更"硬",系统更不容易自己降下去
+        val d = display
+        val cur = d?.mode
+        val best = runCatching {
+            // 刷新率最接近申请值的模式(申请值就是上面选好的目标刷新率)
+            d!!.supportedModes.filter { it.physicalWidth == cur!!.physicalWidth && it.physicalHeight == cur.physicalHeight }
+                .minByOrNull { kotlin.math.abs(it.refreshRate - rate) }
+        }.getOrNull()
+        AppLog.i(
+            "enhance",
+            "申请屏幕刷新率 ${if (rate > 0) "%.0f Hz".format(rate) else "(释放)"};当前模式 ${cur?.modeId}/${cur?.refreshRate}Hz,最高模式 ${best?.modeId}/${best?.refreshRate}Hz,所有模式 " +
+                runCatching { d!!.supportedModes.joinToString { "${it.modeId}:${it.physicalWidth}x${it.physicalHeight}@${"%.0f".format(it.refreshRate)}" } }.getOrDefault("?"),
+        )
         context.findActivity()?.window?.let { w ->
             val lp = w.attributes
-            if (lp.preferredRefreshRate != rate) { lp.preferredRefreshRate = rate; w.attributes = lp }
+            val modeId = if (rate > 0 && best != null) best.modeId else 0
+            if (lp.preferredRefreshRate != rate || lp.preferredDisplayModeId != modeId) {
+                lp.preferredRefreshRate = rate
+                lp.preferredDisplayModeId = modeId
+                w.attributes = lp
+            }
         }
         runCatching {
             if (Build.VERSION.SDK_INT >= 31) holder.surface.setFrameRate(rate, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT, Surface.CHANGE_FRAME_RATE_ALWAYS)

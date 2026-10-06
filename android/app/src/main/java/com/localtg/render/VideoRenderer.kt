@@ -187,6 +187,7 @@ class VideoRenderer(
     fun setConfig(c: EnhanceConfig) {
         trace.enabled = c.trace
         if (c.frc != config.frc) { frcDemote = 0; lsfgScaleCap = 1f; lsfgCoverage = -1 }
+        if (c.frcMultiplier != config.frcMultiplier) lsfgK = 0
         if (c.lsfgFlowScale != config.lsfgFlowScale) lsfgScaleCap = 1f
         config = c; poke()
     }
@@ -711,11 +712,9 @@ class VideoRenderer(
         ingestedWin = 0
         // 向系统申请刷新率:补帧时保持屏幕高刷(固定倍率时申请 源帧率 × 倍率);不补帧时释放
         val srcHz = if (interval > 0) 1e9 / interval else 0.0
-        val hint = when {
-            cfg.frc == "off" -> 0f
-            cfg.frcMultiplier > 0 && srcHz > 0 -> min(maxRefreshRate, (srcHz * cfg.frcMultiplier).toFloat())
-            else -> maxRefreshRate
-        }
+        // 固定申请这块屏的最高刷新率(以前固定倍率时申请 源帧率 × 倍率,源帧率估计值一抖就在 144 / 142 之间改来改去,
+        // 每次改申请系统都会重新选刷新率,日志里屏幕在 120Hz / 60Hz 之间来回切)
+        val hint = if (cfg.frc == "off") 0f else maxRefreshRate
         if (abs(hint - lastHint) > 1f) { lastHint = hint; onRateHint(hint) }
         val eNow = effFrc(cfg)
         val note = when {
@@ -779,12 +778,31 @@ class VideoRenderer(
         return sb.gen[idx - 1].id
     }
 
+    private var lsfgK = 0
+    private var lsfgKKey = -1
+    private var lsfgKSrc = 0.0
+
+    /** 把实测的源帧率归到常见的标准值(23.976 / 24 / 25 / 29.97 / 30 / 50 / 59.94 / 60…),差在 3% 以内算同一档。 */
+    private fun stdRate(hz: Double): Double =
+        doubleArrayOf(23.976, 24.0, 25.0, 29.97, 30.0, 48.0, 50.0, 59.94, 60.0, 90.0, 120.0).minByOrNull { abs(it - hz) }?.takeIf { abs(it - hz) / it < 0.03 } ?: hz
+
+    /**
+     * 每个真实帧之间生成几张。**定下来就不再变**:以前每次都用瞬时帧间隔 + 屏幕最高刷新率重新算(144 / 28.8 = 5.0,144 / 29 = 4.97),
+     * k 在 3 和 4 之间来回跳,每跳一次就重建 LSFG 会话(分配缓冲、建 Vulkan 管线,渲染线程卡 0.4 ~ 0.5 秒)—— 日志里就是每秒一次的大卡顿。
+     * 现在:固定倍率 m → k = m - 1(不再按屏幕上限砍,屏幕显示不下的相位上屏时自然跳过);自动 → 补到 120Hz(最高刷新率不到 115 就补到 60Hz)附近,
+     * 按标准化后的源帧率算一次;只有倍率设置变了、或源帧率变化超过 30%(换视频 / 变速)才重算。
+     */
     private fun lsfgGenerated(cfg: EnhanceConfig): Int {
         if (interval <= 0L) return 0
-        val srcHz = 1e9 / interval
-        val cap = max(2, floor(maxRefreshRate / srcHz + 0.15).toInt())
-        val m = if (cfg.frcMultiplier > 0) min(cfg.frcMultiplier, cap) else cap
-        return (m - 1).coerceIn(1, 7)
+        val src = stdRate(1e9 / interval)
+        if (lsfgK > 0 && lsfgKKey == cfg.frcMultiplier && abs(src - lsfgKSrc) / lsfgKSrc < 0.3) return lsfgK
+        val target = if (maxRefreshRate >= 115f) 120.0 else 60.0
+        val m = if (cfg.frcMultiplier > 0) cfg.frcMultiplier else max(2, Math.round(target / src).toInt())
+        lsfgK = (m - 1).coerceIn(1, 7)
+        lsfgKKey = cfg.frcMultiplier
+        lsfgKSrc = src
+        AppLog.i("frc", "LSFG 每帧生成数定为 $lsfgK(倍率 ${if (cfg.frcMultiplier > 0) "${cfg.frcMultiplier}" else "自动"},源帧率按 ${"%.3f".format(src)}fps 计)")
+        return lsfgK
     }
 
     /** 停掉会话。worker 还在生成时不能释放(原生层正在用),等它完成后在 [onLsfgDone] 里释放。 */
