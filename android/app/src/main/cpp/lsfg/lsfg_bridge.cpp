@@ -45,6 +45,7 @@ struct Session {
     std::vector<AHardwareBuffer *> out;
     std::vector<EGLImageKHR> images;
     std::string error;
+    std::string variant; // 实际用的着色器:FP16 / FP32 / DXBC
 };
 
 Session S;
@@ -167,7 +168,7 @@ JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeExtract(JNIEnv *
 
 // 创建 framegen 上下文和 AHB:0 = 成功;非 0 = 失败(nativeLastError 里有原因)
 JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeStart(
-        JNIEnv *env, jclass, jstring cacheJ, jint width, jint height, jint generated, jfloat flowScale, jboolean perf) {
+        JNIEnv *env, jclass, jstring cacheJ, jint width, jint height, jint generated, jfloat flowScale, jboolean perf, jboolean preferFp16) {
     teardown();
     S.error.clear();
     const std::string cache = jstr(env, cacheJ);
@@ -180,30 +181,50 @@ JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeStart(
     if (!queryDevice(uuid, gpu, api)) return 2;
     LOGI("GPU: %s (Vulkan %u.%u) uuid=0x%llx", gpu.c_str(), VK_VERSION_MAJOR(api), VK_VERSION_MINOR(api), (unsigned long long)uuid);
 
-    // 着色器来源:优先 FP32 SPIR-V(DLL 里现成的,绕开 DXBC 翻译器,不需要 vulkanMemoryModel,Mali 也能用),否则 DXBC 翻译结果
-    const bool useFp32 = lsfg_android::fp32_spirv_shaders_available(cache);
-    auto loader = [cache, useFp32](const std::string &name) -> std::vector<uint8_t> {
-        std::vector<uint8_t> spirv;
-        if (useFp32) {
-            const uint32_t id = lsfg_android::shader_name_to_resource_id_fp32_spirv(name);
-            if (id) spirv = lsfg_android::load_cached_spirv(cache, id, lsfg_android::ShaderCache::Fp32Spirv);
-        }
-        if (spirv.empty()) {
-            const uint32_t id = lsfg_android::shader_name_to_resource_id(name);
-            if (id) spirv = lsfg_android::load_cached_spirv(cache, id, lsfg_android::ShaderCache::Dxbc);
-        }
-        if (spirv.empty()) LOGE("着色器 '%s' 缺失", name.c_str());
-        return spirv;
+    // 着色器来源:FP16 SPIR-V(DLL 里现成的官方版本,半精度算力是单精度的两倍、寄存器占用更少,Mali / 天玑上差距很大)→
+    // FP32 SPIR-V(绕开 DXBC 翻译器,不需要 vulkanMemoryModel,兼容性最好)→ DXBC 翻译结果。
+    // FP16 初始化失败(驱动不接受)就退回 FP32 重来一次。
+    const bool fp16Ok = lsfg_android::fp16_shaders_available(cache);
+    const bool fp32Ok = lsfg_android::fp32_spirv_shaders_available(cache);
+    auto makeLoader = [cache](int mode) {
+        return [cache, mode](const std::string &name) -> std::vector<uint8_t> {
+            std::vector<uint8_t> spirv;
+            if (mode == 16) {
+                const uint32_t id = lsfg_android::shader_name_to_resource_id_fp16(name);
+                if (id) spirv = lsfg_android::load_cached_spirv(cache, id, lsfg_android::ShaderCache::Fp16Spirv);
+            } else if (mode == 32) {
+                const uint32_t id = lsfg_android::shader_name_to_resource_id_fp32_spirv(name);
+                if (id) spirv = lsfg_android::load_cached_spirv(cache, id, lsfg_android::ShaderCache::Fp32Spirv);
+            }
+            if (spirv.empty()) {
+                const uint32_t id = lsfg_android::shader_name_to_resource_id(name);
+                if (id) spirv = lsfg_android::load_cached_spirv(cache, id, lsfg_android::ShaderCache::Dxbc);
+            }
+            if (spirv.empty()) LOGE("着色器 '%s' 缺失", name.c_str());
+            return spirv;
+        };
     };
-
-    try {
-        if (S.perf) LSFG_3_1P::initialize(uuid, false, flowScale, static_cast<uint64_t>(generated), loader);
-        else LSFG_3_1::initialize(uuid, false, flowScale, static_cast<uint64_t>(generated), loader);
-        S.initialized = true;
-    } catch (const std::exception &e) {
-        setErr(std::string("framegen 初始化失败: ") + e.what());
-        return 3;
+    std::vector<int> modes;
+    if (preferFp16 && fp16Ok) modes.push_back(16);
+    modes.push_back(fp32Ok ? 32 : 0);
+    int rcInit = 3;
+    for (size_t mi = 0; mi < modes.size(); mi++) {
+        const int mode = modes[mi];
+        try {
+            auto loader = makeLoader(mode);
+            if (S.perf) LSFG_3_1P::initialize(uuid, false, flowScale, static_cast<uint64_t>(generated), loader);
+            else LSFG_3_1::initialize(uuid, false, flowScale, static_cast<uint64_t>(generated), loader);
+            S.initialized = true;
+            S.variant = mode == 16 ? "FP16" : mode == 32 ? "FP32" : "DXBC";
+            rcInit = 0;
+            break;
+        } catch (const std::exception &e) {
+            setErr(std::string("framegen 初始化失败(") + (mode == 16 ? "FP16" : mode == 32 ? "FP32" : "DXBC") + "): " + e.what());
+            teardown();
+        }
     }
+    if (rcInit != 0) return 3;
+    LOGI("帧生成着色器:%s", S.variant.c_str());
 
     for (int i = 0; i < 2; i++) {
         S.in[i] = allocAhb(S.w, S.h);
@@ -220,11 +241,21 @@ JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeStart(
         else S.ctx = LSFG_3_1::createContextFromAHB(S.in[0], S.in[1], S.out, ext, VK_FORMAT_R8G8B8A8_UNORM);
     } catch (const std::exception &e) {
         setErr(std::string("创建帧生成上下文失败: ") + e.what());
+        const bool wasFp16 = S.variant == "FP16";
         teardown();
+        if (wasFp16) { // 管线是在这里才创建的:驱动不接受 FP16 着色器就退回 FP32 整个重来
+            LOGW("FP16 着色器创建管线失败,改用 FP32 重试");
+            return Java_com_localtg_render_LsfgNative_nativeStart(env, nullptr, cacheJ, width, height, generated, flowScale, perf, JNI_FALSE);
+        }
         return 5;
     }
     LOGI("帧生成已就绪 %ux%u 每帧生成 %d 张 flowScale=%.2f %s", S.w, S.h, generated, flowScale, S.perf ? "(3.1P 性能模式)" : "(3.1)");
     return 0;
+}
+
+// 实际使用的着色器变体(FP16 / FP32 / DXBC)
+JNIEXPORT jstring JNICALL Java_com_localtg_render_LsfgNative_nativeVariant(JNIEnv *env, jclass) {
+    return env->NewStringUTF(S.variant.c_str());
 }
 
 // 把 2 个输入 + k 个输出 AHB 依次绑定到传入的 GL 纹理(GL_TEXTURE_2D)上。必须在持有 GL 上下文的线程调用。

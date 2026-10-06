@@ -106,6 +106,7 @@ data class AppSettings(
     val enhFrcMultiplier: Int = 0,             // 标准模式的补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 5 = 固定倍数(源 24fps × 3 = 72fps)
     val hwReport: String = "",                 // 最近一次"硬件支持检测"的结果(JSON)
     val lsfgFlowScale: Float = 0.5f,           // LSFG 内部光流精度(越小越快,画质略降)
+    val lsfgFp32: Boolean = false,             // LSFG 强制 FP32 着色器(默认 FP16 优先,失败自动退回)
     val lsfgPerf: Boolean = true,              // LSFG 性能模式(3.1P;低功耗模式强制开启)
     val frcTrace: Boolean = true,              // 补帧详细日志(每 2 秒一组汇总 + 异常事件,排查卡顿用)
     val enhFrcAdaptive: Boolean = true,        // 补帧跟不上时自动降低光流精度,最低还不够就停用

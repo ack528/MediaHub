@@ -35,6 +35,8 @@ data class EnhanceConfig(
     val lsfgFlowScale: Float = 0.5f,
     /** LSFG:性能模式(3.1P;低功耗模式强制开启) */
     val lsfgPerf: Boolean = true,
+    /** LSFG:强制用 FP32 着色器(默认 FP16 优先,初始化失败自动退回 FP32;FP16 在 Mali / 天玑上快很多,个别驱动画面异常时打开) */
+    val lsfgFp32: Boolean = false,
     /** 补帧详细日志(每 2 秒一组汇总 + 异常事件,标签 frc) */
     val trace: Boolean = false,
     /** 补帧跟不上时自动降低光流精度,到最低还不够就停用补帧 */
@@ -126,9 +128,9 @@ class VideoRenderer(
     private var lsfgWindows = 0              // 当前会话已经评估过几个覆盖率窗口(第一个窗口含会话建立的停顿,不算数)
     private var lsfgGaveUpAt = 0L
     private var presentEma = 0.0             // 当前会话 worker 生成耗时的滑动平均(ms)
-    private val scaleHist = HashMap<Float, Double>() // 各个光流精度下实测的生成耗时(ms),降精度没有变快就退回去
-    private var lsfgPrevScale = 0f           // 上一次降级之前的精度
-    private var lsfgScaleFloor = 0f          // 不能再往下降的精度(降到它之下反而更慢)
+    private val scaleHist = HashMap<Int, Double>() // 各个档位下实测的生成耗时(ms),降光流精度没有变快就退回去
+    private var lsfgPrevStep = -1            // 上一次降级之前的档位
+    private var lsfgSkipFlow = false         // 降光流精度没有变快:以后只降输入分辨率
     private var ingestedWin = 0
     private var lsfg: LsfgSession? = null
     private var lsfgFail = 0
@@ -144,7 +146,7 @@ class VideoRenderer(
     private var lsfgOk = 0
     private lateinit var pool8: Gl.Pool     // 生成帧用 RGBA8 的纹理池(比 16F 省 4 倍带宽,每帧要拷 k 张)
     private val flowSteps = floatArrayOf(1f, 0.75f, 0.5f, 0.35f, 0.25f)
-    @Volatile private var lsfgScaleCap = 1f // 自动调低后的光流精度上限
+    @Volatile private var lsfgStep = 0      // 自动降级的档位(见 [ladder]:先降光流精度,再降输入分辨率)
     private var lsfgStartId = Long.MAX_VALUE // 当前会话从哪一帧开始(前几个区间还在预热,不计覆盖率)
     private var lastCountedA = -1L
 
@@ -200,12 +202,12 @@ class VideoRenderer(
     fun setResizeMode(m: String) { resizeMode = m; poke() }
     fun setConfig(c: EnhanceConfig) {
         trace.enabled = c.trace
-        if (c.frc != config.frc) { lsfgGaveUp = false; lsfgBadStreak = 0; lsfgScaleCap = 1f; lsfgCoverage = -1; resetScaleTuning() }
-        if (c.lsfgFlowScale != config.lsfgFlowScale) { lsfgScaleCap = 1f; resetScaleTuning() }
+        if (c.frc != config.frc) { lsfgGaveUp = false; lsfgBadStreak = 0; lsfgCoverage = -1; resetScaleTuning() }
+        if (c.lsfgFlowScale != config.lsfgFlowScale || c.lsfgFp32 != config.lsfgFp32) resetScaleTuning()
         config = c; poke()
     }
 
-    private fun resetScaleTuning() { scaleHist.clear(); lsfgPrevScale = 0f; lsfgScaleFloor = 0f }
+    private fun resetScaleTuning() { scaleHist.clear(); lsfgPrevStep = -1; lsfgSkipFlow = false; lsfgStep = 0 }
 
     /** 低功耗模式的目标输出帧率 / 固定的光流精度。 */
     private val lowTargetHz = 60.0
@@ -459,36 +461,58 @@ class VideoRenderer(
         if (!choreoPosted) scheduleVsync()
     }
 
+    /** 自动降级的一个档位:光流精度 + 输入分辨率比例。 */
+    private class Rung(val flow: Float, val input: Float)
+
     /**
-     * 光流精度降一档。降之前先看上一次降级有没有让生成变快:没有(耗时没少 5% 以上)就退回上一档并且以后不再往下降;
-     * 已经降到头 / 不能再降了,连续 4 次评估都不达标才暂时停用补帧(30 秒后自动再试)。
+     * 档位表:先把光流精度从设置值一档档降到 25%,再降输入分辨率(整个帧生成都在更小的画面上做:75% → 50%,
+     * 像素数是原来的 56% / 25%;生成的中间帧画面略糊,上屏时按线性插值放大,真实帧仍然是原分辨率)。
+     * 1.12.x 的 Mali-G1 日志:1080p、k = 3、光流精度 50% 时 worker 要 60 ~ 120ms(帧间隔 33ms),只降光流精度不够,所以加了输入分辨率这一维。
+     */
+    private fun ladder(cfg: EnhanceConfig): List<Rung> {
+        val base = if (cfg.lowPower) lowFlowScale else cfg.lsfgFlowScale
+        val l = ArrayList<Rung>()
+        l += Rung(base, 1f)
+        var last = base
+        for (f in flowSteps) if (f < base - 0.01f) { l += Rung(f, 1f); last = f }
+        l += Rung(last, 0.75f); l += Rung(last, 0.5f)
+        return l
+    }
+
+    private fun rung(cfg: EnhanceConfig): Rung = ladder(cfg).let { it[lsfgStep.coerceIn(0, it.lastIndex)] }
+
+    /**
+     * 降一档。降之前先看上一次降级有没有让生成变快:上一次是降光流精度、耗时没少 5% 以上,就退回上一档,以后不再降光流精度(只降输入分辨率);
+     * 已经没有可降的档位,连续 4 次评估都不达标才暂时停用补帧(30 秒后自动再试)。
      */
     private fun lowerLsfgQuality(cfg: EnhanceConfig, why: String) {
-        val cur = lsfgScale(cfg)
+        val l = ladder(cfg)
+        val cur = lsfgStep.coerceIn(0, l.lastIndex)
         val ema = presentEma
-        val prev = lsfgPrevScale
+        val prev = lsfgPrevStep
         val prevMs = scaleHist[prev]
-        if (prev > cur + 0.01f && prevMs != null && ema > 0 && ema >= prevMs * 0.95) {
-            lsfgScaleFloor = prev; lsfgScaleCap = prev; lsfgPrevScale = 0f
-            AppLog.w("lsfg", "LSFG $why;光流精度从 ${(prev * 100).toInt()}% 降到 ${(cur * 100).toInt()}% 后生成耗时 ${"%.1f".format(prevMs)}ms → ${"%.1f".format(ema)}ms 没有变快,退回 ${(prev * 100).toInt()}%,不再往下降")
+        if (ema > 0) scaleHist[cur] = ema
+        if (prev in 0 until cur && l[cur].flow < l[prev].flow - 0.01f && prevMs != null && ema > 0 && ema >= prevMs * 0.95) {
+            lsfgStep = prev; lsfgSkipFlow = true; lsfgPrevStep = -1
+            AppLog.w("lsfg", "LSFG $why;光流精度降到 ${(l[cur].flow * 100).toInt()}% 后生成耗时 ${"%.1f".format(prevMs)}ms → ${"%.1f".format(ema)}ms 没有变快,退回 ${(l[prev].flow * 100).toInt()}%,以后只降输入分辨率")
             return
         }
-        if (ema > 0) scaleHist[cur] = ema
-        val next = flowSteps.firstOrNull { it < cur - 0.01f && it >= lsfgScaleFloor - 0.001f }
+        val next = (cur + 1..l.lastIndex).firstOrNull { !(lsfgSkipFlow && l[it].flow < l[cur].flow - 0.01f) }
         if (next != null) {
-            lsfgPrevScale = cur
-            lsfgScaleCap = next
-            AppLog.w("lsfg", "LSFG $why,光流精度从 ${(cur * 100).toInt()}% 降到 ${(next * 100).toInt()}%(当前生成耗时 ${"%.1f".format(ema)}ms),重建会话")
+            lsfgPrevStep = cur
+            lsfgStep = next
+            AppLog.w("lsfg", "LSFG $why,光流精度 ${(l[cur].flow * 100).toInt()}% → ${(l[next].flow * 100).toInt()}%、输入分辨率 ${(l[cur].input * 100).toInt()}% → ${(l[next].input * 100).toInt()}%(当前生成耗时 ${"%.1f".format(ema)}ms),重建会话")
         } else if (++lsfgBadStreak >= 4) {
             lsfgGaveUp = true; lsfgGaveUpAt = SystemClock.elapsedRealtime()
-            AppLog.w("lsfg", "LSFG $why,光流精度已经不能再降且连续 $lsfgBadStreak 次不达标,暂时停用补帧(30 秒后自动再试)")
+            AppLog.w("lsfg", "LSFG $why,已经没有可降的档位且连续 $lsfgBadStreak 次不达标,暂时停用补帧(30 秒后自动再试)")
         } else {
-            AppLog.w("lsfg", "LSFG $why,光流精度已经不能再降(第 $lsfgBadStreak / 4 次),继续观察")
+            AppLog.w("lsfg", "LSFG $why,已经没有可降的档位(第 $lsfgBadStreak / 4 次),继续观察")
         }
     }
 
-    /** 当前实际使用的光流精度:低功耗固定最低档,标准按设置,都受自动降级的上限约束。 */
-    private fun lsfgScale(cfg: EnhanceConfig): Float = min(if (cfg.lowPower) lowFlowScale else cfg.lsfgFlowScale, lsfgScaleCap)
+    /** 当前实际使用的光流精度 / 输入分辨率比例。 */
+    private fun lsfgScale(cfg: EnhanceConfig): Float = rung(cfg).flow
+    private fun lsfgInScale(cfg: EnhanceConfig): Float = rung(cfg).input
 
     private fun retire(s: Slot) {
         pool.release(s.img)
@@ -674,7 +698,7 @@ class VideoRenderer(
             else -> ""
         }
         val detail = if (lsfg != null) {
-            " ×${(lsfg?.generated ?: 0) + 1} 精度${(lsfgScale(cfg) * 100).toInt()}%" + (if (lsfgCoverage >= 0) " 覆盖${lsfgCoverage}%" else "")
+            " ×${(lsfg?.generated ?: 0) + 1} 精度${(lsfgScale(cfg) * 100).toInt()}%" + (if (lsfgInScale(cfg) < 1f) " 输入${(lsfgInScale(cfg) * 100).toInt()}%" else "") + (if (lsfgCoverage >= 0) " 覆盖${lsfgCoverage}%" else "")
         } else ""
         fpsText = when {
             !cfg.frcOn -> ""
@@ -695,7 +719,7 @@ class VideoRenderer(
                 "性能模式=${cfg.lsfgPerf || cfg.lowPower} 自动降级=${cfg.frcAdaptive}(已停用=$lsfgGaveUp) | 屏幕 ${"%.1f".format(1e9 / period)}Hz(间隔 ${"%.2f".format(period / 1e6)}ms,目标 ${"%.0f".format(targetHz(cfg))}Hz) | " +
                 "源 ${"%.2f".format(srcFps)}fps ${a.img.w}×${a.img.h} 输出 ${"%.1f".format(fps)}fps | 热状态=${thermalStatus()} | ingest 平均 ${"%.1f".format(ingestEma)}ms"
             val pf = run { var x = Math.atan2(pacingSin, pacingCos) / (2 * Math.PI); if (x < 0) x += 1.0; x }
-            val extra = "节拍 f=${"%.2f".format(pf)} 校准=${"%.1f".format(pacingShift / 1e6)}ms | 覆盖=${if (lsfgCoverage >= 0) "$lsfgCoverage%" else "-"} 精度上限=${(lsfgScaleCap * 100).toInt()}% 会话=${if (lsfg != null) "有" else "无"} 失败=$lsfgFail"
+            val extra = "节拍 f=${"%.2f".format(pf)} 校准=${"%.1f".format(pacingShift / 1e6)}ms | 覆盖=${if (lsfgCoverage >= 0) "$lsfgCoverage%" else "-"} 档位=$lsfgStep 输入=${(lsfgInScale(cfg) * 100).toInt()}% 着色器=${runCatching { LsfgNative.nativeVariant() }.getOrDefault("?")} 会话=${if (lsfg != null) "有" else "无"} 失败=$lsfgFail"
             trace.flush(nowMs, header, extra, true)
         }
     }
@@ -723,7 +747,7 @@ class VideoRenderer(
     /** 因性能停用补帧 30 秒后自动再试一次(跟不上多半是一时的:刚开始播放 / 系统繁忙 / 发热降频后恢复)。 */
     private fun lsfgRetryIfDue() {
         if (lsfgGaveUp && SystemClock.elapsedRealtime() - lsfgGaveUpAt > 30_000) {
-            lsfgGaveUp = false; lsfgBadStreak = 0; lsfgScaleCap = 1f; lsfgCoverage = -1
+            lsfgGaveUp = false; lsfgBadStreak = 0; lsfgCoverage = -1; resetScaleTuning()
             AppLog.i("lsfg", "停用补帧已满 30 秒,重新尝试")
         }
     }
@@ -807,13 +831,18 @@ class VideoRenderer(
         if (k < 1) return
         val scale = lsfgScale(cfg)
         val perf = cfg.lsfgPerf || cfg.lowPower
-        val key = "$scale/$perf"
+        val inScale = lsfgInScale(cfg)
+        val fp16 = !cfg.lsfgFp32
+        // 输入分辨率:按档位缩小(偶数、至少 64),帧生成整个在这个尺寸上做
+        val sw = max(64, (slot.img.w * inScale).toInt() and 1.inv())
+        val sh = max(64, (slot.img.h * inScale).toInt() and 1.inv())
+        val key = "$scale/$perf/$fp16"
         var s = lsfg
-        if (s != null && (s.w != slot.img.w || s.h != slot.img.h || s.generated != k || s.key != key)) { stopLsfg(); s = null }
+        if (s != null && (s.w != sw || s.h != sh || s.generated != k || s.key != key)) { stopLsfg(); s = null }
         if (s == null) {
             val app = Assets.app ?: return
-            val ns = LsfgSession(slot.img.w, slot.img.h, k, key)
-            if (!ns.create(Lsfg.cacheDir(app), scale, perf)) {
+            val ns = LsfgSession(sw, sh, k, key)
+            if (!ns.create(Lsfg.cacheDir(app), scale, perf, fp16)) {
                 lsfgLastError = LsfgNative.nativeLastError().ifEmpty { "启动失败" }
                 ns.destroy()
                 lsfgFail++
@@ -823,7 +852,7 @@ class VideoRenderer(
             lsfg = ns; s = ns; lsfgFail = 0; lsfgLastError = ""
             lsfgStartId = slot.id
             covTotal = 0; covOk = 0; lsfgWindows = 0; presentEma = 0.0
-            AppLog.i("lsfg", "LSFG 会话已建立 ${slot.img.w}×${slot.img.h} 每帧生成 $k 张 光流精度 ${(scale * 100).toInt()}%")
+            AppLog.i("lsfg", "LSFG 会话已建立 ${sw}×${sh}(源 ${slot.img.w}×${slot.img.h})每帧生成 $k 张 光流精度 ${(scale * 100).toInt()}% 着色器 ${runCatching { LsfgNative.nativeVariant() }.getOrDefault("?")}")
         }
         val tw0 = System.nanoTime()
         s.writeInput(pBlit, slot.img.id) // 含 glFinish:GL 写完,Vulkan 才能安全地读
@@ -866,7 +895,7 @@ class VideoRenderer(
         val slot = ring.firstOrNull { it.id == id }
         if (slot != null && consecutive && sess.counter > 0) { // 第一帧只是预热(前一帧还不存在)
             for (i in 0 until k) {
-                val t = pool8.acquire(slot.img.w, slot.img.h)
+                val t = pool8.acquire(sess.w, sess.h) // 生成帧是输入分辨率的,上屏时线性插值放大
                 Gl.target(t)
                 Gl.use(pBlit)
                 Gl.bindTex(0, sess.output(i))

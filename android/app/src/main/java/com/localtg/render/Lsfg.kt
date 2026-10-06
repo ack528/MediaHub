@@ -21,7 +21,8 @@ object LsfgNative {
     }
 
     @JvmStatic external fun nativeExtract(dll: String, cache: String): Int
-    @JvmStatic external fun nativeStart(cache: String, w: Int, h: Int, generated: Int, flowScale: Float, perf: Boolean): Int
+    @JvmStatic external fun nativeStart(cache: String, w: Int, h: Int, generated: Int, flowScale: Float, perf: Boolean, preferFp16: Boolean): Int
+    @JvmStatic external fun nativeVariant(): String
     @JvmStatic external fun nativeBind(texIds: IntArray): Int
     @JvmStatic external fun nativePresent(): Int
     @JvmStatic external fun nativeStop()
@@ -103,8 +104,8 @@ class LsfgSession(val w: Int, val h: Int, val generated: Int, val key: String) {
     private var started = false
     var counter = 0L
 
-    fun create(cacheDir: String, flowScale: Float, perf: Boolean): Boolean {
-        val rc = LsfgNative.nativeStart(cacheDir, w, h, generated, flowScale, perf)
+    fun create(cacheDir: String, flowScale: Float, perf: Boolean, fp16: Boolean): Boolean {
+        val rc = LsfgNative.nativeStart(cacheDir, w, h, generated, flowScale, perf, fp16)
         if (rc != 0) { AppLog.w("lsfg", "帧生成启动失败(代码 $rc):${LsfgNative.nativeLastError()}"); return false }
         started = true
         val all = IntArray(2 + generated)

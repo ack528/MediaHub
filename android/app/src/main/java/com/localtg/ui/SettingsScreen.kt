@@ -350,6 +350,7 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
         desc = "内部光流的分辨率比例。1080p 以上建议 50% 以下;下一次开始播放生效。低功耗模式不看这一项(50% 起步,自动调整)",
     ) { u { copy(lsfgFlowScale = it) } }
     SwitchRow("LSFG 性能模式(标准模式)", "用 LSFG 3.1P(更轻量的变体)。关闭后用标准的 3.1,画质略好但更费 GPU;低功耗模式强制开启", s.lsfgPerf) { u { copy(lsfgPerf = it) } }
+    SwitchRow("LSFG 强制 FP32 着色器", "默认优先用 FP16 着色器(半精度,Mali / 天玑 / 骁龙上都快不少,初始化失败会自动退回 FP32)。如果开了补帧画面花屏 / 颜色不对,打开这个", s.lsfgFp32) { u { copy(lsfgFp32 = it) } }
     SwitchRow(
         "补帧详细日志", "补帧时每 2 秒把统计写进日志(标签 frc):源帧间隔、vsync 抖动、上屏节奏(相位重复 / 跳过)、LSFG 生成耗时、覆盖率、热状态…," +
             "异常时立即写一行。卡顿时打开,到「设置 → 日志与诊断」分享日志给开发者分析", s.frcTrace,

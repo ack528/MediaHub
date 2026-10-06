@@ -521,7 +521,7 @@ fun VideoPage(
         }
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = cfg.enhFrc, frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, trace = cfg.frcTrace, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH)
+        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = cfg.enhFrc, frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, lsfgFp32 = cfg.lsfgFp32, trace = cfg.frcTrace, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH)
         var enhFailed by remember(item.id) { mutableStateOf(false) }
         // HDR 片源本身不处理;转码播放的是 H.264 SDR,可以处理
         val useEnh = enh.active && !enhFailed && item.video?.hdr.isNullOrEmpty() && android.os.Build.VERSION.SDK_INT >= 26
