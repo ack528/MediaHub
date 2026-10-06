@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import com.localtg.ui.AppRoot
 import com.localtg.ui.SearchScreen
 import com.localtg.ui.SettingsScreen
+import com.localtg.ui.ChatPager
 import com.localtg.ui.ChatScreen
 import com.localtg.ui.ViewerNavHost
 import com.localtg.ui.tg.LocalSettings
@@ -118,7 +119,7 @@ class ChatActivity : TgActivity() {
         val id = intent.getStringExtra(EXTRA_ID)
         if (id == null) { LaunchedEffect(Unit) { finish() }; return }
         ViewerNavHost(container) { openViewer ->
-            ChatScreen(container, dialogId = id, titleHint = intent.getStringExtra(EXTRA_TITLE), onBack = { finish() }, onOpenViewer = openViewer)
+            ChatPager(container, id, intent.getStringExtra(EXTRA_TITLE), onBack = { finish() }, onOpenViewer = openViewer)
         }
     }
 

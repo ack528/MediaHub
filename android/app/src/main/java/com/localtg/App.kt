@@ -69,6 +69,9 @@ class AppContainer(app: Application) {
     /** 已经提示过"服务端版本太旧,不支持同步"(每次启动只提示一次) */
     @Volatile var syncWarned: Boolean = false
 
+    /** 点开群时文件夹列表上的显示顺序(含盘符标签过滤 / 排序 / 隐藏小文件夹),聊天页据此左右滑动切换上一个 / 下一个群 */
+    @Volatile var chatSiblings: List<String> = emptyList()
+
     @Volatile var dialogCache: Map<String, com.localtg.data.Dialog> = emptyMap()
 }
 

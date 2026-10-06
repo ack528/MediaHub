@@ -151,6 +151,11 @@ val SORT_KEYS = listOf("taken" to "按时间", "name" to "按名称", "size" to 
 private data class Query(val sort: String, val dir: String, val types: Set<String>, val nonce: Int = 0)
 
 class ChatViewModel(private val c: AppContainer, private val dialogId: String) : ViewModel() {
+    /**
+     * 这一页是不是"真正在看"(左右滑动切换群时,邻页只是被预先组合 / 滑动途中露出来的,没看过)。
+     * 没看过的页不保存、不同步浏览记录 —— 否则它会拿旧记录盖掉别的终端刚更新的最新记录。
+     */
+    @Volatile var active = false
     private val defaultTypes = setOf("photo", "video", "gif")
     private val ns = c.session.ns() // 打开时是哪台服务器(退出时保存位置要写回它,不是当时的"当前服务器")
     private val startBase = c.session.session.value?.baseUrl
@@ -317,7 +322,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     fun persistNow() { saveJob?.cancel(); persist(now = true) }
 
     private fun persist(now: Boolean = false) {
-        if (!c.settings.value.rememberPosition) return
+        if (!c.settings.value.rememberPosition || !active) return
         val p = pos
         val v = DialogView(
             itemId = if (p != null) p.first else anchorId, offsetPx = p?.second ?: anchorOffset,
@@ -336,10 +341,33 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     }
 }
 
+/**
+ * 聊天页外面套一层横向 Pager:在群里左右滑动,切换到文件夹列表里的下一个 / 上一个群(顺序和点开时列表上的一致,含盘符标签过滤和排序)。
+ * 每一页是一个完整的 ChatScreen(各有各的 ViewModel 和浏览位置);只组合当前页和正在滑入的页。
+ * 设置里「左右滑动切换群组」可关闭。
+ */
+@Composable
+fun ChatPager(c: AppContainer, startId: String, titleHint: String?, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
+    val cfg = LocalSettings.current
+    val ids = remember(startId) { c.chatSiblings.takeIf { startId in it } ?: listOf(startId) }
+    val pager = androidx.compose.foundation.pager.rememberPagerState(initialPage = ids.indexOf(startId).coerceAtLeast(0)) { ids.size }
+    androidx.compose.foundation.pager.HorizontalPager(
+        pager, Modifier.fillMaxSize(), beyondViewportPageCount = 0, key = { ids[it] },
+        userScrollEnabled = cfg.swipeGroups && ids.size > 1,
+    ) { page ->
+        ChatScreen(
+            c, ids[page], titleHint = if (ids[page] == startId) titleHint else null, active = pager.settledPage == page,
+            onBack = onBack, onOpenViewer = onOpenViewer,
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
+fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, active: Boolean = true, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
     val vm: ChatViewModel = viewModel(key = "chat-$dialogId", factory = viewModelFactory { initializer { ChatViewModel(c, dialogId) } })
+    // 滑走时先把最后的位置存下来(此时仍算"在看"),再标记为不在看
+    LaunchedEffect(active) { if (!active) vm.persistNow(); vm.active = active }
     val lazyItems = vm.items.collectAsLazyPagingItems()
     val tg = LocalTg.current
     val motionStyle = LocalSettings.current.motion

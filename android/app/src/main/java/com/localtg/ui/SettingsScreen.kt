@@ -195,6 +195,10 @@ private fun ViewerPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Uni
 @Composable
 private fun BrowsePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
     Header("打开文件夹")
+    SwitchRow(
+        "左右滑动切换群组", "在群里向左滑进入文件夹列表里的下一个群,向右滑回到上一个(顺序和点开时的列表一致,含盘符标签过滤和排序)。从屏幕左边缘向右滑仍然是返回",
+        s.swipeGroups,
+    ) { u { copy(swipeGroups = it) } }
     SwitchRow("记住浏览位置", "再次打开同一个文件夹时回到上次退出的位置,并记住排序、网格 / 聊天、过滤", s.rememberPosition) { u { copy(rememberPosition = it) } }
     SwitchRow("最新在底部", "聊天流默认旧 → 新排列,最新一条在最下面(和 Telegram 一样)", s.newestAtBottom) { u { copy(newestAtBottom = it) } }
     Header("默认排序")

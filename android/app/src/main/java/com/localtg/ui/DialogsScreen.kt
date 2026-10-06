@@ -173,7 +173,7 @@ fun DialogsScreen(
                         Text("没有可显示的文件夹", color = tg.message)
                     }
                     else -> LazyColumn(Modifier.fillMaxSize()) {
-                        items(shown, key = { it.id }) { d -> Box(Modifier.animateItem()) { DialogRow(d, c, onClick = { onOpen(d) }) } }
+                        items(shown, key = { it.id }) { d -> Box(Modifier.animateItem()) { DialogRow(d, c, onClick = { c.chatSiblings = shown.map { it.id }; onOpen(d) }) } }
                     }
                 }
             }
