@@ -126,6 +126,15 @@ class VideoRenderer(
     private var lsfg: LsfgSession? = null
     private var lsfgFail = 0
     private var pBlit = 0
+    private var lsfgBusy = false            // worker 正在生成(只在渲染线程读写)
+    private var lsfgStopPending = false
+    private var lsfgLastId = -1L            // 最近一个成功生成的帧的 id
+    private var lsfgExec: java.util.concurrent.ExecutorService? = null
+    private var lsfgSeen = 0                // 统计窗口:来过的帧 / 丢掉的帧 / 生成成功的
+    private var lsfgDropped = 0
+    private var lsfgOk = 0
+    @Volatile private var lsfgLastError = ""
+
     private var lastHint = -1f
     private var measuredPeriod = 0L       // 实测的 vsync 间隔(省电模式 / 不触摸降帧时会变)
     private var deviant = 0
@@ -318,6 +327,8 @@ class VideoRenderer(
         ring.clear()
         runCatching { me?.destroy() }
         runCatching { flowEngine?.release() }
+        lsfgExec?.let { ex -> ex.shutdown(); runCatching { ex.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS) } } // 等 worker 生成完,原生层才能安全释放
+        lsfgBusy = false
         stopLsfg()
         runCatching { st?.release() }
         runCatching { inputSurface?.release() }
@@ -443,12 +454,20 @@ class VideoRenderer(
             if (overBudget >= 6 && cfg.upscale != "off" && !degraded) {
                 degraded = true
                 AppLog.w("enhance", "超分耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms,自动停用超分")
-            } else if (overBudget >= 6 && cfg.frcAdaptive && isMc(eff) && (cfg.upscale == "off" || degraded)) {
+            } else if (overBudget >= 6 && cfg.frcAdaptive && (isMc(eff) || eff == "lsfg") && (cfg.upscale == "off" || degraded)) {
                 // 超分已经停了(或没开)还是跟不上:补帧降一档(高质量 → 标准 → 轻量 → 帧混合)
                 frcDemote++
                 overBudget = 0
                 AppLog.w("enhance", "补帧耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms,自动降级为 ${effFrc(cfg)}")
             }
+        }
+        // LSFG 来不及:最近 24 个帧里超过一半没处理上(worker 一直忙),说明这块 GPU 跑不动这个设置 → 降一档
+        if (eff == "lsfg" && lsfgSeen >= 24) {
+            if (lsfgDropped * 2 > lsfgSeen && cfg.frcAdaptive) {
+                frcDemote++
+                AppLog.w("lsfg", "LSFG 来不及:最近 $lsfgSeen 帧里丢了 $lsfgDropped 帧(生成速度跟不上源帧率),自动降级为 ${effFrc(cfg)}。可以在设置里把「LSFG 光流精度」调低或降低倍率")
+            }
+            lsfgSeen = 0; lsfgDropped = 0
         }
         if (!choreoPosted) scheduleVsync()
     }
@@ -591,7 +610,7 @@ class VideoRenderer(
         if (probeLeft > 0) debugProbe(a, mode, t, d)
         EGL14.eglSwapBuffers(dpy, win)
         shown++
-        updateStats(cfg, mode, a)
+        updateStats(cfg, if (lsfgIdx >= 0) 2 else mode, a)
         if (ring.isNotEmpty() && (needNext || b != null)) scheduleVsync()
     }
 
@@ -625,11 +644,26 @@ class VideoRenderer(
             else -> maxRefreshRate
         }
         if (abs(hint - lastHint) > 1f) { lastHint = hint; onRateHint(hint) }
+        val eNow = effFrc(cfg)
+        val note = when {
+            cfg.frc == "lsfg" && eNow != "lsfg" -> " · LSFG 未启用:" + lsfgWhy()
+            eNow != cfg.frc -> " · 已降级"
+            else -> ""
+        }
+        val engine = frcLabel(eNow) + if (eNow == "lsfg") " ×${(lsfg?.generated ?: 0) + 1}" else ""
         fpsText = when {
             cfg.frc == "off" -> ""
-            mode == 0 -> "补帧待机 ${"%.0f".format(srcFps)}fps"
-            else -> "补帧 ${"%.0f".format(srcFps)} → ${"%.0f".format(fps)} fps"
+            mode == 0 -> "补帧待机 ${"%.0f".format(srcFps)}fps · $engine$note"
+            else -> "补帧 ${"%.0f".format(srcFps)} → ${"%.0f".format(fps)} fps · $engine$note"
         }
+    }
+
+    /** LSFG 没启用的原因(显示在右上角小字里,方便在真机上判断为什么回退)。 */
+    private fun lsfgWhy(): String = when {
+        Lsfg.state == 1 -> "正在提取着色器"
+        Lsfg.state == 3 -> Lsfg.error.take(40)
+        lsfgFail >= 2 -> lsfgLastError.take(40).ifEmpty { "启动失败" }
+        else -> "等待第一帧"
     }
 
     private fun frcLabel(m: String) = when (m) {
@@ -647,13 +681,23 @@ class VideoRenderer(
         return (m - 1).coerceIn(1, 7)
     }
 
+    /** 停掉会话。worker 还在生成时不能释放(原生层正在用),等它完成后在 [onLsfgDone] 里释放。 */
     private fun stopLsfg() {
+        if (lsfgBusy) { lsfgStopPending = true; return }
         lsfg?.destroy()
         lsfg = null
+        lsfgLastId = -1L
     }
 
-    /** 把这一帧交给 LSFG(渲染进输入 AHB → 生成 → 把生成帧拷进纹理池),生成帧挂在这一帧上。同步执行(presentContext + waitIdle)。 */
+    /**
+     * 把这一帧交给 LSFG。生成(presentContext + waitIdle,几毫秒到几十毫秒)放在专用线程,渲染线程不等:
+     *   渲染线程:这一帧渲染进输入 AHB(glFinish)→ 提交给 worker;
+     *   worker:presentContext + waitIdle → 回到渲染线程 [onLsfgDone]:把生成的 k 张中间帧拷进纹理池,挂在这一帧上。
+     * worker 忙的时候来的帧直接放弃(输入 AHB 还被它读着,不能覆盖),这些帧没有生成帧,上屏时退回帧混合;
+     * 丢帧太多(来不及)会自动降级。生成帧是"前一个被处理的帧 → 这一帧"之间的,只有两帧连续(中间没丢帧)时才有效。
+     */
     private fun runLsfg(slot: Slot, cfg: EnhanceConfig) {
+        if (lsfgBusy) { lsfgDropped++; lsfgSeen++; return }
         val k = lsfgGenerated(cfg)
         if (k < 1) return
         val key = "${cfg.lsfgFlowScale}/${cfg.lsfgPerf}"
@@ -663,31 +707,60 @@ class VideoRenderer(
             val app = Assets.app ?: return
             val ns = LsfgSession(slot.img.w, slot.img.h, k, key)
             if (!ns.create(Lsfg.cacheDir(app), cfg.lsfgFlowScale, cfg.lsfgPerf)) {
+                lsfgLastError = LsfgNative.nativeLastError().ifEmpty { "启动失败" }
                 ns.destroy()
                 lsfgFail++
-                AppLog.w("lsfg", "LSFG 启动失败 $lsfgFail 次;两次失败后本次播放改用光流")
+                AppLog.w("lsfg", "LSFG 启动失败 $lsfgFail 次(${lsfgLastError});两次失败后本次播放改用光流")
                 return
             }
-            lsfg = ns; s = ns; lsfgFail = 0
+            lsfg = ns; s = ns; lsfgFail = 0; lsfgLastError = ""
+            AppLog.i("lsfg", "LSFG 会话已建立 ${slot.img.w}×${slot.img.h} 每帧生成 $k 张")
         }
-        s.writeInput(pBlit, slot.img.id)
-        val rc = LsfgNative.nativePresent()
+        lsfgSeen++
+        s.writeInput(pBlit, slot.img.id) // 含 glFinish:GL 写完,Vulkan 才能安全地读
+        lsfgBusy = true
+        val sess = s
+        val id = slot.id
+        val consecutive = id - 1 == lsfgLastId
+        val ex = lsfgExec ?: java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "lsfg-present") }.also { lsfgExec = it }
+        ex.execute {
+            val rc = try { LsfgNative.nativePresent() } catch (e: Throwable) { -1 }
+            handler.post { onLsfgDone(sess, id, rc, consecutive, k) }
+        }
+    }
+
+    /** worker 做完(渲染线程)。 */
+    private fun onLsfgDone(sess: LsfgSession, id: Long, rc: Int, consecutive: Boolean, k: Int) {
+        lsfgBusy = false
+        if (released) return
+        if (lsfg !== sess || lsfgStopPending) {
+            lsfgStopPending = false
+            if (lsfg === sess) { sess.destroy(); lsfg = null; lsfgLastId = -1L }
+            return
+        }
         if (rc != 0) {
+            lsfgLastError = LsfgNative.nativeLastError()
+            AppLog.w("lsfg", "生成失败(代码 $rc):$lsfgLastError")
             if (rc == -2) { lsfgFail = 99; stopLsfg(); AppLog.w("lsfg", "Vulkan 设备丢失,本次播放改用光流") }
             return
         }
-        if (s.counter > 0) { // 第一帧只是预热(前一帧还不存在)
+        val slot = ring.firstOrNull { it.id == id }
+        if (slot != null && consecutive && sess.counter > 0) { // 第一帧只是预热(前一帧还不存在)
             for (i in 0 until k) {
                 val t = pool.acquire(slot.img.w, slot.img.h)
                 Gl.target(t)
                 Gl.use(pBlit)
-                Gl.bindTex(0, s.output(i))
+                Gl.bindTex(0, sess.output(i))
                 GLES20.glUniform1i(Gl.loc(pBlit, "uTex"), 0)
                 Gl.draw()
                 slot.gen.add(t)
             }
+            dirty = true
+            if (!choreoPosted) scheduleVsync()
         }
-        s.counter++
+        sess.counter++
+        lsfgLastId = id
+        lsfgOk++
     }
 
     companion object {
