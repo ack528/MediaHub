@@ -876,7 +876,7 @@ fun VideoPage(
                         MenuChips(listOf("关闭", "低功耗", "标准"), frcs.indexOf(cfg.enhFrc).coerceAtLeast(0)) { i -> c.settings.update { copy(enhFrc = frcs[i]) } }
                         MenuNote(
                             when (cfg.enhFrc) {
-                                "lsfg_low" -> "低功耗:目标 60 帧,光流精度最低,省电发热小。"
+                                "lsfg_low" -> "低功耗:目标 60 帧,省电发热小,精度自动调整。"
                                 "lsfg" -> "标准:补到屏幕最高刷新率(≤120Hz),最顺滑,最费电。"
                                 else -> "把 24 / 30 帧视频补到更高帧率。"
                             },

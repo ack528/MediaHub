@@ -27,11 +27,11 @@ import kotlin.math.min
 data class EnhanceConfig(
     /** off | fsr | anime4k_s | anime4k_m */
     val upscale: String = "off",
-    /** off | lsfg(标准:补到屏幕最高刷新率,≤120Hz)| lsfg_low(低功耗:补到 60fps,光流精度固定最低) */
+    /** off | lsfg(标准:补到屏幕最高刷新率,≤120Hz)| lsfg_low(低功耗:补到 60fps,光流精度从 50% 起步、自动降级始终开启) */
     val frc: String = "off",
     /** 标准模式的补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 8 = 固定倍数(低功耗模式忽略) */
     val frcMultiplier: Int = 0,
-    /** LSFG:内部光流精度(0.25 ~ 1.0,越小越快;低功耗模式固定 0.25) */
+    /** LSFG:内部光流精度(0.25 ~ 1.0;低功耗模式固定从 0.5 起步,自动调整) */
     val lsfgFlowScale: Float = 0.5f,
     /** LSFG:性能模式(3.1P;低功耗模式强制开启) */
     val lsfgPerf: Boolean = true,
@@ -125,11 +125,15 @@ class VideoRenderer(
     private var lsfgBadStreak = 0            // 光流精度已是最低时,连续"不达标"的评估窗口数
     private var lsfgWindows = 0              // 当前会话已经评估过几个覆盖率窗口(第一个窗口含会话建立的停顿,不算数)
     private var lsfgGaveUpAt = 0L
+    private var presentEma = 0.0             // 当前会话 worker 生成耗时的滑动平均(ms)
+    private val scaleHist = HashMap<Float, Double>() // 各个光流精度下实测的生成耗时(ms),降精度没有变快就退回去
+    private var lsfgPrevScale = 0f           // 上一次降级之前的精度
+    private var lsfgScaleFloor = 0f          // 不能再往下降的精度(降到它之下反而更慢)
     private var ingestedWin = 0
     private var lsfg: LsfgSession? = null
     private var lsfgFail = 0
     private var pBlit = 0
-    private val lsfgPending = ArrayDeque<Slot>() // 等 worker 空出来的帧(最多 3 个):排队而不是丢,否则一次丢帧会让下一帧也失去前一帧(生成帧只在连续两帧之间有效)
+    private val lsfgPending = ArrayDeque<Slot>() // 等 worker 空出来的帧(最多 2 个,丢最旧的):排队而不是丢,否则一次丢帧会让下一帧也失去前一帧(生成帧只在连续两帧之间有效)
     private var lsfgBusy = false            // worker 正在生成(只在渲染线程读写)
     private var lsfgStopPending = false
     private val trace = FrcTrace()
@@ -187,14 +191,18 @@ class VideoRenderer(
     fun setResizeMode(m: String) { resizeMode = m; poke() }
     fun setConfig(c: EnhanceConfig) {
         trace.enabled = c.trace
-        if (c.frc != config.frc) { lsfgGaveUp = false; lsfgBadStreak = 0; lsfgScaleCap = 1f; lsfgCoverage = -1 }
-        if (c.lsfgFlowScale != config.lsfgFlowScale) lsfgScaleCap = 1f
+        if (c.frc != config.frc) { lsfgGaveUp = false; lsfgBadStreak = 0; lsfgScaleCap = 1f; lsfgCoverage = -1; resetScaleTuning() }
+        if (c.lsfgFlowScale != config.lsfgFlowScale) { lsfgScaleCap = 1f; resetScaleTuning() }
         config = c; poke()
     }
 
+    private fun resetScaleTuning() { scaleHist.clear(); lsfgPrevScale = 0f; lsfgScaleFloor = 0f }
+
     /** 低功耗模式的目标输出帧率 / 固定的光流精度。 */
     private val lowTargetHz = 60.0
-    private val lowFlowScale = 0.25f
+    // 1.12.1 的日志(Adreno 829,1080p 30fps):精度 25%、k=1 时 worker 要 41ms(超过 33ms 的帧间隔,覆盖率 0%),
+    // 而精度 50%、k=3 只要 25ms —— 精度压到 25% 反而更慢。所以低功耗从 50% 起步,自动降级只在"降了确实更快"时才继续往下降。
+    private val lowFlowScale = 0.5f
 
     /** 补帧的目标刷新率:低功耗 = 60Hz;标准 = 这块屏同分辨率下 ≤120Hz 里最高的。 */
     private fun targetHz(cfg: EnhanceConfig): Double = if (cfg.lowPower) lowTargetHz else maxRefreshRate.toDouble()
@@ -421,7 +429,7 @@ class VideoRenderer(
             if (overBudget >= 6 && cfg.upscale != "off" && !degraded) {
                 degraded = true
                 AppLog.w("enhance", "超分耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms,自动停用超分")
-            } else if (overBudget >= 6 && cfg.frcAdaptive && lsfgOn && (cfg.upscale == "off" || degraded)) {
+            } else if (overBudget >= 6 && (cfg.frcAdaptive || cfg.lowPower) && lsfgOn && (cfg.upscale == "off" || degraded)) {
                 // 超分已经停了(或没开)还是跟不上:降光流精度,降到最低还不够就停用补帧
                 overBudget = 0
                 AppLog.w("enhance", "补帧耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms")
@@ -435,26 +443,38 @@ class VideoRenderer(
             lsfgCoverage = cov
             // 会话刚建立后的第一个窗口含建立时的停顿(分配缓冲、建管线,约 0.5 秒),只记录不处罚
             if (lsfgWindows++ == 0) AppLog.i("lsfg", "LSFG 第一个覆盖率窗口 $cov%(含会话建立的停顿,不作为降级依据)")
-            else if (cov < 85 && cfg.frcAdaptive) lowerLsfgQuality(cfg, "覆盖率只有 $cov%(最近 $covTotal 个区间里 $covOk 个有生成帧)")
+            else if (cov < 85 && (cfg.frcAdaptive || cfg.lowPower)) lowerLsfgQuality(cfg, "覆盖率只有 $cov%(最近 $covTotal 个区间里 $covOk 个有生成帧)")
             else { lsfgBadStreak = 0; AppLog.d("lsfg", "LSFG 覆盖率 $cov%") }
             covTotal = 0; covOk = 0
         }
         if (!choreoPosted) scheduleVsync()
     }
 
-    /** 光流精度降一档;已经是最低就停用补帧(本次播放)。 */
+    /**
+     * 光流精度降一档。降之前先看上一次降级有没有让生成变快:没有(耗时没少 5% 以上)就退回上一档并且以后不再往下降;
+     * 已经降到头 / 不能再降了,连续 4 次评估都不达标才暂时停用补帧(30 秒后自动再试)。
+     */
     private fun lowerLsfgQuality(cfg: EnhanceConfig, why: String) {
         val cur = lsfgScale(cfg)
-        val next = flowSteps.firstOrNull { it < cur - 0.01f }
+        val ema = presentEma
+        val prev = lsfgPrevScale
+        val prevMs = scaleHist[prev]
+        if (prev > cur + 0.01f && prevMs != null && ema > 0 && ema >= prevMs * 0.95) {
+            lsfgScaleFloor = prev; lsfgScaleCap = prev; lsfgPrevScale = 0f
+            AppLog.w("lsfg", "LSFG $why;光流精度从 ${(prev * 100).toInt()}% 降到 ${(cur * 100).toInt()}% 后生成耗时 %.1fms → %.1fms 没有变快,退回 ${(prev * 100).toInt()}%,不再往下降".format(prevMs, ema))
+            return
+        }
+        if (ema > 0) scaleHist[cur] = ema
+        val next = flowSteps.firstOrNull { it < cur - 0.01f && it >= lsfgScaleFloor - 0.001f }
         if (next != null) {
+            lsfgPrevScale = cur
             lsfgScaleCap = next
-            AppLog.w("lsfg", "LSFG $why,光流精度从 ${(cur * 100).toInt()}% 降到 ${(next * 100).toInt()}%,重建会话")
+            AppLog.w("lsfg", "LSFG $why,光流精度从 ${(cur * 100).toInt()}% 降到 ${(next * 100).toInt()}%(当前生成耗时 %.1fms),重建会话".format(ema))
         } else if (++lsfgBadStreak >= 4) {
-            // 精度已经最低,而且连续 4 次评估都不达标才停用(低功耗模式固定最低精度,一次偶发的卡顿不能就把补帧关掉)
             lsfgGaveUp = true; lsfgGaveUpAt = SystemClock.elapsedRealtime()
-            AppLog.w("lsfg", "LSFG $why,光流精度已是最低且连续 $lsfgBadStreak 次不达标,暂时停用补帧(30 秒后自动再试)")
+            AppLog.w("lsfg", "LSFG $why,光流精度已经不能再降且连续 $lsfgBadStreak 次不达标,暂时停用补帧(30 秒后自动再试)")
         } else {
-            AppLog.w("lsfg", "LSFG $why,光流精度已是最低(第 $lsfgBadStreak / 4 次),继续观察")
+            AppLog.w("lsfg", "LSFG $why,光流精度已经不能再降(第 $lsfgBadStreak / 4 次),继续观察")
         }
     }
 
@@ -737,7 +757,9 @@ class VideoRenderer(
     private fun runLsfg(slot: Slot, cfg: EnhanceConfig) {
         if (lsfgBusy) {
             // worker 还在读输入 AHB,这一帧不能现在写进去:排队,worker 做完马上接着做(帧纹理还在帧环里;队列满了才放弃,放弃会让下一帧失去前一帧)
-            if (lsfgPending.size < 3) lsfgPending.addLast(slot) else if (trace.enabled) trace.busyDrops++
+            // 排队只留最新的 2 个:来不及的时候丢最旧的(它的生成结果出来也太晚了,上屏早就过去了),而不是丢新来的让队列里全是过期帧
+            if (lsfgPending.size >= 2) { lsfgPending.removeFirst(); if (trace.enabled) trace.busyDrops++ }
+            lsfgPending.addLast(slot)
             return
         }
         submitLsfg(slot, cfg)
@@ -764,7 +786,7 @@ class VideoRenderer(
             }
             lsfg = ns; s = ns; lsfgFail = 0; lsfgLastError = ""
             lsfgStartId = slot.id
-            covTotal = 0; covOk = 0; lsfgWindows = 0
+            covTotal = 0; covOk = 0; lsfgWindows = 0; presentEma = 0.0
             AppLog.i("lsfg", "LSFG 会话已建立 ${slot.img.w}×${slot.img.h} 每帧生成 $k 张 光流精度 ${(scale * 100).toInt()}%")
         }
         val tw0 = System.nanoTime()
@@ -787,6 +809,7 @@ class VideoRenderer(
     private fun onLsfgDone(sess: LsfgSession, id: Long, rc: Int, consecutive: Boolean, k: Int, presentMs: Double) {
         val td0 = System.nanoTime()
         lsfgBusy = false
+        presentEma = if (presentEma == 0.0) presentMs else presentEma * 0.9 + presentMs * 0.1
         if (trace.enabled) {
             trace.present.add(presentMs)
             if (interval > 0 && presentMs > interval / 1e6) trace.event("LSFG 生成耗时 %.1fms,超过源帧间隔 %.1fms(帧 %d,后面的帧会因为 worker 忙被放弃)".format(presentMs, interval / 1e6, id))

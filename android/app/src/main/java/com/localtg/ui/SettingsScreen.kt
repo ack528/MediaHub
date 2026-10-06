@@ -338,7 +338,7 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
             "lsfg" to "LSFG 标准(补到屏幕最高刷新率,效果最好,最费 GPU)",
         ),
         desc = "补帧只保留内置的 LSFG(Lossless Scaling 帧生成)。标准:把 24 / 30 帧视频补到屏幕刷新率(最高 120 Hz);" +
-            "低功耗:目标 60 帧(24 → 48、25 → 50、30 → 60),光流精度固定最低、固定请求 60 Hz 刷新率,GPU 占用和发热明显更小;60 帧的视频不需要补。快速运动和遮挡处可能有瑕疵",
+            "低功耗:目标 60 帧(24 → 48、25 → 50、30 → 60),光流精度从 50% 起步并自动调整、固定请求 60 Hz 刷新率,GPU 占用和发热明显更小;60 帧的视频不需要补。快速运动和遮挡处可能有瑕疵",
     ) { u { copy(enhFrc = it) } }
     ChoiceRow(
         "补帧倍率(标准模式)", s.enhFrcMultiplier,
@@ -347,7 +347,7 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
     ) { u { copy(enhFrcMultiplier = it) } }
     ChoiceRow(
         "LSFG 光流精度(标准模式)", s.lsfgFlowScale, listOf(0.25f to "25%(最快)", 0.5f to "50%(默认)", 0.75f to "75%", 1f to "100%(最准,最慢)"),
-        desc = "内部光流的分辨率比例。1080p 以上建议 50% 以下;下一次开始播放生效。低功耗模式固定 25%",
+        desc = "内部光流的分辨率比例。1080p 以上建议 50% 以下;下一次开始播放生效。低功耗模式不看这一项(50% 起步,自动调整)",
     ) { u { copy(lsfgFlowScale = it) } }
     SwitchRow("LSFG 性能模式(标准模式)", "用 LSFG 3.1P(更轻量的变体)。关闭后用标准的 3.1,画质略好但更费 GPU;低功耗模式强制开启", s.lsfgPerf) { u { copy(lsfgPerf = it) } }
     SwitchRow(
