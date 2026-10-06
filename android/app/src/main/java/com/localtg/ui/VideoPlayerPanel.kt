@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -46,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -118,9 +120,9 @@ internal fun PlayerMenuHost(
 @Composable
 internal fun MenuRow(title: String, value: String? = null, arrow: Boolean = true, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().heightIn(min = RowMin).clickable(onClick = onClick).padding(horizontal = PadX, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, color = Color.White, fontSize = 14.sp)
-        Box(Modifier.weight(1f))
-        if (value != null) Text(value, color = TextDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 12.dp).weight(1f, fill = false))
+        // 名称占满剩余宽度,当前值紧贴右侧的箭头位(以前中间夹了个弹性空白,值被挤到右半边的正中间,每行位置都不一样)
+        Text(title, color = Color.White, fontSize = 14.sp, maxLines = 1, modifier = Modifier.weight(1f))
+        if (value != null) Text(value, color = TextDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End, modifier = Modifier.padding(start = 12.dp).widthIn(max = 150.dp))
         Box(Modifier.padding(start = 2.dp).requiredWidth(SlotW), contentAlignment = Alignment.CenterEnd) {
             if (arrow) Icon(TgIcons.ChevronRight, null, tint = TextDim, modifier = Modifier.size(SlotW))
         }

@@ -38,6 +38,7 @@ class FrcTrace {
     private var lastSwapNs = 0L
 
     // 相位序列(LSFG)
+    var selOk = 0; var selDup = 0; var selSkip = 0   // 相邻 vsync 选中的源帧:前进 1 帧 / 重复 / 跳过
     var phOk = 0; var phDup = 0; var phSkip = 0; var phBack = 0; var noGen = 0; var phMissing = 0
     private var lastPh = Long.MIN_VALUE
 
@@ -93,6 +94,15 @@ class FrcTrace {
 
     fun phaseReset() { lastPh = Long.MIN_VALUE }
 
+    fun sel(delta: Long) {
+        if (!enabled) return
+        when {
+            delta == 1L -> selOk++
+            delta == 0L -> selDup++
+            delta > 1L -> selSkip += (delta - 1).toInt()
+        }
+    }
+
     fun event(msg: String) {
         if (!enabled) return
         val now = System.nanoTime()
@@ -111,7 +121,7 @@ class FrcTrace {
         AppLog.i("frc", "源帧间隔ms ${srcGap.fmt()} | 前瞻ms(帧时间戳-到达) ${lead.fmt()} | ingest CPU ms ${ingestCpu.fmt()}")
         AppLog.i(
             "frc",
-            "vsync ${vsyncCalls}次 间隔ms ${vsyncGap.fmt()} 丢${vsyncMiss} | 上屏 ${swaps}次 跳过重画${skipped} swap间隔ms ${swapGap.fmt()} swap阻塞ms ${swapBlock.fmt()} draw CPU ms ${drawCpu.fmt()} | 欠载(没有下一帧)${underrun}",
+            "vsync ${vsyncCalls}次 间隔ms ${vsyncGap.fmt()} 丢${vsyncMiss} | 上屏 ${swaps}次 跳过重画${skipped} swap间隔ms ${swapGap.fmt()} swap阻塞ms ${swapBlock.fmt()} draw CPU ms ${drawCpu.fmt()} | 欠载(没有下一帧)${underrun} | 选帧 前进${selOk} 重复${selDup} 跳过${selSkip}",
         )
         if (isLsfg) {
             AppLog.i(
@@ -122,6 +132,7 @@ class FrcTrace {
         }
         for (a in listOf(srcGap, lead, ingestCpu, vsyncGap, drawCpu, swapBlock, swapGap, writeIn, present, doneCost, genAge, genLate)) a.reset()
         vsyncCalls = 0; vsyncMiss = 0; swaps = 0; skipped = 0; underrun = 0
+        selOk = 0; selDup = 0; selSkip = 0
         phOk = 0; phDup = 0; phSkip = 0; phBack = 0; noGen = 0; phMissing = 0
         genLateN = 0; busyDrops = 0; presentFail = 0
     }

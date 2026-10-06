@@ -147,6 +147,15 @@ class VideoRenderer(
     @Volatile private var lsfgScaleCap = 1f // 自动调低后的光流精度上限
     private var lsfgStartId = Long.MAX_VALUE // 当前会话从哪一帧开始(前几个区间还在预热,不计覆盖率)
     private var lastCountedA = -1L
+
+    // 节拍校准(没有生成帧、源帧率和屏幕刷新率成整数比时):按"时间戳 ≤ 上屏时间"挑帧,如果帧的时间戳正好落在上屏时间的边界附近,
+    // 时钟的一点抖动就会让这一帧时而被选中、时而被下一帧顶掉,表现就是 60fps 画面"晃"(时而重复一帧、时而跳一帧)。
+    // 这里测每个 vsync 上"选中的帧的时间戳 距离上屏时间 多少个刷新周期的小数部分"f,慢慢调整上屏时间,让 f 稳定在 0.5(离两侧边界最远)。
+    private var pacingShift = 0L
+    private var pacingCos = 0.0
+    private var pacingSin = 0.0
+    private var pacingN = 0
+    private var lastSelA = -1L
     private var covTotal = 0                // 统计窗口:上屏的帧区间数 / 其中有生成帧的区间数
     private var covOk = 0
     @Volatile private var lsfgCoverage = -1 // 最近一个窗口的覆盖率(%),显示在右上角
@@ -527,7 +536,7 @@ class VideoRenderer(
         val lsfgActive = lsfg != null && wanted
         val frcDelay = frcDelayFor(cfg)
         val presentAt = vsyncNs + period + (if (tsInDisplayClock == true) 0L else -interval) // 到达时间时钟下,显示"前一帧间隔"的画面
-        val nowNs = presentAt - frcDelay
+        val nowNs = presentAt - frcDelay + pacingShift
         // A = 上屏时间之前(含)的最后一帧;B = 之后的第一帧
         var ai = -1
         for (i in ring.indices) if (ring[i].ts <= nowNs) ai = i
@@ -579,6 +588,10 @@ class VideoRenderer(
             }
         }
         if (!generating) { lsfgPf = Double.NaN; trace.phaseReset() }
+        // 选帧统计(详细日志用):相邻两次 vsync 选中的源帧 id 之差 —— 1 = 前进一帧,0 = 重复,>1 = 跳过
+        if (trace.enabled && lastSelA >= 0) trace.sel(a.id - lastSelA)
+        lastSelA = a.id
+        updatePacing(a, nowNs, generating)
         val key = "${a.id}/$showTex"
         if (key == lastDrawKey && !dirty) {
             if (trace.enabled) trace.skipped++
@@ -608,6 +621,27 @@ class VideoRenderer(
         shown++
         updateStats(cfg, generating, a)
         if (ring.isNotEmpty() && (wanted || b != null)) scheduleVsync()
+    }
+
+    /** 节拍校准:见 [pacingShift] 的说明。只在没有生成帧、而且 刷新周期 / 源帧间隔 接近整数时工作,否则复位。 */
+    private fun updatePacing(a: Slot, nowNs: Long, generating: Boolean) {
+        val r = if (interval > 0) interval.toDouble() / period else 0.0
+        val n = Math.round(r).toInt()
+        if (generating || n < 1 || abs(r - n) > 0.04 * n) {
+            if (pacingShift != 0L || pacingN != 0) { pacingShift = 0; pacingCos = 0.0; pacingSin = 0.0; pacingN = 0 }
+            return
+        }
+        val e = nowNs - a.ts
+        val f = (((e % period) + period) % period).toDouble() / period
+        pacingCos = pacingCos * 0.9 + Math.cos(2 * Math.PI * f) * 0.1
+        pacingSin = pacingSin * 0.9 + Math.sin(2 * Math.PI * f) * 0.1
+        if (++pacingN < 20) return // 先攒一会儿样本
+        var fm = Math.atan2(pacingSin, pacingCos) / (2 * Math.PI)
+        if (fm < 0) fm += 1.0
+        var err = 0.5 - fm
+        if (err > 0.5) err -= 1.0
+        if (err < -0.5) err += 1.0
+        if (abs(err) > 0.08) pacingShift = (pacingShift + (0.03 * err * period).toLong()).coerceIn(-period, period)
     }
 
     private fun updateStats(cfg: EnhanceConfig, generating: Boolean, a: Slot) {
@@ -660,7 +694,8 @@ class VideoRenderer(
             val header = "配置=${cfg.frc} 倍率=${cfg.frcMultiplier} k=${lsfg?.generated ?: 0} 精度=${(lsfgScale(cfg) * 100).toInt()}% " +
                 "性能模式=${cfg.lsfgPerf || cfg.lowPower} 自动降级=${cfg.frcAdaptive}(已停用=$lsfgGaveUp) | 屏幕 ${"%.1f".format(1e9 / period)}Hz(间隔 ${"%.2f".format(period / 1e6)}ms,目标 ${"%.0f".format(targetHz(cfg))}Hz) | " +
                 "源 ${"%.2f".format(srcFps)}fps ${a.img.w}×${a.img.h} 输出 ${"%.1f".format(fps)}fps | 热状态=${thermalStatus()} | ingest 平均 ${"%.1f".format(ingestEma)}ms"
-            val extra = "覆盖=${if (lsfgCoverage >= 0) "$lsfgCoverage%" else "-"} 精度上限=${(lsfgScaleCap * 100).toInt()}% 会话=${if (lsfg != null) "有" else "无"} 失败=$lsfgFail"
+            val pf = run { var x = Math.atan2(pacingSin, pacingCos) / (2 * Math.PI); if (x < 0) x += 1.0; x }
+            val extra = "节拍 f=${"%.2f".format(pf)} 校准=${"%.1f".format(pacingShift / 1e6)}ms | 覆盖=${if (lsfgCoverage >= 0) "$lsfgCoverage%" else "-"} 精度上限=${(lsfgScaleCap * 100).toInt()}% 会话=${if (lsfg != null) "有" else "无"} 失败=$lsfgFail"
             trace.flush(nowMs, header, extra, true)
         }
     }

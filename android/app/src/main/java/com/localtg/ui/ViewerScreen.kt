@@ -138,8 +138,8 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
         }
         // 图片的顶栏 / 底栏:和视频页同一套风格(渐变底、图标按钮、小字号),不再是一整块半透明黑条
         if (!cur.isVideo) {
-            var menu by remember { mutableStateOf(false) }
-            var info by remember { mutableStateOf(false) }
+            var panel by remember { mutableStateOf("") } // 右上角菜单(和视频页同一套):"" 关闭 / main / info
+            LaunchedEffect(cur.id) { panel = "" }
             AnimatedVisibility(
                 ui.chrome && !inPip, Modifier.align(Alignment.TopStart),
                 enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
@@ -154,19 +154,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
                         cur.name, Modifier.weight(1f).padding(horizontal = 4.dp), color = Color.White, fontSize = 15.sp,
                         fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
-                    ViewerIcon(TgIcons.Info, "图片信息") { info = true }
-                    Box {
-                        ViewerIcon(TgIcons.More, "更多") { menu = true }
-                        DropdownMenu(menu, { menu = false }) {
-                            if (!c.isLocal && cur.size > 0L && !cur.flags.corrupt) {
-                                DropdownMenuItem(text = { Text("保存到手机") }, onClick = {
-                                    menu = false
-                                    scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, cur) }
-                                })
-                            }
-                            DropdownMenuItem(text = { Text("图片信息") }, onClick = { menu = false; info = true })
-                        }
-                    }
+                    ViewerIcon(TgIcons.More, "更多") { panel = if (panel.isEmpty()) "main" else "" }
                 }
             }
             AnimatedVisibility(
@@ -188,7 +176,24 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
                     Pill("${pager.currentPage + 1} / ${items.size}", sizeSp = 12)
                 }
             }
-            if (info) PhotoInfoDialog(cur) { info = false }
+            val lastPage = remember { arrayOf("main") }
+            if (panel.isNotEmpty()) lastPage[0] = panel
+            val page = panel.ifEmpty { lastPage[0] }
+            PlayerMenuHost(
+                open = panel.isNotEmpty() && !inPip,
+                title = if (page == "info") "图片信息" else null,
+                onBack = { panel = "main" },
+                onClose = { panel = "" },
+            ) {
+                if (page == "info") {
+                    photoInfoRows(cur).forEach { (k, v) -> MenuInfo(k, v) }
+                } else {
+                    if (!c.isLocal && cur.size > 0L && !cur.flags.corrupt) {
+                        MenuRow("保存到手机", arrow = false) { panel = ""; scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, cur) } }
+                    }
+                    MenuRow("图片信息") { panel = "info" }
+                }
+            }
         }
     }
 }
@@ -201,33 +206,15 @@ private fun ViewerIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, de
     }
 }
 
-@Composable
-private fun PhotoInfoDialog(item: Item, onDismiss: () -> Unit) {
-    val rows = listOfNotNull(
-        "名称" to item.name,
-        "格式" to listOf(item.ext.uppercase(), item.mime).filter { it.isNotEmpty() }.joinToString(" · "),
-        item.w?.let { "尺寸" to "${item.w} × ${item.h}" },
-        "大小" to "${formatSize(item.size)}(${"%,d".format(item.size)} 字节)",
-        formatDateTime(item.takenAt).takeIf { it.isNotEmpty() }?.let { "拍摄 / 排序时间" to it },
-        formatDateTime(item.modifiedAt).takeIf { it.isNotEmpty() }?.let { "修改时间" to it },
-        formatDateTime(item.createdAt).takeIf { it.isNotEmpty() }?.let { "创建时间" to it },
-    ).filter { it.second.isNotEmpty() }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("图片信息") },
-        text = {
-            Column {
-                rows.forEach { (k, v) ->
-                    Column(Modifier.padding(vertical = 5.dp)) {
-                        Text(k, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(v, fontSize = 14.sp)
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
-}
+private fun photoInfoRows(item: Item): List<Pair<String, String>> = listOfNotNull(
+    "名称" to item.name,
+    "格式" to listOf(item.ext.uppercase(), item.mime).filter { it.isNotEmpty() }.joinToString(" · "),
+    item.w?.let { "尺寸" to "${item.w} × ${item.h}" },
+    "大小" to "${formatSize(item.size)}(${"%,d".format(item.size)} 字节)",
+    formatDateTime(item.takenAt).takeIf { it.isNotEmpty() }?.let { "拍摄" to it },
+    formatDateTime(item.modifiedAt).takeIf { it.isNotEmpty() }?.let { "修改" to it },
+    formatDateTime(item.createdAt).takeIf { it.isNotEmpty() }?.let { "创建" to it },
+).filter { it.second.isNotEmpty() }
 
 @Composable
 private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean) {
