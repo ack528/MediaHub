@@ -49,6 +49,16 @@ import com.localtg.ui.tg.TgBar
 import com.localtg.ui.tg.TgIcons
 import kotlinx.coroutines.launch
 
+/** 服务端每个范围 × 类型预先准备了 12 份随机序列,种子 1..12 就是用哪一份。换序列 = 换成另一份(不会换成当前这份)。 */
+private const val RANDOM_SLOTS = 12
+
+private fun newRandomSeed(cur: Long): Long {
+    val slot = if (cur <= 0) -1 else ((cur - 1) % RANDOM_SLOTS).toInt()
+    var n = kotlin.random.Random.nextInt(RANDOM_SLOTS - (if (slot >= 0) 1 else 0))
+    if (slot >= 0 && n >= slot) n++
+    return n + 1L
+}
+
 /** 随机浏览:一个特殊的群组,从媒体库里随机取图片 / 视频(label / roots 不为空 = 只随机这个盘符里的,否则随机所有盘符)(可选「全部 / 图片 / 视频」),滚到底自动再取一批,点右上角重新洗牌。 */
 @Composable
 fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
@@ -59,12 +69,15 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
     var items by remember { mutableStateOf<List<Item>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var round by remember { mutableIntStateOf(0) } // 每点一次「重新洗牌」加 1
+    var retry by remember { mutableIntStateOf(0) } // 出错后点「重试」加 1
+    val seed = st.randomSeed // 随机种子存在设置里:不点「重新洗牌」,每次进来、切类型再切回来都是同一个随机序列
+    var batches by remember { mutableIntStateOf(0) } // 已经取了几批(下一批的批号)
+    LaunchedEffect(Unit) { if (c.settings.value.randomSeed == 0L) c.settings.update { copy(randomSeed = newRandomSeed(randomSeed)) } }
     val grid = rememberLazyGridState()
     val scope = rememberCoroutineScope()
 
     fun explain(e: Throwable) =
-        if (e is ApiException && e.http == 404) "服务端版本太旧,不支持随机浏览。请把服务端更新到 1.6.0 或更新的版本。" else friendlyError(e)
+        if (e is ApiException && e.http == 404) "服务端版本太旧,不支持随机浏览。请把服务端更新到 1.7.0 或更新的版本。" else friendlyError(e)
 
     // gen:每次整批重来(换类型 / 重新洗牌)加 1。旧的请求被取消后,它收尾时不能去动新请求的状态(loading / error)。
     val gen = remember { intArrayOf(0) }
@@ -74,8 +87,10 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
         val my = gen[0]
         loading = true; error = null
         try {
-            val r = c.api.random(types, 60, roots)
+            val batch = if (replace) 0 else batches
+            val r = c.api.random(types, 60, roots, seed, batch)
             if (my != gen[0]) return
+            batches = batch + 1
             val known = if (replace) HashSet() else items.mapTo(HashSet()) { it.id }
             val fresh = r.items.filter { known.add(it.id) }
             items = if (replace) fresh else items + fresh
@@ -89,8 +104,9 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
         }
     }
 
-    // 换类型 / 重新洗牌 → 整个换一批并回到顶部
-    LaunchedEffect(types, round, roots) {
+    // 换类型 / 点「重新洗牌」(换了 seed) / 重试 → 从第 0 批重新取并回到顶部
+    LaunchedEffect(types, roots, seed, retry) {
+        if (seed == 0L) return@LaunchedEffect // 第一次进来 seed 还没生成,等它生成后再取
         items = emptyList()
         more(replace = true)
         if (items.isNotEmpty()) grid.scrollToItem(0)
@@ -106,7 +122,7 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
             Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
                 BarIcon(TgIcons.Back, "返回", onBack)
                 Text(if (label != null) "随机浏览 · $label" else "随机浏览", Modifier.weight(1f).padding(start = 4.dp), color = tg.barText, fontSize = 20.sp, fontWeight = FontWeight.Medium)
-                BarIcon(TgIcons.Refresh, "重新洗牌") { round++ }
+                BarIcon(TgIcons.Refresh, "重新洗牌") { c.settings.update { copy(randomSeed = newRandomSeed(randomSeed)) } }
             }
             Row(Modifier.fillMaxWidth()) {
                 listOf("全部", "图片", "视频").forEachIndexed { i, label ->
@@ -132,7 +148,7 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
                     Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(error!!, color = tg.danger, fontSize = 15.sp)
-                    TextButton(onClick = { round++ }) { Text("重试") }
+                    TextButton(onClick = { retry++ }) { Text("重试") }
                 }
                 items.isEmpty() -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
                     Text("没有可显示的文件", color = tg.message, fontSize = 15.sp)
@@ -147,7 +163,8 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
                             modifier = Modifier.aspectRatio(1f).mediaShared(item.id, RectangleShape).clickable {
                                 val snap = items
                                 // 查看器翻到末尾继续随机取;游标只表示"还有",内容去重由 ViewerFeed 处理
-                                c.viewerFeed = ViewerFeed(snap) { _, _ -> c.api.random(types, 60, roots).items to "more" }
+                                var next = batches // 查看器接着往后取固定序列的下一批;回到列表后滚到底取到的是同样的批,按 id 去重
+                                c.viewerFeed = ViewerFeed(snap) { _, _ -> c.api.random(types, 60, roots, seed, next++).items to "more" }
                                 onOpenViewer(snap.indexOfFirst { it.id == item.id }.coerceAtLeast(0))
                             },
                         )

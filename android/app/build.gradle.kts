@@ -14,8 +14,8 @@ android {
         applicationId = "com.localtg"
         minSdk = 26
         targetSdk = 37
-        versionCode = 51
-        versionName = "2.8.0"
+        versionCode = 52
+        versionName = "2.9.0"
         // 发布版只带 arm64(真机,LSFG 原生库),调试版再加 x86_64(模拟器)
         ndk { abiFilters += listOf("arm64-v8a") }
     }

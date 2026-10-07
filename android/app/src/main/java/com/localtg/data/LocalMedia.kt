@@ -253,10 +253,13 @@ class LocalMedia(private val ctx: Context) {
         return HistoryResp(items = page, total = hits.size, nextCursor = if (off + lim < hits.size) (off + lim).toString() else null)
     }
 
-    fun random(types: Set<String>, limit: Int): HistoryResp {
+    fun random(types: Set<String>, limit: Int, seed: Long, batch: Int): HistoryResp {
         ensure()
+        val lim = limit.coerceIn(1, 120)
         val pool = all.filter { it.type in types }
-        val page = pool.shuffled().take(limit.coerceIn(1, 120)).map { toItem(it, it.bucketId.toString()) }
+        // 带 seed:先按 id 排好再用 seed 洗牌,同一个 seed 的顺序固定,按批号切片;不带 seed 每次都不同
+        val order = if (seed != 0L) pool.sortedBy { it.id }.shuffled(kotlin.random.Random(seed)) else pool.shuffled()
+        val page = order.drop(batch * lim).take(lim).map { toItem(it, it.bucketId.toString()) }
         return HistoryResp(items = page, total = pool.size)
     }
 
@@ -375,7 +378,7 @@ class LocalInterceptor(private val local: LocalMedia) : Interceptor {
             p == listOf("search") -> json(
                 req, AppJson.encodeToString(local.search(q.queryParameter("q").orEmpty(), types(), q.queryParameter("cursor"), q.queryParameter("limit")?.toIntOrNull() ?: 60)),
             )
-            p == listOf("random") -> json(req, AppJson.encodeToString(local.random(types(), q.queryParameter("limit")?.toIntOrNull() ?: 60)))
+            p == listOf("random") -> json(req, AppJson.encodeToString(local.random(types(), q.queryParameter("limit")?.toIntOrNull() ?: 60, q.queryParameter("seed")?.toLongOrNull() ?: 0L, q.queryParameter("batch")?.toIntOrNull() ?: 0)))
             p.size >= 3 && p[0] == "media" -> {
                 val item = local.item(p[1].toLongOrNull() ?: throw LocalMedia.NotFound()) ?: throw LocalMedia.NotFound()
                 when (p[2]) {

@@ -630,17 +630,15 @@ func TestWarmRandom(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	e.srv.WarmRandom(ctx)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 300; i++ {
 		e.srv.rnd.Lock()
-		ok, n := e.srv.rnd.ready, len(e.srv.rnd.roots)
+		ok, n, seqs := e.srv.rnd.ready, len(e.srv.rnd.roots), len(e.srv.rnd.seqs)
 		e.srv.rnd.Unlock()
-		if ok {
-			if n == 0 {
-				t.Fatal("预热后没有根目录范围")
-			}
+		// 「全部」+ 每个根目录,各 3 种类型 × randSlots 份序列
+		if ok && n > 0 && seqs >= (1+n)*3*randSlots {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatal("10 秒内没有预热完成")
+	t.Fatal("30 秒内没有把全部序列预先生成好")
 }
