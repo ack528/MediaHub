@@ -49,9 +49,9 @@ import com.localtg.ui.tg.TgBar
 import com.localtg.ui.tg.TgIcons
 import kotlinx.coroutines.launch
 
-/** 随机浏览:一个特殊的群组,从整个媒体库里随机取图片 / 视频(可选「全部 / 图片 / 视频」),滚到底自动再取一批,点右上角重新洗牌。 */
+/** 随机浏览:一个特殊的群组,从媒体库里随机取图片 / 视频(label / roots 不为空 = 只随机这个盘符里的,否则随机所有盘符)(可选「全部 / 图片 / 视频」),滚到底自动再取一批,点右上角重新洗牌。 */
 @Composable
-fun RandomScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
+fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
     val tg = LocalTg.current
     val st by c.settings.state.collectAsState()
     val tab = st.randomType.coerceIn(0, 2)
@@ -64,24 +64,33 @@ fun RandomScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
     val scope = rememberCoroutineScope()
 
     fun explain(e: Throwable) =
-        if (e is ApiException && e.http == 404) "服务端版本太旧,不支持随机浏览。请把服务端更新到 1.5.0 或更新的版本。" else friendlyError(e)
+        if (e is ApiException && e.http == 404) "服务端版本太旧,不支持随机浏览。请把服务端更新到 1.6.0 或更新的版本。" else friendlyError(e)
+
+    // gen:每次整批重来(换类型 / 重新洗牌)加 1。旧的请求被取消后,它收尾时不能去动新请求的状态(loading / error)。
+    val gen = remember { intArrayOf(0) }
 
     suspend fun more(replace: Boolean) {
-        if (loading) return
+        if (replace) gen[0]++ else if (loading) return
+        val my = gen[0]
         loading = true; error = null
-        runCatching { c.api.random(types, 60) }
-            .onSuccess { r ->
-                val known = if (replace) HashSet() else items.mapTo(HashSet()) { it.id }
-                val fresh = r.items.filter { known.add(it.id) }
-                items = if (replace) fresh else items + fresh
-                AppLog.i("random", "取到 ${fresh.size} 条(类型 $types,共 ${items.size})")
-            }
-            .onFailure { error = explain(it); AppLog.w("random", "随机浏览失败", it) }
-        loading = false
+        try {
+            val r = c.api.random(types, 60, roots)
+            if (my != gen[0]) return
+            val known = if (replace) HashSet() else items.mapTo(HashSet()) { it.id }
+            val fresh = r.items.filter { known.add(it.id) }
+            items = if (replace) fresh else items + fresh
+            AppLog.i("random", "取到 ${fresh.size} 条(类型 $types,共 ${items.size})")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e // 离开页面 / 换类型导致的取消不是错误
+        } catch (e: Exception) {
+            if (my == gen[0]) { error = explain(e); AppLog.w("random", "随机浏览失败", e) }
+        } finally {
+            if (my == gen[0]) loading = false
+        }
     }
 
     // 换类型 / 重新洗牌 → 整个换一批并回到顶部
-    LaunchedEffect(types, round) {
+    LaunchedEffect(types, round, roots) {
         items = emptyList()
         more(replace = true)
         if (items.isNotEmpty()) grid.scrollToItem(0)
@@ -96,7 +105,7 @@ fun RandomScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
         TgBar {
             Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
                 BarIcon(TgIcons.Back, "返回", onBack)
-                Text("随机浏览", Modifier.weight(1f).padding(start = 4.dp), color = tg.barText, fontSize = 20.sp, fontWeight = FontWeight.Medium)
+                Text(if (label != null) "随机浏览 · $label" else "随机浏览", Modifier.weight(1f).padding(start = 4.dp), color = tg.barText, fontSize = 20.sp, fontWeight = FontWeight.Medium)
                 BarIcon(TgIcons.Refresh, "重新洗牌") { round++ }
             }
             Row(Modifier.fillMaxWidth()) {
@@ -138,7 +147,7 @@ fun RandomScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
                             modifier = Modifier.aspectRatio(1f).mediaShared(item.id, RectangleShape).clickable {
                                 val snap = items
                                 // 查看器翻到末尾继续随机取;游标只表示"还有",内容去重由 ViewerFeed 处理
-                                c.viewerFeed = ViewerFeed(snap) { _, _ -> c.api.random(types, 60).items to "more" }
+                                c.viewerFeed = ViewerFeed(snap) { _, _ -> c.api.random(types, 60, roots).items to "more" }
                                 onOpenViewer(snap.indexOfFirst { it.id == item.id }.coerceAtLeast(0))
                             },
                         )

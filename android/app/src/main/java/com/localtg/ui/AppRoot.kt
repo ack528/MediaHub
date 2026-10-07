@@ -114,7 +114,7 @@ fun AppRoot(c: AppContainer) {
                     onOpen = { ChatActivity.start(ctx, it.id, it.title) },
                     onSettings = { SettingsActivity.start(ctx, null) },
                     onSearch = { SearchActivity.start(ctx) },
-                    onRandom = { RandomActivity.start(ctx) },
+                    onRandom = { label, roots -> RandomActivity.start(ctx, label, roots) },
                     onSection = { SettingsActivity.start(ctx, it) },
                 )
             }

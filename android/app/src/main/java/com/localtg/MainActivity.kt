@@ -153,12 +153,17 @@ class RandomActivity : TgActivity() {
     override fun Content() {
         FinishWhenLoggedOut()
         ViewerNavHost(container) { openViewer ->
-            RandomScreen(container, onBack = { finish() }, onOpenViewer = openViewer)
+            RandomScreen(container, intent.getStringExtra(EXTRA_LABEL), intent.getStringExtra(EXTRA_ROOTS), onBack = { finish() }, onOpenViewer = openViewer)
         }
     }
 
     companion object {
-        fun start(ctx: Context) = ctx.startActivity(Intent(ctx, RandomActivity::class.java))
+        private const val EXTRA_LABEL = "label"
+        private const val EXTRA_ROOTS = "roots"
+
+        /** label / roots 都为 null = 随机所有盘符;否则只随机这个盘符(roots 是该盘符下根目录的 id,逗号分隔)。 */
+        fun start(ctx: Context, label: String? = null, roots: String? = null) =
+            ctx.startActivity(Intent(ctx, RandomActivity::class.java).putExtra(EXTRA_LABEL, label).putExtra(EXTRA_ROOTS, roots))
     }
 }
 

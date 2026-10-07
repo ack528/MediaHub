@@ -604,3 +604,43 @@ func TestRandom(t *testing.T) {
 		t.Fatal("bad types should be 400")
 	}
 }
+
+func TestRandomRoots(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	var dl struct{ Dialogs []Dialog }
+	e.getJSON("/api/v1/dialogs", &dl)
+	root := dl.Dialogs[0].RootID
+	var a struct{ Items []Item }
+	e.getJSON("/api/v1/random?types=photo&limit=20&roots="+root, &a)
+	if len(a.Items) != 20 {
+		t.Fatalf("roots=%s 取到 %d", root, len(a.Items))
+	}
+	e.getJSON("/api/v1/random?types=photo&limit=20&roots=999999", &a)
+	if len(a.Items) != 0 {
+		t.Fatalf("不存在的根目录应该是空,取到 %d", len(a.Items))
+	}
+	if resp, _ := e.do("GET", "/api/v1/random?roots=1,abc", nil, nil); resp.StatusCode != 400 {
+		t.Fatal("bad roots should be 400")
+	}
+}
+
+func TestWarmRandom(t *testing.T) {
+	e := newEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e.srv.WarmRandom(ctx)
+	for i := 0; i < 100; i++ {
+		e.srv.rnd.Lock()
+		ok, n := e.srv.rnd.ready, len(e.srv.rnd.roots)
+		e.srv.rnd.Unlock()
+		if ok {
+			if n == 0 {
+				t.Fatal("预热后没有根目录范围")
+			}
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("10 秒内没有预热完成")
+}

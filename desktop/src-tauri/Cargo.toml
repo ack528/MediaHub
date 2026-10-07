@@ -1,6 +1,6 @@
 [package]
 name = "mediahub-desktop"
-version = "1.5.0"
+version = "1.6.0"
 description = "MediaHub 桌面管理程序"
 edition = "2021"
 

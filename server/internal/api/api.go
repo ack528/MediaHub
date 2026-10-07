@@ -28,6 +28,7 @@ import (
 const APIVersion = 1
 
 type Server struct {
+	rnd    randomState // 随机浏览用的各根目录 id 范围(见 random.go)
 	DB     *sql.DB
 	Cfg    *config.Config
 	Auth   *auth.Service

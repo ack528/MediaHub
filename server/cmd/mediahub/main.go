@@ -43,7 +43,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "1.5.0"
+const version = "1.6.0"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -382,6 +382,7 @@ func run(args []string, serve bool) int {
 	if cfg.Update.Enabled {
 		logx.Go("自动更新", func() { srv.Update.Run(ctx) })
 	}
+	srv.WarmRandom(ctx) // 随机浏览预热:启动时就在后台算好各盘符的 id 范围、把数据库页读进缓存
 	var certFile, keyFile string
 	if cfg.TLS.Enabled {
 		var fp string

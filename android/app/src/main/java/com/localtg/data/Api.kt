@@ -193,9 +193,10 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
         return call(Request.Builder().url(url.build()).build())
     }
 
-    /** 随机取一批(服务端 1.5.0 起有这个接口)。每次调用结果都不同,可能和之前取过的重复,调用方自己去重。 */
-    suspend fun random(types: String, limit: Int = 60): HistoryResp {
+    /** 随机取一批(服务端 1.5.0 起有这个接口;roots 要 1.6.0 起)。每次调用结果都不同,可能和之前取过的重复,调用方自己去重。 */
+    suspend fun random(types: String, limit: Int = 60, roots: String? = null): HistoryResp {
         val url = "$base/api/v1/random".toHttpUrl().newBuilder().addQueryParameter("types", types).addQueryParameter("limit", limit.toString())
+        if (!roots.isNullOrEmpty()) url.addQueryParameter("roots", roots) // 只在这些根目录(一个盘符)里随机;不带 = 所有盘符
         return call(Request.Builder().url(url.build()).build())
     }
 
