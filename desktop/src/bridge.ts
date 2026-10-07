@@ -1,7 +1,6 @@
 // 前端与后端的桥:在 Tauri 里调用 Rust 命令;在普通浏览器里用 mock(方便只调界面)。
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { openPath as openerOpenPath } from "@tauri-apps/plugin-opener";
 import { DEFAULT_CONFIG, type Config, type CrashFile, type Env, type LocalIp, type ServiceStatus, type UserInfo } from "./types";
 
 export interface Bridge {
@@ -54,7 +53,7 @@ const tauri: Bridge = {
     const r = await openDialog({ directory: true, multiple: false, title: "选择文件夹" });
     return typeof r === "string" ? r : null;
   },
-  openPath: (path) => openerOpenPath(path),
+  openPath: (path) => invoke("open_path", { path }),
 };
 
 // ------------------------------------------------------------------ mock(仅浏览器调试用)

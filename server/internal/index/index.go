@@ -16,6 +16,7 @@ package index
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -60,15 +61,19 @@ type Progress struct {
 	Skipped    int64        `json:"skipped"`
 	FailedDirs []DirFailure `json:"failedDirs,omitempty"`
 
-	ScanRate    float64 `json:"scanRate"`    // 扫描速度,文件/秒
-	EnrichRate  float64 `json:"enrichRate"`  // 元数据读取速度,个/秒
-	EnrichTotal int64   `json:"enrichTotal"` // 本轮需要读取元数据的总数
-	ETASec      int64   `json:"etaSec"`      // 预计剩余秒数(元数据阶段),未知为 0
-	Resumed     bool    `json:"resumed"`     // 本次是接着上次被中断的扫描继续
+	ScanRate    float64 `json:"scanRate"`             // 扫描速度,文件/秒
+	EnrichRate  float64 `json:"enrichRate"`           // 元数据读取速度,个/秒
+	EnrichTotal int64   `json:"enrichTotal"`          // 本轮需要读取元数据的总数
+	ETASec      int64   `json:"etaSec"`               // 预计剩余秒数(元数据阶段),未知为 0
+	Resumed     bool    `json:"resumed"`              // 本次是接着上次被中断的扫描继续
+	Current     string  `json:"current,omitempty"`    // 正在读取的目录(卡住时能看出卡在哪)
+	StalledSec  int64   `json:"stalledSec,omitempty"` // 扫描 / 元数据阶段已经多少秒没有任何进展(0 = 正常)
 
 	// 速度采样用的内部状态:最近几秒的计数快照(滑动窗口),状态切换时清空
 	hist      []rateSample
 	histState string
+	lastAdv   time.Time // 计数最后一次变化的时间
+	lastSum   int64
 }
 
 // rateSample 某一时刻的计数快照,速度 = 窗口内的计数增量 / 窗口时长(比"每秒一次的瞬时值"稳定得多)。
@@ -154,6 +159,15 @@ func (ix *Indexer) sampler() {
 			if p.State != "enriching" {
 				p.EnrichRate = 0
 			}
+			// 停滞检测:扫描 / 补全元数据时,文件数 + 目录数 + 已补全数 + 跳过数 + 错误数都不变,就开始计时
+			sum := files + atomic.LoadInt64(&p.Dirs) + enr + atomic.LoadInt64(&p.Skipped) + atomic.LoadInt64(&p.Errors)
+			if sum != p.lastSum || (p.State != "scanning" && p.State != "enriching") || p.lastAdv.IsZero() {
+				p.lastSum, p.lastAdv = sum, now
+			}
+			p.StalledSec = 0
+			if p.State == "scanning" || p.State == "enriching" {
+				p.StalledSec = int64(now.Sub(p.lastAdv).Seconds())
+			}
 			p.ETASec = 0
 			if p.State == "enriching" && p.EnrichRate > 0.01 {
 				if left := atomic.LoadInt64(&p.EnrichTotal) - enr; left > 0 {
@@ -194,7 +208,7 @@ func (ix *Indexer) Progress() []Progress {
 			Started: p.Started, Finished: p.Finished, Message: p.Message,
 			Skipped: atomic.LoadInt64(&p.Skipped), FailedDirs: append([]DirFailure(nil), p.FailedDirs...),
 			ScanRate: p.ScanRate, EnrichRate: p.EnrichRate, EnrichTotal: atomic.LoadInt64(&p.EnrichTotal),
-			ETASec: p.ETASec, Resumed: p.Resumed,
+			ETASec: p.ETASec, Resumed: p.Resumed, Current: p.Current, StalledSec: p.StalledSec,
 		})
 	}
 	return out
@@ -407,8 +421,14 @@ type frame struct {
 }
 
 // ScanRoot 扫描一个根目录(阶段 1)。上次被中断的扫描会接着做,否则开始新一轮。
-func (ix *Indexer) ScanRoot(ctx context.Context, r Root) error {
+func (ix *Indexer) ScanRoot(ctx context.Context, r Root) (retErr error) {
 	p := ix.prog(r)
+	// 失败(数据库忙、磁盘读不了…)时把状态改成 error 并写明原因 —— 以前状态一直停在"扫描中",管理程序里就是"卡住不扫描"
+	defer func() {
+		if retErr != nil && ctx.Err() == nil {
+			ix.setState(p, "error", retErr.Error())
+		}
+	}()
 	atomic.StoreInt64(&p.Dirs, 0)
 	atomic.StoreInt64(&p.Files, 0)
 	atomic.StoreInt64(&p.Errors, 0)
@@ -460,7 +480,10 @@ func (ix *Indexer) ScanRoot(ctx context.Context, r Root) error {
 
 	// scanDir 处理一个目录:写入它的媒体,返回其下的子目录(由调用方决定遍历顺序)
 	scanDir := func(f frame) ([]frame, error) {
-		entries, err := winfs.ListDir(f.path)
+		ix.mu.Lock()
+		p.Current = f.path
+		ix.mu.Unlock()
+		entries, err := listDirTimeout(f.path, dirReadTimeout)
 		if err != nil {
 			ix.recordDirFailure(p, f.path, err)
 			ix.preserveSubtree(r.ID, f, gen)
@@ -594,6 +617,16 @@ func (ix *Indexer) ScanRoot(ctx context.Context, r Root) error {
 
 // recordDirFailure 记录一个读取失败的目录:无权限 / 已消失属于正常现象(记为"跳过"),其它才算错误,并按严重程度写日志。
 func (ix *Indexer) recordDirFailure(p *Progress, path string, err error) {
+	if errors.Is(err, errDirTimeout) {
+		atomic.AddInt64(&p.Errors, 1)
+		ix.Log.Warn("目录读取超过时限没有响应(磁盘休眠 / 读取很慢 / 接口卡住),已跳过并保留其下旧数据,下次扫描再试", "dir", path, "timeout", dirReadTimeout.String())
+		ix.mu.Lock()
+		if len(p.FailedDirs) < 50 {
+			p.FailedDirs = append(p.FailedDirs, DirFailure{Path: path, Kind: "io", Reason: "读取超时无响应"})
+		}
+		ix.mu.Unlock()
+		return
+	}
 	kind, code, text := winfs.ErrKind(err)
 	switch kind {
 	case "denied":
@@ -614,6 +647,33 @@ func (ix *Indexer) recordDirFailure(p *Progress, path string, err error) {
 		p.FailedDirs = append(p.FailedDirs, DirFailure{Path: path, Kind: kind, Code: code, Reason: text})
 	}
 	ix.mu.Unlock()
+}
+
+// 单个目录的读取时限:机械硬盘休眠后唤醒大约要 10 ~ 30 秒;超过这个时间还没返回就当作读不了、跳过这个目录继续往下扫,
+// 而不是整个扫描无限期停在这里(Windows 的同步目录读取无法取消,卡住的那次读取留在后台,等磁盘响应后自行结束)。
+const dirReadTimeout = 90 * time.Second
+
+var errDirTimeout = errors.New("目录读取超时")
+
+func listDirTimeout(dir string, d time.Duration) ([]winfs.Entry, error) {
+	type res struct {
+		e   []winfs.Entry
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		defer logx.Recover("读取目录 " + dir)
+		e, err := winfs.ListDir(dir)
+		ch <- res{e, err}
+	}()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case r := <-ch:
+		return r.e, r.err
+	case <-t.C:
+		return nil, errDirTimeout
+	}
 }
 
 func (ix *Indexer) markScanned(dialogID, gen int64) {

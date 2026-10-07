@@ -61,7 +61,8 @@ export function Overview() {
         {!running && <Row icon="clock" title="服务未运行" desc="启动后显示每个媒体盘的扫描与元数据进度。" />}
         {running && st && st.index.length === 0 && <Row icon="folder" title="还没有配置媒体库" desc={'到“媒体库”页添加根目录。'} />}
         {running && st?.index.map((p) => {
-          const busyState = p.state !== "idle";
+          const busyState = p.state === "scanning" || p.state === "enriching";
+          const stalled = (p.stalledSec ?? 0) >= 30; // 30 秒没有任何进展
           const scanning = p.state === "scanning";
           const enriching = p.state === "enriching";
           const total = p.enrichTotal && p.enrichTotal > 0 ? p.enrichTotal : Math.max(p.files, 1);
@@ -73,6 +74,8 @@ export function Overview() {
                    {scanning && <> · <b className="speed">{fmtRate(p.scanRate)} 文件/秒</b></>}
                    {enriching && <> · 已读元数据 {fmtNum(done)} / {fmtNum(total)} · <b className="speed">{fmtRate(p.enrichRate)} 个/秒</b>{p.etaSec ? <> · 预计还需 {fmtEta(p.etaSec)}</> : null}</>}
                    {scanning && p.resumed && <> · 接着上次中断的扫描继续</>}
+                   {p.state === "error" && <> · <span className="warn-text">出错:{p.message || "未知原因"}(服务会自动重试)</span></>}
+                   {stalled && <> · <span className="warn-text">已 {p.stalledSec} 秒没有进展{p.current ? <>,卡在 <code>{p.current}</code></> : null}(磁盘休眠 / 读取很慢?超过 90 秒会自动跳过这个目录)</span></>}
                    {(p.skipped ?? 0) > 0 && <> · {p.skipped} 个目录已跳过</>}
                    {p.errors > 0 && <> · <span className="warn-text">{p.errors} 个目录读取失败</span></>}
                    {enriching && <Progress value={done} max={total} />}
@@ -94,7 +97,7 @@ export function Overview() {
                  </>}>
               <div className="btn-group">
                 <Badge tone={busyState ? "blue" : "green"}>{scanning ? "扫描中" : enriching ? "读取元数据" : p.state === "error" ? "出错" : "已完成"}</Badge>
-                <Btn icon="refresh" disabled={!!busy || busyState} onClick={() => rescan(p.rootId)}>{busyState ? "进行中" : "只扫这个盘"}</Btn>
+                <Btn icon="refresh" disabled={!!busy || (busyState && !stalled)} onClick={() => rescan(p.rootId)}>{busyState ? (stalled ? "重新扫描" : "进行中") : "只扫这个盘"}</Btn>
               </div>
             </Row>
           );

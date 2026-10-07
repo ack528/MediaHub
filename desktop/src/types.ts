@@ -73,6 +73,8 @@ export interface IndexProgress {
   scanRate?: number; enrichRate?: number; enrichTotal?: number; etaSec?: number;
   /** 本次是接着上次被中断的扫描继续 */
   resumed?: boolean;
+  /** 正在读取的目录,以及已经多少秒没有进展(卡住时显示) */
+  current?: string; stalledSec?: number;
   /** 因无权限 / 目录已消失而跳过的目录数,以及最近的明细 */
   skipped?: number;
   failedDirs?: DirFailure[];

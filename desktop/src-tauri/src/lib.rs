@@ -427,6 +427,28 @@ async fn delete_user(name: String) -> Result<(), String> {
     blocking(move || run_cli(&["user", "delete", &name], None).map(|_| ())).await
 }
 
+// ---------------------------------------------------------------- 命令:打开文件夹 / 文件
+
+/// 用资源管理器打开文件夹(或用默认程序打开文件)。
+/// 以前走 opener 插件的 openPath,但它需要在权限里逐个声明允许的路径范围,没声明的路径会被拒绝,
+/// 前端又没处理这个错误 —— 点"打开日志文件夹"就没有任何反应。
+#[tauri::command]
+async fn open_path(path: String) -> Result<(), String> {
+    blocking(move || {
+        let p = PathBuf::from(&path);
+        if !p.exists() {
+            // 日志目录等还没生成时先建出来,否则资源管理器会退回到"文档"
+            if p.extension().is_none() {
+                fs::create_dir_all(&p).map_err(|e| format!("无法创建 {}:{}", p.display(), e))?;
+            } else {
+                return Err(format!("文件不存在:{}", p.display()));
+            }
+        }
+        Command::new("explorer.exe").arg(&p).spawn().map(|_| ()).map_err(|e| format!("打开失败:{}", e))
+    })
+    .await
+}
+
 // ---------------------------------------------------------------- 命令:日志
 
 fn log_dir() -> PathBuf {
@@ -664,6 +686,7 @@ pub fn run() {
             autostart_set,
             firewall_status,
             firewall_add,
+            open_path,
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;

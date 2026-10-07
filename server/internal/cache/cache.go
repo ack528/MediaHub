@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -130,6 +131,8 @@ func (m *Manager) All() []*RootCache {
 	for _, rc := range m.roots {
 		out = append(out, rc)
 	}
+	// map 的遍历顺序是随机的:管理程序里"各盘缓存占用"每次刷新盘符都会上下乱跳。按根目录 id 排,位置固定
+	sort.Slice(out, func(i, j int) bool { return out[i].RootID < out[j].RootID })
 	return out
 }
 

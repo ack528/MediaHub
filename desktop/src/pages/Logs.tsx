@@ -12,6 +12,12 @@ const LEVELS = [
   { value: "error", label: "仅错误" },
 ];
 
+
+// 打开文件夹 / 文件:失败时给出提示(以前出错被吞掉,点了没有任何反应)
+async function openDirWith(toast: (m: string, kind?: "ok" | "err") => void, path: string) {
+  try { await bridge.openPath(path); } catch (e) { toast("打开失败:" + String(e), "err"); }
+}
+
 function lineClass(l: string) {
   if (l.includes(" level=ERROR")) return "lv-error";
   if (l.includes(" level=WARN")) return "lv-warn";
@@ -20,7 +26,8 @@ function lineClass(l: string) {
 }
 
 function LogView() {
-  const { config } = useApp();
+  const { config, toast } = useApp();
+  const openDir = (p: string) => openDirWith(toast, p);
   const [text, setText] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [auto, setAuto] = useState(true);
@@ -56,7 +63,7 @@ function LogView() {
           extra={<>
             <label className="inline-switch">自动刷新 <Switch checked={auto} onChange={setAuto} /></label>
             <Btn icon="refresh" onClick={load}>刷新</Btn>
-            <Btn icon="folderopen" onClick={() => bridge.openPath(config.dataDir + "\\logs")}>打开日志文件夹</Btn>
+            <Btn icon="folderopen" onClick={() => openDir(config.dataDir + "\\logs")}>打开日志文件夹</Btn>
           </>}>
       <div className="log-tools">
         <SelectField value={level} options={LEVELS} onChange={setLevel} />
@@ -82,6 +89,7 @@ function fmtTime(sec: number) {
 
 function LogSettings() {
   const { config, toast } = useApp();
+  const openDir = (p: string) => openDirWith(toast, p);
   const [crashes, setCrashes] = useState<CrashFile[]>([]);
   const [busy, setBusy] = useState(false);
   const items = itemsOf("logs", "日志设置");
@@ -95,7 +103,7 @@ function LogSettings() {
     try {
       const p = await bridge.exportLogs();
       toast("已导出");
-      await bridge.openPath(p.slice(0, p.lastIndexOf("\\")));
+      await openDir(p.slice(0, p.lastIndexOf("\\")));
     } catch (e) { toast(String(e), "err"); }
     setBusy(false);
   };
@@ -111,12 +119,12 @@ function LogSettings() {
         </Row>
         <Row icon="alert" title="崩溃报告"
              desc={crashes.length === 0 ? "没有崩溃记录。服务内部出现严重错误时会自动写入一份报告(含堆栈和当时的日志),服务本身继续运行。" : `共 ${crashes.length} 份,最近的在最上面。点“打开”查看。`}>
-          <Btn icon="folderopen" onClick={() => bridge.openPath(dir)}>打开日志文件夹</Btn>
+          <Btn icon="folderopen" onClick={() => openDir(dir)}>打开日志文件夹</Btn>
         </Row>
         {crashes.map((c) => (
           <Row key={c.name} icon="filetext" title={c.name} desc={`${fmtTime(c.time)} · ${fmtBytes(c.size)}`}>
             <Badge tone="red">崩溃</Badge>
-            <Btn onClick={() => bridge.openPath(dir + "\\" + c.name)}>打开</Btn>
+            <Btn onClick={() => openDir(dir + "\\" + c.name)}>打开</Btn>
           </Row>
         ))}
       </Card>

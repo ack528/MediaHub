@@ -22,8 +22,13 @@ type pending struct {
 }
 
 // Enrich 补全元数据(阶段 2):照片读 EXIF,视频跑 ffprobe。按对话分组读取,尽量顺序访问磁盘。
-func (ix *Indexer) Enrich(ctx context.Context, r Root) error {
+func (ix *Indexer) Enrich(ctx context.Context, r Root) (retErr error) {
 	p := ix.prog(r)
+	defer func() { // 失败时把状态改成 error 并写明原因,不要一直停在"补全中"
+		if retErr != nil && ctx.Err() == nil {
+			ix.setState(p, "error", retErr.Error())
+		}
+	}()
 	ix.setState(p, "enriching", "")
 	atomic.StoreInt64(&p.Enriched, 0)
 	var total int64

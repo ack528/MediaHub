@@ -10,11 +10,11 @@
 package main
 
 import (
-	"database/sql"
 	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,7 +42,7 @@ import (
 	"mediahub/internal/tlsx"
 )
 
-const version = "1.3.0"
+const version = "1.3.1"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -257,7 +257,7 @@ func run(args []string, serve bool) int {
 		})
 	}
 	// first = 本次启动后的第一轮:被中断的扫描续扫,近期已完整扫描过的根目录直接跳过;之后的定时 / 手动扫描总是执行
-	scanOne := func(r index.Root, first bool) {
+	scanOne := func(r index.Root, first bool) bool {
 		skipAge := time.Duration(cfg.Scan.SkipWithinHours) * time.Hour
 		skipped := first && (r.Reused || !ix.ScanDue(r, skipAge))
 		if skipped {
@@ -271,12 +271,12 @@ func run(args []string, serve bool) int {
 				if !errors.Is(err, context.Canceled) {
 					log.Error("扫描失败", "root", r.Path, "err", err)
 				}
-				return
+				return false
 			}
 		}
 		if err := ix.Enrich(ctx, r); err != nil && !errors.Is(err, context.Canceled) {
 			log.Error("补全元数据失败", "root", r.Path, "err", err)
-			return
+			return false
 		}
 		if jf != nil && !skipped {
 			rc, c0 := context.WithTimeout(ctx, 10*time.Second)
@@ -291,6 +291,7 @@ func run(args []string, serve bool) int {
 		if n := poster.Warm(ctx, r.ID); n > 0 {
 			log.Info("封面预热完成", "root", r.Path, "videos", n)
 		}
+		return true
 	}
 	// 升级后 / 启动后先把对话计数整理一遍,手机马上看到正确的列表(不用等扫描)
 	for _, r := range roots {
@@ -310,12 +311,28 @@ func run(args []string, serve bool) int {
 				tick = t.C
 			}
 			first := true
+			fails := 0
 			for {
-				scanOne(r, first)
+				ok := scanOne(r, first)
 				first = false
 				if !serve {
 					return
 				}
+				if !ok && ctx.Err() == nil {
+					// 扫描 / 补全失败(数据库忙、磁盘读不了…):隔一会儿自动重试(扫描可续扫,不会从头来),不再停在那里等下一个定时周期
+					fails++
+					wait := time.Duration(min(fails, 10)) * 30 * time.Second
+					log.Warn("索引失败,稍后自动重试", "root", r.Path, "after", wait.String(), "attempt", fails)
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(wait):
+					case <-triggers[r.ID]:
+						ix.ResetScan(r.ID)
+					}
+					continue
+				}
+				fails = 0
 				select {
 				case <-ctx.Done():
 					return
