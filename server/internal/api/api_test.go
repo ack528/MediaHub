@@ -568,3 +568,39 @@ func TestRenderHeicAndRaw(t *testing.T) {
 		}
 	}
 }
+
+func TestRandom(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	var a, b struct{ Items []Item }
+	e.getJSON("/api/v1/random?types=photo&limit=40", &a)
+	if len(a.Items) != 40 {
+		t.Fatalf("random photo = %d", len(a.Items))
+	}
+	seen := map[string]bool{}
+	for _, it := range a.Items {
+		if seen[it.ID] || it.Type != "photo" {
+			t.Fatalf("重复或类型不对: %+v", it)
+		}
+		seen[it.ID] = true
+	}
+	e.getJSON("/api/v1/random?types=photo&limit=40", &b)
+	same := 0
+	for _, it := range b.Items {
+		if seen[it.ID] {
+			same++
+		}
+	}
+	if same == 40 {
+		t.Fatal("两次随机结果完全一样")
+	}
+	e.getJSON("/api/v1/random?types=video&limit=10", &a)
+	for _, it := range a.Items {
+		if it.Type != "video" {
+			t.Fatalf("video 请求拿到 %s", it.Type)
+		}
+	}
+	if resp, _ := e.do("GET", "/api/v1/random?types=nope", nil, nil); resp.StatusCode != 400 {
+		t.Fatal("bad types should be 400")
+	}
+}

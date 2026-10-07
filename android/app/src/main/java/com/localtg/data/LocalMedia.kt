@@ -253,6 +253,13 @@ class LocalMedia(private val ctx: Context) {
         return HistoryResp(items = page, total = hits.size, nextCursor = if (off + lim < hits.size) (off + lim).toString() else null)
     }
 
+    fun random(types: Set<String>, limit: Int): HistoryResp {
+        ensure()
+        val pool = all.filter { it.type in types }
+        val page = pool.shuffled().take(limit.coerceIn(1, 120)).map { toItem(it, it.bucketId.toString()) }
+        return HistoryResp(items = page, total = pool.size)
+    }
+
     // ------------------------------------------------------------ 文件与缩略图
 
     fun openFd(i: LItem): ParcelFileDescriptor? = runCatching { ctx.contentResolver.openFileDescriptor(i.uri, "r") }.getOrNull()
@@ -368,6 +375,7 @@ class LocalInterceptor(private val local: LocalMedia) : Interceptor {
             p == listOf("search") -> json(
                 req, AppJson.encodeToString(local.search(q.queryParameter("q").orEmpty(), types(), q.queryParameter("cursor"), q.queryParameter("limit")?.toIntOrNull() ?: 60)),
             )
+            p == listOf("random") -> json(req, AppJson.encodeToString(local.random(types(), q.queryParameter("limit")?.toIntOrNull() ?: 60)))
             p.size >= 3 && p[0] == "media" -> {
                 val item = local.item(p[1].toLongOrNull() ?: throw LocalMedia.NotFound()) ?: throw LocalMedia.NotFound()
                 when (p[2]) {

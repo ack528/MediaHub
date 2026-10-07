@@ -100,7 +100,7 @@ class DialogsViewModel(private val c: AppContainer) : ViewModel() {
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun DialogsScreen(
-    c: AppContainer, onOpen: (Dialog) -> Unit, onSettings: () -> Unit, onSearch: () -> Unit, onSection: (String) -> Unit,
+    c: AppContainer, onOpen: (Dialog) -> Unit, onSettings: () -> Unit, onSearch: () -> Unit, onRandom: () -> Unit, onSection: (String) -> Unit,
 ) {
     val activeId by c.session.activeId.collectAsState()
     // 每台服务器一个独立的列表(切换服务器 = 换一个 ViewModel,重新加载)
@@ -137,7 +137,7 @@ fun DialogsScreen(
         gesturesEnabled = drawer.isOpen || pager.currentPage == 0, // 不在第一页时,横向滑动留给盘符切换;菜单按钮随时可以打开侧边栏
         drawerContent = {
             AppDrawer(
-                c, onSearch = { go(onSearch) }, onRefresh = { go { vm.refresh() } }, onSettings = { go(onSettings) },
+                c, onSearch = { go(onSearch) }, onRandom = { go(onRandom) }, onRefresh = { go { vm.refresh() } }, onSettings = { go(onSettings) },
                 onLog = { go { onSection("log") } }, onAbout = { go { onSection("about") } },
                 onLogout = { go { confirmLogout = true } },
                 onSwitch = { id -> go { c.scope.launch { c.session.switchTo(id) } } },
@@ -181,6 +181,7 @@ fun DialogsScreen(
                             Text("没有可显示的文件夹", color = tg.message)
                         }
                         else -> LazyColumn(Modifier.fillMaxSize()) {
+                            item(key = "random") { RandomRow(onRandom) } // 置顶的特殊群组
                             items(shown, key = { it.id }) { d -> Box(Modifier.animateItem()) { DialogRow(d, c, onClick = { c.chatSiblings = shown.map { it.id }; onOpen(d) }) } }
                         }
                     }
@@ -202,7 +203,7 @@ fun DialogsScreen(
 /** 侧边栏(Telegram 风格):顶部是 logo、应用名和服务器地址,下面是常用入口。 */
 @Composable
 private fun AppDrawer(
-    c: AppContainer, onSearch: () -> Unit, onRefresh: () -> Unit, onSettings: () -> Unit,
+    c: AppContainer, onSearch: () -> Unit, onRandom: () -> Unit, onRefresh: () -> Unit, onSettings: () -> Unit,
     onLog: () -> Unit, onAbout: () -> Unit, onLogout: () -> Unit,
     onSwitch: (String) -> Unit, onAddServer: () -> Unit, onManage: () -> Unit,
 ) {
@@ -256,6 +257,7 @@ private fun AppDrawer(
             Box(Modifier.padding(vertical = 6.dp).fillMaxWidth().height(1.dp).background(tg.divider))
         }
         DrawerItem(TgIcons.Search, "搜索", onSearch)
+        DrawerItem(TgIcons.Refresh, "随机浏览", onRandom)
         DrawerItem(TgIcons.Refresh, "刷新列表", onRefresh)
         DrawerItem(TgIcons.Settings, "设置", onSettings)
         DrawerItem(TgIcons.File, "日志与诊断", onLog)
@@ -290,6 +292,22 @@ private fun FolderTab(text: String, selected: Boolean, onClick: () -> Unit) {
             Modifier.height(3.dp).fillMaxWidth().clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
                 .background(if (selected) tg.barText else Color.Transparent),
         )
+    }
+}
+
+/** 置顶的特殊群组「随机浏览」:不是文件夹,点开后从整个库里随机取图片 / 视频。样式和普通群的行一致。 */
+@Composable
+private fun RandomRow(onClick: () -> Unit) {
+    val tg = LocalTg.current
+    Box(Modifier.fillMaxWidth().height(70.dp).clickable(onClick = onClick)) {
+        Box(
+            Modifier.padding(start = 11.dp, top = 9.dp).size(52.dp).clip(RoundedCornerShape(26.dp)).background(tg.accent),
+            contentAlignment = Alignment.Center,
+        ) { Text("🎲", fontSize = 26.sp) }
+        Column(Modifier.fillMaxSize().padding(start = 72.dp, end = 12.dp, top = 10.dp)) {
+            Text("随机浏览", color = tg.name, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            Text("从整个媒体库里随机看图片或视频", Modifier.padding(top = 3.dp), color = tg.message, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 

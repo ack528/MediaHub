@@ -15,6 +15,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import com.localtg.ui.AppRoot
+import com.localtg.ui.RandomScreen
 import com.localtg.ui.SearchScreen
 import com.localtg.ui.SettingsScreen
 import com.localtg.ui.ChatPager
@@ -143,6 +144,21 @@ class SearchActivity : TgActivity() {
 
     companion object {
         fun start(ctx: Context) = ctx.startActivity(Intent(ctx, SearchActivity::class.java))
+    }
+}
+
+/** 随机浏览页(特殊群组)。 */
+class RandomActivity : TgActivity() {
+    @Composable
+    override fun Content() {
+        FinishWhenLoggedOut()
+        ViewerNavHost(container) { openViewer ->
+            RandomScreen(container, onBack = { finish() }, onOpenViewer = openViewer)
+        }
+    }
+
+    companion object {
+        fun start(ctx: Context) = ctx.startActivity(Intent(ctx, RandomActivity::class.java))
     }
 }
 

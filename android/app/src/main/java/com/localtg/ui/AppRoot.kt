@@ -50,6 +50,7 @@ import androidx.navigation.compose.rememberNavController
 import com.localtg.AppContainer
 import com.localtg.AppLog
 import com.localtg.ChatActivity
+import com.localtg.RandomActivity
 import com.localtg.SearchActivity
 import com.localtg.SettingsActivity
 import com.localtg.ui.tg.LocalSettings
@@ -113,6 +114,7 @@ fun AppRoot(c: AppContainer) {
                     onOpen = { ChatActivity.start(ctx, it.id, it.title) },
                     onSettings = { SettingsActivity.start(ctx, null) },
                     onSearch = { SearchActivity.start(ctx) },
+                    onRandom = { RandomActivity.start(ctx) },
                     onSection = { SettingsActivity.start(ctx, it) },
                 )
             }
