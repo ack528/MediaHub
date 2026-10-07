@@ -642,3 +642,31 @@ func TestWarmRandom(t *testing.T) {
 	}
 	t.Fatal("30 秒内没有把全部序列预先生成好")
 }
+
+func TestRandomReset(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	ids := func() string {
+		var r struct{ Items []Item }
+		e.getJSON("/api/v1/random?types=photo&limit=30&seed=3&batch=0", &r)
+		out := ""
+		for _, it := range r.Items {
+			out += it.ID + ","
+		}
+		return out
+	}
+	before := ids()
+	if before == "" || before != ids() {
+		t.Fatal("重置前同一个 seed 应该稳定")
+	}
+	if resp, _ := e.do("POST", "/api/v1/random/reset", nil, nil); resp.StatusCode != 200 {
+		t.Fatalf("reset = %d", resp.StatusCode)
+	}
+	after := ids()
+	if after == before {
+		t.Fatal("重置后应该是一套全新的序列")
+	}
+	if after != ids() {
+		t.Fatal("重置后的序列也要稳定")
+	}
+}

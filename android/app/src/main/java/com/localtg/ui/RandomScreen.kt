@@ -29,6 +29,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,6 +61,17 @@ private fun newRandomSeed(cur: Long): Long {
     return n + 1L
 }
 
+/**
+ * 列表状态放在 ViewModel 里(随导航栈上的这一页保留):点开媒体进查看器时这一页的 composition 会被销毁,返回时重建 ——
+ * 如果状态只在 remember 里,返回后列表是空的,重新取第一批并滚到顶部,位置就丢了。
+ */
+class RandomViewModel : ViewModel() {
+    var items by mutableStateOf<List<Item>>(emptyList())
+    var batches = 0           // 已经取了几批(下一批的批号)
+    var loadedKey: String? = null // items 是按哪个 (类型, 范围, 序列) 取的;不变就不用重新取
+    var viewerNext = 0        // 查看器接着往后取的批号
+}
+
 /** 随机浏览:一个特殊的群组,从媒体库里随机取图片 / 视频(label / roots 不为空 = 只随机这个盘符里的,否则随机所有盘符)(可选「全部 / 图片 / 视频」),滚到底自动再取一批,点右上角重新洗牌。 */
 @Composable
 fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
@@ -66,12 +79,11 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
     val st by c.settings.state.collectAsState()
     val tab = st.randomType.coerceIn(0, 2)
     val types = when (tab) { 1 -> "photo,gif"; 2 -> "video"; else -> "photo,video,gif" }
-    var items by remember { mutableStateOf<List<Item>>(emptyList()) }
+    val vm: RandomViewModel = viewModel()
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var retry by remember { mutableIntStateOf(0) } // 出错后点「重试」加 1
     val seed = st.randomSeed // 随机种子存在设置里:不点「重新洗牌」,每次进来、切类型再切回来都是同一个随机序列
-    var batches by remember { mutableIntStateOf(0) } // 已经取了几批(下一批的批号)
     LaunchedEffect(Unit) { if (c.settings.value.randomSeed == 0L) c.settings.update { copy(randomSeed = newRandomSeed(randomSeed)) } }
     val grid = rememberLazyGridState()
     val scope = rememberCoroutineScope()
@@ -87,14 +99,14 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
         val my = gen[0]
         loading = true; error = null
         try {
-            val batch = if (replace) 0 else batches
+            val batch = if (replace) 0 else vm.batches
             val r = c.api.random(types, 60, roots, seed, batch)
             if (my != gen[0]) return
-            batches = batch + 1
-            val known = if (replace) HashSet() else items.mapTo(HashSet()) { it.id }
+            vm.batches = batch + 1
+            val known = if (replace) HashSet() else vm.items.mapTo(HashSet()) { it.id }
             val fresh = r.items.filter { known.add(it.id) }
-            items = if (replace) fresh else items + fresh
-            AppLog.i("random", "取到 ${fresh.size} 条(类型 $types,共 ${items.size})")
+            vm.items = if (replace) fresh else vm.items + fresh
+            AppLog.i("random", "取到 ${fresh.size} 条(类型 $types,共 ${vm.items.size})")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e // 离开页面 / 换类型导致的取消不是错误
         } catch (e: Exception) {
@@ -107,14 +119,37 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
     // 换类型 / 点「重新洗牌」(换了 seed) / 重试 → 从第 0 批重新取并回到顶部
     LaunchedEffect(types, roots, seed, retry) {
         if (seed == 0L) return@LaunchedEffect // 第一次进来 seed 还没生成,等它生成后再取
-        items = emptyList()
+        val key = "$types|$roots|$seed"
+        if (vm.loadedKey == key && vm.items.isNotEmpty()) return@LaunchedEffect // 从查看器返回:列表还在,位置由 rememberLazyGridState 恢复
+        val firstLoad = vm.loadedKey == null
+        vm.loadedKey = key
+        vm.items = emptyList()
         more(replace = true)
-        if (items.isNotEmpty()) grid.scrollToItem(0)
+        if (vm.items.isEmpty()) vm.loadedKey = null // 没取到(出错 / 被取消):下次重新取
+        else if (!firstLoad) grid.scrollToItem(0)
+    }
+    // 从查看器返回:列表定位到查看器里最后停留的那一项(查看器自己往后多取的几批也并进列表)
+    val ret by c.viewerReturn.collectAsState()
+    LaunchedEffect(ret, vm.items.size) {
+        val id = ret?.takeIf { it.first == "random" }?.second ?: return@LaunchedEffect
+        if (vm.items.isEmpty()) return@LaunchedEffect
+        var idx = vm.items.indexOfFirst { it.id == id }
+        if (idx < 0) {
+            val known = vm.items.mapTo(HashSet()) { it.id }
+            vm.items = vm.items + c.viewerFeed.items.filter { known.add(it.id) }
+            vm.batches = maxOf(vm.batches, vm.viewerNext)
+            idx = vm.items.indexOfFirst { it.id == id }
+        }
+        if (idx >= 0) {
+            androidx.compose.runtime.withFrameNanos { } // 等列表量好一次再判断可见性
+            if (grid.layoutInfo.visibleItemsInfo.none { it.index == idx }) grid.scrollToItem(idx)
+        }
+        c.viewerReturn.value = null
     }
     // 滚到接近底部,再取一批
     val last = grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-    LaunchedEffect(last, items.size) {
-        if (items.isNotEmpty() && !loading && error == null && last >= items.size - 15) more(replace = false)
+    LaunchedEffect(last, vm.items.size) {
+        if (vm.items.isNotEmpty() && !loading && error == null && last >= vm.items.size - 15) more(replace = false)
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -143,35 +178,36 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
-                items.isEmpty() && loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                items.isEmpty() && error != null -> Column(
+                vm.items.isEmpty() && loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                vm.items.isEmpty() && error != null -> Column(
                     Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(error!!, color = tg.danger, fontSize = 15.sp)
-                    TextButton(onClick = { retry++ }) { Text("重试") }
+                    TextButton(onClick = { vm.loadedKey = null; retry++ }) { Text("重试") }
                 }
-                items.isEmpty() -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                vm.items.isEmpty() -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
                     Text("没有可显示的文件", color = tg.message, fontSize = 15.sp)
                 }
                 else -> LazyVerticalGrid(
                     state = grid, columns = GridCells.Fixed(3), modifier = Modifier.fillMaxSize(),
                     horizontalArrangement = Arrangement.spacedBy(1.dp), verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
-                    items(items, key = { it.id }) { item ->
+                    items(vm.items, key = { it.id }) { item ->
                         MediaThumb(
                             item, c.api,
                             modifier = Modifier.aspectRatio(1f).mediaShared(item.id, RectangleShape).clickable {
-                                val snap = items
-                                // 查看器翻到末尾继续随机取;游标只表示"还有",内容去重由 ViewerFeed 处理
-                                var next = batches // 查看器接着往后取固定序列的下一批;回到列表后滚到底取到的是同样的批,按 id 去重
-                                c.viewerFeed = ViewerFeed(snap) { _, _ -> c.api.random(types, 60, roots, seed, next++).items to "more" }
+                                val snap = vm.items
+                                // 查看器翻到末尾接着取固定序列的下一批;游标只表示"还有",内容去重由 ViewerFeed 处理
+                                vm.viewerNext = vm.batches
+                                c.viewerReturn.value = null
+                                c.viewerFeed = ViewerFeed(snap, originDialogId = "random") { _, _ -> c.api.random(types, 60, roots, seed, vm.viewerNext++).items to "more" }
                                 onOpenViewer(snap.indexOfFirst { it.id == item.id }.coerceAtLeast(0))
                             },
                         )
                     }
                 }
             }
-            if (error != null && items.isNotEmpty()) {
+            if (error != null && vm.items.isNotEmpty()) {
                 Text(
                     error!!,
                     Modifier.align(Alignment.BottomCenter).padding(12.dp).background(tg.bar, RoundedCornerShape(8.dp))

@@ -86,6 +86,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/state/playback", authd(s.clearPlayback))
 	mux.Handle("GET /api/v1/search", authd(s.search))
 	mux.Handle("GET /api/v1/random", authd(s.random))
+	mux.Handle("POST /api/v1/random/reset", authd(s.randomReset))
 	mux.Handle("GET /api/v1/media/{id}/file", authd(s.mediaFile))
 	mux.Handle("HEAD /api/v1/media/{id}/file", authd(s.mediaFile))
 	mux.Handle("GET /api/v1/media/{id}/poster", authd(s.mediaPoster))

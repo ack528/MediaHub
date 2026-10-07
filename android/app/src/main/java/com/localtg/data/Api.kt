@@ -204,6 +204,11 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
         return call(Request.Builder().url(url.build()).build())
     }
 
+    /** 让服务端清除所有历史随机序列并重新生成(服务端 1.8.0 起)。 */
+    suspend fun randomReset() {
+        send(Request.Builder().url("$base/api/v1/random/reset").post("".toRequestBody()).build())
+    }
+
     suspend fun logout() {
         runCatching {
             http.newCall(Request.Builder().url("$base/api/v1/auth/logout").post("".toRequestBody()).build()).await().close()

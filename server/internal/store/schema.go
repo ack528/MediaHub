@@ -88,6 +88,10 @@ CREATE TABLE user_view(user_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, jso
 CREATE TABLE user_playback(user_id INTEGER NOT NULL, media_id INTEGER NOT NULL, pos_ms INTEGER NOT NULL, saved_at INTEGER NOT NULL,
   PRIMARY KEY(user_id, media_id));
 `,
+	// v8:通用键值表(目前存随机浏览的"盐":重新生成随机序列时换一个新的)
+	`
+CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+`,
 }
 
 // Migrate 把数据库升级到最新模式。

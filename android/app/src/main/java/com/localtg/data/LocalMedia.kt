@@ -378,6 +378,7 @@ class LocalInterceptor(private val local: LocalMedia) : Interceptor {
             p == listOf("search") -> json(
                 req, AppJson.encodeToString(local.search(q.queryParameter("q").orEmpty(), types(), q.queryParameter("cursor"), q.queryParameter("limit")?.toIntOrNull() ?: 60)),
             )
+            p == listOf("random", "reset") -> json(req, """{"ok":true}""")
             p == listOf("random") -> json(req, AppJson.encodeToString(local.random(types(), q.queryParameter("limit")?.toIntOrNull() ?: 60, q.queryParameter("seed")?.toLongOrNull() ?: 0L, q.queryParameter("batch")?.toIntOrNull() ?: 0)))
             p.size >= 3 && p[0] == "media" -> {
                 val item = local.item(p[1].toLongOrNull() ?: throw LocalMedia.NotFound()) ?: throw LocalMedia.NotFound()

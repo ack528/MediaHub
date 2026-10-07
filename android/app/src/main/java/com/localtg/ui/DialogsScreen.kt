@@ -111,6 +111,15 @@ fun DialogsScreen(
     val scope = rememberCoroutineScope()
     val tg = LocalTg.current
     val drawer = rememberDrawerState(DrawerValue.Closed)
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    // 侧边栏「重新生成随机序列」:让服务端清除所有历史随机序列并重新生成,手机端也回到"还没选序列"
+    fun resetRandom() {
+        scope.launch {
+            val msg = if (c.isLocal) "本地媒体没有服务端随机序列" else runCatching { c.api.randomReset() }
+                .fold({ c.settings.update { copy(randomSeed = 0) }; "已让服务器清除所有随机序列并重新生成" }, { if (it is com.localtg.data.ApiException && it.http == 404) "服务端版本太旧,请先更新到 1.8.0 或更新的版本" else "重新生成失败:" + friendlyError(it) })
+            android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
     var confirmLogout by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler(drawer.isOpen) { scope.launch { drawer.close() } }
 
@@ -137,7 +146,7 @@ fun DialogsScreen(
         gesturesEnabled = drawer.isOpen || pager.currentPage == 0, // 不在第一页时,横向滑动留给盘符切换;菜单按钮随时可以打开侧边栏
         drawerContent = {
             AppDrawer(
-                c, onSearch = { go(onSearch) }, onRandom = { go { onRandom(null, null) } }, onRefresh = { go { vm.refresh() } }, onSettings = { go(onSettings) },
+                c, onSearch = { go(onSearch) }, onRandom = { go { resetRandom() } }, onRefresh = { go { vm.refresh() } }, onSettings = { go(onSettings) },
                 onLog = { go { onSection("log") } }, onAbout = { go { onSection("about") } },
                 onLogout = { go { confirmLogout = true } },
                 onSwitch = { id -> go { c.scope.launch { c.session.switchTo(id) } } },
@@ -261,7 +270,7 @@ private fun AppDrawer(
             Box(Modifier.padding(vertical = 6.dp).fillMaxWidth().height(1.dp).background(tg.divider))
         }
         DrawerItem(TgIcons.Search, "搜索", onSearch)
-        DrawerItem(TgIcons.Refresh, "随机浏览", onRandom)
+        DrawerItem(TgIcons.Refresh, "重新生成随机序列", onRandom)
         DrawerItem(TgIcons.Refresh, "刷新列表", onRefresh)
         DrawerItem(TgIcons.Settings, "设置", onSettings)
         DrawerItem(TgIcons.File, "日志与诊断", onLog)

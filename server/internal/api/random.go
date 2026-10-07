@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	crand "crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"hash/fnv"
 	"math/rand"
 	"net/http"
@@ -28,10 +30,13 @@ const (
 
 type randomState struct {
 	sync.Mutex
-	ready bool
-	roots map[int64][2]int64 // 根目录 id → [最小 id, 最大 id]
-	all   [2]int64           // 全部根目录
-	seqs  map[string]*seqEntry
+	ready  bool
+	roots  map[int64][2]int64 // 根目录 id → [最小 id, 最大 id]
+	all    [2]int64           // 全部根目录
+	seqs   map[string]*seqEntry
+	salt   int64 // 随机序列的盐:不同的盐 = 完全不同的一套序列;存在 kv 表里,重启后不变。「重新生成随机序列」时换新的
+	saltOK bool
+	kick   chan struct{} // 叫醒预热协程立刻重新生成
 }
 
 type seqEntry struct {
@@ -125,11 +130,61 @@ func randCond(types []int) string {
 	return "+m.type IN " + inList(types) + " AND +m.state<>2 AND m.size>0 AND +m.root_id IN (SELECT id FROM roots WHERE enabled=1)"
 }
 
-// seqRNG:(范围、类型、槽位、批号)→ 确定性的随机数发生器。批号 -1 = 预先生成的整份序列。
-func seqRNG(scopeKey, tkey string, slot, batch int) *rand.Rand {
+// seqRNG:(盐、范围、类型、槽位、批号)→ 确定性的随机数发生器。批号 -1 = 预先生成的整份序列。
+func seqRNG(salt int64, scopeKey, tkey string, slot, batch int) *rand.Rand {
 	h := fnv.New64a()
 	h.Write([]byte(scopeKey + "|" + tkey))
-	return rand.New(rand.NewSource(int64(h.Sum64() + uint64(slot)*0x9E3779B97F4A7C15 + uint64(batch+2)*0xBF58476D1CE4E5B9)))
+	return rand.New(rand.NewSource(int64(h.Sum64() + uint64(salt) + uint64(slot)*0x9E3779B97F4A7C15 + uint64(batch+2)*0xBF58476D1CE4E5B9)))
+}
+
+// randomSalt 取当前的盐(第一次从 kv 表读,没有记录 = 0)。
+func (s *Server) randomSalt() int64 {
+	s.rnd.Lock()
+	defer s.rnd.Unlock()
+	if !s.rnd.saltOK {
+		var v string
+		if err := s.DB.QueryRow("SELECT v FROM kv WHERE k='random_salt'").Scan(&v); err == nil {
+			s.rnd.salt, _ = strconv.ParseInt(v, 10, 64)
+		}
+		s.rnd.saltOK = true
+	}
+	return s.rnd.salt
+}
+
+// ResetRandom 清除所有历史随机序列:换一个新的盐(存进 kv 表)、清空内存里的序列并叫醒预热协程重新生成。
+// 之后每份序列都和以前完全不同;手机端正在看的序列也会变(它们下次取数据时就是新序列)。
+func (s *Server) ResetRandom() error {
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return err
+	}
+	salt := int64(binary.LittleEndian.Uint64(b[:]) >> 1)
+	if _, err := s.DB.Exec("INSERT INTO kv(k,v) VALUES('random_salt',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", strconv.FormatInt(salt, 10)); err != nil {
+		return err
+	}
+	s.rnd.Lock()
+	s.rnd.salt, s.rnd.saltOK = salt, true
+	s.rnd.seqs = map[string]*seqEntry{}
+	if s.rnd.kick == nil {
+		s.rnd.kick = make(chan struct{}, 1)
+	}
+	kick := s.rnd.kick
+	s.rnd.Unlock()
+	select {
+	case kick <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (s *Server) randomReset(w http.ResponseWriter, r *http.Request) {
+	if err := s.ResetRandom(); err != nil {
+		s.Log.Error("重新生成随机序列失败", "err", err)
+		writeErr(w, 500, "internal", "重新生成失败")
+		return
+	}
+	s.Log.Info("已清除所有随机序列,正在重新生成")
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // pickIDs 在 [lo, hi] 里随机取点,每个点取 id >= 该点的第一条符合条件的(主键索引查找,每条几十微秒到几毫秒;不用 ORDER BY RANDOM():几十万行要全表排序)。
@@ -172,14 +227,15 @@ func (s *Server) sequence(ctx context.Context, types []int, roots []int64, slot 
 		return nil, err
 	}
 	tkey := typesKey(types)
-	ckey := skey + "|" + tkey + "|" + strconv.Itoa(slot)
+	salt := s.randomSalt()
+	ckey := strconv.FormatInt(salt, 10) + "|" + skey + "|" + tkey + "|" + strconv.Itoa(slot)
 	s.rnd.Lock()
 	e := s.rnd.seqs[ckey]
 	s.rnd.Unlock()
 	if e != nil && e.lo == lo && e.hi == hi {
 		return e.ids, nil
 	}
-	ids, err := s.pickIDs(ctx, randCond(types)+scond, lo, hi, seqLen, seqRNG(skey, tkey, slot, -1), 60*time.Second)
+	ids, err := s.pickIDs(ctx, randCond(types)+scond, lo, hi, seqLen, seqRNG(salt, skey, tkey, slot, -1), 60*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +243,9 @@ func (s *Server) sequence(ctx context.Context, types []int, roots []int64, slot 
 	if s.rnd.seqs == nil {
 		s.rnd.seqs = map[string]*seqEntry{}
 	}
-	s.rnd.seqs[ckey] = &seqEntry{lo, hi, ids}
+	if s.rnd.salt == salt { // 生成期间如果又重置了(盐变了),这份旧的不要存
+		s.rnd.seqs[ckey] = &seqEntry{lo, hi, ids}
+	}
 	s.rnd.Unlock()
 	return ids, nil
 }
@@ -195,6 +253,12 @@ func (s *Server) sequence(ctx context.Context, types []int, roots []int64, slot 
 // WarmRandom 预热随机浏览:启动时在后台先算好各根目录的 id 范围,再把「全部」和每个根目录(盘符)× 三种类型(全部 / 图片 / 视频)× [randSlots] 份序列全部生成好,
 // 之后每 10 分钟刷新范围并补齐变化了的序列。立即返回,在 ctx 结束时停止。
 func (s *Server) WarmRandom(ctx context.Context) {
+	s.rnd.Lock()
+	if s.rnd.kick == nil {
+		s.rnd.kick = make(chan struct{}, 1)
+	}
+	kick := s.rnd.kick
+	s.rnd.Unlock()
 	go func() {
 		for {
 			t0 := time.Now()
@@ -230,6 +294,7 @@ func (s *Server) WarmRandom(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-time.After(10 * time.Minute):
+			case <-kick: // 手机端点了「重新生成随机序列」
 			}
 		}
 	}()
@@ -313,7 +378,7 @@ func (s *Server) random(w http.ResponseWriter, r *http.Request) {
 			case len(seq) >= seqLen: // 超出预先生成的长度:按同样的规则实时确定性生成这一批
 				lo, hi, skey, scond, found, e := s.scope(r.Context(), roots)
 				if err = e; err == nil && found {
-					ids, err = s.pickIDs(r.Context(), randCond(types)+scond, lo, hi, limit, seqRNG(skey, typesKey(types), slot, int(batch)), 4*time.Second)
+					ids, err = s.pickIDs(r.Context(), randCond(types)+scond, lo, hi, limit, seqRNG(s.randomSalt(), skey, typesKey(types), slot, int(batch)), 4*time.Second)
 				}
 			case from < len(seq): // 库很小,序列本来就没有 seqLen 那么长
 				ids = seq[from:]
