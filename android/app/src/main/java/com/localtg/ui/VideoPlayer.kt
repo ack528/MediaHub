@@ -816,13 +816,13 @@ fun VideoPage(
                     val prevNow by rememberUpdatedState(onPrev)
                     val nextNow by rememberUpdatedState(onNext)
                     Row(
-                        Modifier.fillMaxWidth().pointerInput(barSwipe, rsp) {
+                        Modifier.fillMaxWidth().pointerInput(barSwipe, rsp, cfg.barSwipeDp) {
                             if (!barSwipe) return@pointerInput
                             var dx = 0f
                             detectHorizontalDragGestures(
                                 onDragStart = { dx = 0f },
                                 onDragEnd = {
-                                    if (abs(dx) > 80.dp.toPx()) {
+                                    if (abs(dx) > cfg.barSwipeDp.dp.toPx()) {
                                         val goPrev = if (dx > 0) rsp else !rsp
                                         val act = if (goPrev) prevNow else nextNow
                                         if (act != null) act() else showHud(Hud(null, if (goPrev) "已经是第一个" else "已经是最后一个"))

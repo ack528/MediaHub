@@ -74,6 +74,7 @@ data class AppSettings(
     val controllerTimeoutSec: Int = 4,
     val keepScreenOn: Boolean = true,
     val swipeSeek: Boolean = true,             // 视频页水平滑动 = 快进快退(VLC 方式);关闭则水平滑动切换上 / 下一项
+    val barSwipeDp: Int = 40,                  // 功能条上左右滑动切换媒体所需的滑动距离(dp)
     val gestures: Boolean = true,              // 手势:双击快进快退、长按倍速、上下滑动调亮度 / 音量
     val longPressSpeed: Float = 2f,            // 长按画面时的临时倍速
     val swipeSpanSec: Int = 90,                // 手指横扫整个屏幕宽度对应的快进秒数

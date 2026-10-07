@@ -272,6 +272,10 @@ private fun VideoPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
     SwitchRow("手势控制", "双击左 / 右侧快退 / 快进,双击中间暂停;长按倍速;左半屏上下滑调亮度,右半屏调音量", s.gestures) { u { copy(gestures = it) } }
     SwitchRow("水平滑动快进快退", "视频里左右滑动调整进度(和 VLC 一样);关闭后左右滑动切换上 / 下一项", s.swipeSeek) { u { copy(swipeSeek = it) } }
     ChoiceRow(
+        "功能条滑动切换距离", s.barSwipeDp, listOf(15 to "15dp(极短)", 25 to "25dp(短)", 40 to "40dp(默认)", 60 to "60dp", 80 to "80dp(长)"),
+        desc = "视频控制条显示时,在进度条下面那一排左右滑动切换上 / 下一个媒体所需的距离,越小越灵敏",
+    ) { u { copy(barSwipeDp = it) } }
+    ChoiceRow(
         "横扫快进范围", s.swipeSpanSec, listOf(30 to "30 秒", 60 to "60 秒", 90 to "90 秒(默认)", 180 to "3 分钟", 300 to "5 分钟"),
         desc = "手指从屏幕一侧横扫到另一侧对应的快进 / 快退时长,长视频可以调大",
     ) { u { copy(swipeSpanSec = it) } }
