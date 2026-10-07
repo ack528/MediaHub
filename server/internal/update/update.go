@@ -237,7 +237,65 @@ func (u *Updater) withMirror(url string) string {
 	return strings.TrimRight(u.o.Mirror, "/") + "/" + url
 }
 
+// fetchViaRedirect 不走 GitHub API(匿名每小时只有 60 次,共用出口 IP / 代理时很容易被限流返回 403):
+// 访问 github.com/<repo>/releases/latest 会 302 到 .../releases/tag/<tag>,取到 tag;
+// 再下载这个 tag 下的 SHA256SUMS.txt,里面每行 "<sha256>  <文件名>" 就是这次发布的全部资源。没有更新说明(body 为空)。
+func (u *Updater) fetchViaRedirect(ctx context.Context, prefix string) (*release, error) {
+	noRedirect := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, _ := http.NewRequestWithContext(ctx, "GET", prefix+"https://github.com/"+u.o.Repo+"/releases/latest", nil)
+	req.Header.Set("User-Agent", "MediaHub-Updater/"+u.o.Version)
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	i := strings.LastIndex(loc, "/releases/tag/")
+	if resp.StatusCode/100 != 3 || i < 0 {
+		return nil, fmt.Errorf("没有取到最新发布的标签(HTTP %d)", resp.StatusCode)
+	}
+	tag := loc[i+len("/releases/tag/"):]
+	base := "https://github.com/" + u.o.Repo + "/releases/download/" + tag + "/"
+	sresp, err := u.get(ctx, prefix+base+"SHA256SUMS.txt", "")
+	if err != nil {
+		return nil, err
+	}
+	b, _ := io.ReadAll(io.LimitReader(sresp.Body, 1<<20))
+	sresp.Body.Close()
+	r := &release{Tag: tag}
+	r.Assets = append(r.Assets, struct {
+		Name string `json:"name"`
+		URL  string `json:"browser_download_url"`
+		Size int64  `json:"size"`
+	}{Name: "SHA256SUMS.txt", URL: base + "SHA256SUMS.txt"})
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 {
+			name := strings.TrimPrefix(f[len(f)-1], "*")
+			r.Assets = append(r.Assets, struct {
+				Name string `json:"name"`
+				URL  string `json:"browser_download_url"`
+				Size int64  `json:"size"`
+			}{Name: name, URL: base + name})
+		}
+	}
+	return r, nil
+}
+
 func (u *Updater) fetchLatest(ctx context.Context) (*release, error) {
+	if r, err := u.fetchLatestAPI(ctx); err == nil {
+		return r, nil
+	} else {
+		u.o.Log.Info("GitHub API 不可用(多半是匿名限流),改用 releases/latest 跳转 + SHA256SUMS.txt", "err", err)
+	}
+	r, err := u.fetchViaRedirect(ctx, "")
+	if err != nil && u.o.Mirror != "" {
+		r, err = u.fetchViaRedirect(ctx, strings.TrimRight(u.o.Mirror, "/")+"/")
+	}
+	return r, err
+}
+
+func (u *Updater) fetchLatestAPI(ctx context.Context) (*release, error) {
 	api := "https://api.github.com/repos/" + u.o.Repo + "/releases/latest"
 	var lastErr error
 	for _, url := range []string{api, u.withMirror(api)} {

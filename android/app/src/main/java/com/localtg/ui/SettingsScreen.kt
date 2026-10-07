@@ -782,7 +782,7 @@ private fun UpdateSection(ver: String) {
         }
         ActionRow(
             if (progress >= 0) "正在下载… $progress%" else "下载并安装 v${r.version}",
-            "大小 ${formatSize(r.size)};下载完成会校验后调起系统安装器(第一次需要允许本应用「安装未知应用」)",
+            "大小 ${if (r.size > 0) formatSize(r.size) else "未知"};下载完成会校验后调起系统安装器(第一次需要允许本应用「安装未知应用」)",
         ) {
             if (progress >= 0) return@ActionRow
             progress = 0

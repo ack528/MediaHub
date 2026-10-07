@@ -55,9 +55,34 @@ object AppUpdater {
         }
     }
 
+    /**
+     * 不走 GitHub API(匿名每小时 60 次,手机网络共用出口 IP 时容易被限流返回 403):github.com/<repo>/releases/latest 会 302 到 .../releases/tag/<tag>,
+     * 再取这个 tag 下的 SHA256SUMS.txt,里面每行 "<sha256>  <文件名>" 就是这次发布的全部资源。没有更新说明。
+     */
+    private fun viaRedirect(): GhRelease {
+        val noRedirect = client.newBuilder().followRedirects(false).build()
+        val loc = noRedirect.newCall(Request.Builder().url("https://github.com/$REPO/releases/latest").head().build()).execute().use { it.header("Location") }
+            ?: throw IOException("没有取到最新发布的标签")
+        val tag = loc.substringAfter("/releases/tag/", "")
+        if (tag.isEmpty()) throw IOException("没有取到最新发布的标签")
+        val base = "https://github.com/$REPO/releases/download/$tag/"
+        val sums = get(base + "SHA256SUMS.txt")
+        val assets = mutableListOf(GhAsset("SHA256SUMS.txt", base + "SHA256SUMS.txt", 0))
+        for (line in sums.lineSequence()) {
+            val f = line.trim().split(Regex("\\s+"))
+            if (f.size >= 2) { val n = f.last().removePrefix("*"); assets += GhAsset(n, base + n, 0) }
+        }
+        return GhRelease(tag, null, assets)
+    }
+
     /** 最新发布;发布里没有 APK 返回 null。 */
     suspend fun latest(): Release? = withContext(Dispatchers.IO) {
-        val r = AppJson.decodeFromString<GhRelease>(get("https://api.github.com/repos/$REPO/releases/latest"))
+        val r = try {
+            AppJson.decodeFromString<GhRelease>(get("https://api.github.com/repos/$REPO/releases/latest"))
+        } catch (e: Exception) {
+            AppLog.i("update", "GitHub API 不可用(${e.message}),改用 releases/latest 跳转")
+            viaRedirect()
+        }
         var apk: GhAsset? = null
         var ver = ""
         for (a in r.assets) apkName.find(a.name)?.let { apk = a; ver = it.groupValues[1] }
