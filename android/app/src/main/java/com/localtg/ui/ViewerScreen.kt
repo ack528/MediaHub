@@ -77,6 +77,8 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
     // 翻到接近已加载内容的末尾时,继续取更多(聊天历史 / 搜索结果),不会只能翻到第一页
     LaunchedEffect(pager.currentPage, items.size) { if (pager.currentPage >= items.size - 5) feed.loadMore() }
     LaunchedEffect(cur.id) { AppLog.i("viewer", "查看 ${cur.name} (${cur.type}, ${pager.currentPage + 1}/${items.size})") }
+    // 每滑到一项就记下来:退出查看器后,群组页定位到最后停留的这一项(不是打开时的那一项)
+    LaunchedEffect(cur.id) { feed.originDialogId?.let { c.viewerReturn.value = it to cur.id } }
 
     // 控制条隐藏 → 沉浸模式(隐藏状态栏和导航栏);离开时恢复
     DisposableEffect(ui.chrome, inPip) {

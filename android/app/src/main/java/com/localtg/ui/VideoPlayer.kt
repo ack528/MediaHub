@@ -809,7 +809,30 @@ fun VideoPage(
             ) {
                 if (!locked) {
                     pl?.let { SeekBar(it, remaining, backBufferMs(cfg.bufferMode)) { remaining = !remaining } }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    // 功能条(进度条下面这一排)上左右滑动 = 切换到上一个 / 下一个媒体。视频页的横向滑动被"快进快退"手势占着、翻页被关掉了,
+                    // 所以在功能条上滑动来翻页(滑动方向和设置里「右滑上一个」一致)。翻页没被关掉(没开滑动快进)时,整个页面本来就能滑,这里不重复处理。
+                    val barSwipe = cfg.gestures && cfg.swipeSeek
+                    val rsp = cfg.rightSwipePrev
+                    val prevNow by rememberUpdatedState(onPrev)
+                    val nextNow by rememberUpdatedState(onNext)
+                    Row(
+                        Modifier.fillMaxWidth().pointerInput(barSwipe, rsp) {
+                            if (!barSwipe) return@pointerInput
+                            var dx = 0f
+                            detectHorizontalDragGestures(
+                                onDragStart = { dx = 0f },
+                                onDragEnd = {
+                                    if (abs(dx) > 80.dp.toPx()) {
+                                        val goPrev = if (dx > 0) rsp else !rsp
+                                        val act = if (goPrev) prevNow else nextNow
+                                        if (act != null) act() else showHud(Hud(null, if (goPrev) "已经是第一个" else "已经是最后一个"))
+                                    }
+                                },
+                                onDragCancel = { dx = 0f },
+                            ) { change, d -> dx += d; change.consume() }
+                        },
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
                         CtrlIcon(TgIcons.Lock, "锁定控制") { ui.locked = true; ui.chrome = false; showHud(Hud(TgIcons.Lock, "已锁定,点击屏幕解锁")) }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CtrlIcon(TgIcons.SkipPrev, "上一个", enabled = onPrev != null) { onPrev?.invoke() }

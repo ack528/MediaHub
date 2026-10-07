@@ -63,6 +63,8 @@ class AppContainer(app: Application) {
     val notice = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 
     @Volatile var viewerFeed: com.localtg.data.ViewerFeed = com.localtg.data.ViewerFeed(emptyList())
+    /** 查看器里当前停在哪一项:(群组 id, 条目 id)。群组页据此在退出查看器后定位到那一项,处理完置空。 */
+    val viewerReturn = kotlinx.coroutines.flow.MutableStateFlow<Pair<String, String>?>(null)
 
     /** 画中画(小窗)状态与播放信息,供 MainActivity 在按 Home 键时判断是否自动进入小窗。 */
     val inPip = kotlinx.coroutines.flow.MutableStateFlow(false)

@@ -190,6 +190,9 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     var freshOpen: Boolean = true
         private set
 
+    /** 从查看器返回时,列表最近一次定位到(或打开查看器时所在)的条目:和查看器最后停留的条目相同就不用再滚动。 */
+    var viewerOpenedId: String? = null
+
     private var pos: Pair<String?, Int>? = null // 当前屏幕上的第一项(null 表示正处于最新一端)
     private var saveJob: Job? = null
 
@@ -400,9 +403,25 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
 
     val open: (Item) -> Unit = { item ->
         val snap = lazyItems.itemSnapshotList.items
-        c.viewerFeed = com.localtg.data.ViewerFeed(snap, prevIsHigherIndex = !grid, loader = vm.moreLoader())
+        vm.viewerOpenedId = item.id
+        c.viewerReturn.value = null // 清掉上一次遗留的返回信号,以这一次打开为准
+        c.viewerFeed = com.localtg.data.ViewerFeed(snap, prevIsHigherIndex = !grid, originDialogId = dialogId, loader = vm.moreLoader())
         onOpenViewer(snap.indexOfFirst { it.id == item.id }.coerceAtLeast(0))
     }
+
+    // 从查看器返回:查看器里滑到了别的条目,就把列表定位到最后停留的那一项。已经加载在列表里的直接滚过去;
+    // 不在已加载的范围里(查看器自己多加载了后面的)就围绕它重新加载一次。
+    val viewerRet by c.viewerReturn.collectAsState()
+    val retId = viewerRet?.takeIf { it.first == dialogId }?.second
+    var scrollTarget by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(retId, lazyItems.itemCount, lazyItems.loadState.refresh) {
+        val id = retId ?: return@LaunchedEffect
+        if (id == vm.viewerOpenedId) { c.viewerReturn.value = null; return@LaunchedEffect }
+        if (lazyItems.loadState.refresh !is LoadState.NotLoading || lazyItems.itemCount == 0) return@LaunchedEffect
+        if (lazyItems.itemSnapshotList.indexOfFirst { it?.id == id } >= 0) scrollTarget = id
+        else { c.viewerReturn.value = null; vm.viewerOpenedId = id; vm.change(id, force = true) {} }
+    }
+    val onScrolled: () -> Unit = { scrollTarget?.let { vm.viewerOpenedId = it }; scrollTarget = null; c.viewerReturn.value = null }
 
     Column(Modifier.fillMaxSize()) {
         // ---- 顶栏:返回 | 群头像 | 标题+副标题 | 右上角 网格/聊天 切换 | 更多 ----
@@ -503,8 +522,9 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                             android.widget.Toast.makeText(ctx, "已在聊天流中定位到这一条", android.widget.Toast.LENGTH_SHORT).show()
                             vm.change(it.id, force = true) { vm.grid.value = false }
                         },
+                        scrollTarget = scrollTarget, onScrollDone = onScrolled,
                     )
-                    else ChatFeed(lazyItems, c.api, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest, sortKey == "taken")
+                    else ChatFeed(lazyItems, c.api, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest, sortKey == "taken", scrollTarget, onScrolled)
                 }
             }
         }
@@ -555,8 +575,15 @@ private fun PositionMemory(
 private fun ChatFeed(
     items: LazyPagingItems<Item>, api: Api, gen: Int, restoreId: String?, restoreOffset: Int,
     onOpen: (Item) -> Unit, onRestored: () -> Unit, onPosition: (String, Int, Boolean) -> Unit, fresh: Boolean, onJumpNewest: () -> Unit, showDates: Boolean,
+    scrollTarget: String?, onScrollDone: () -> Unit,
 ) {
     val state = rememberLazyListState()
+    LaunchedEffect(scrollTarget) { // 从查看器返回:定位到查看器里最后停留的那一项
+        val id = scrollTarget ?: return@LaunchedEffect
+        val idx = items.itemSnapshotList.indexOfFirst { it?.id == id }
+        if (idx >= 0) state.scrollToItem(idx)
+        onScrollDone()
+    }
     PositionMemory(items, gen, restoreId, restoreOffset, { state.firstVisibleItemIndex }, { state.firstVisibleItemScrollOffset },
         { i, o -> state.scrollToItem(i, o) }, onRestored, onPosition, fresh)
     var fast by remember { mutableStateOf(false) }
@@ -691,10 +718,16 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
 private fun MediaGrid(
     items: LazyPagingItems<Item>, api: Api, columns: Int, gen: Int, restoreId: String?, restoreOffset: Int,
     onOpen: (Item) -> Unit, onRestored: () -> Unit, onPosition: (String, Int, Boolean) -> Unit, fresh: Boolean, onJumpNewest: () -> Unit,
-    onLongPress: (Item) -> Unit,
+    onLongPress: (Item) -> Unit, scrollTarget: String?, onScrollDone: () -> Unit,
 ) {
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val state = rememberLazyGridState()
+    LaunchedEffect(scrollTarget) { // 从查看器返回:定位到查看器里最后停留的那一项
+        val id = scrollTarget ?: return@LaunchedEffect
+        val idx = items.itemSnapshotList.indexOfFirst { it?.id == id }
+        if (idx >= 0) state.scrollToItem(idx)
+        onScrollDone()
+    }
     PositionMemory(items, gen, restoreId, restoreOffset, { state.firstVisibleItemIndex }, { state.firstVisibleItemScrollOffset },
         { i, o -> state.scrollToItem(i, o) }, onRestored, onPosition, fresh)
     var fast by remember { mutableStateOf(false) }

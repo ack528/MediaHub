@@ -14,6 +14,8 @@ class ViewerFeed(
     initial: List<Item>,
     /** 屏幕上"上一个"(上面那条 / 前一格)是不是列表里序号更大的那一项:聊天流(最新在底部)里是,网格 / 搜索结果里不是 */
     val prevIsHigherIndex: Boolean = false,
+    /** 从哪个群组打开的(搜索结果等没有就是 null):在查看器里滑到哪一项,退出后这个群组要定位到那一项。 */
+    val originDialogId: String? = null,
     private val loader: (suspend (cursor: String?, lastId: String?) -> Pair<List<Item>, String?>)? = null,
 ) {
     val items = mutableStateListOf<Item>().apply { addAll(initial) }
