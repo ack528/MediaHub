@@ -2,6 +2,7 @@
 tools/*
 !tools/*.ps1
 !tools/versions.json
+!tools/publish-release.py
 
 # ---- 运行时数据、构建产物、打包输出 ----
 runtime/
