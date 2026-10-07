@@ -83,7 +83,9 @@ fun createPlayer(ctx: Context, c: AppContainer, s: AppSettings, forceSoftware: B
     }
     val player = ExoPlayer.Builder(ctx, renderers)
         .setTrackSelector(selector)
-        .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(c.http).apply { if (meter != null) setTransferListener(meter) }))
+        .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(c.http).apply { if (meter != null) setTransferListener(meter) })
+            // 网络短暂中断时多重试几次(间隔 1 / 2 / 3 / 4 / 5 秒…,共约 40 秒),而不是几秒就报"播放错误"
+            .setLoadErrorHandlingPolicy(androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(10)))
         .setLoadControl(load)
         .setSeekBackIncrementMs(s.seekBackSec * 1000L)
         .setSeekForwardIncrementMs(s.seekForwardSec * 1000L)

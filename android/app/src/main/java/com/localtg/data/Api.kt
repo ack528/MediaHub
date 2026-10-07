@@ -61,9 +61,35 @@ class LogInterceptor : Interceptor {
     }
 }
 
-fun buildHttpClient(store: SessionStore, local: LocalMedia, connectSec: Int, readSec: Int, onUnauthorized: (Session) -> Unit): OkHttpClient {
+/** 两个客户端:media = 图片 / 视频 / 播放器(大流量,可能同时很多条);api = 浏览接口(小请求,要求响应快)。见 [buildHttpClients]。 */
+class HttpClients(val media: OkHttpClient, val api: OkHttpClient)
+
+/**
+ * 网络稳定性(2.4.0):
+ *  - 接口和媒体各用一个客户端,**各有自己的连接池和调度器**:以前全部挤在一个客户端里 —— 默认每个主机最多 5 个并发请求,
+ *    网络一卡,5 个缩略图请求占满名额,浏览接口(文件夹列表 / 历史 / 保存进度)连发出去的机会都没有;
+ *    而且共用一条 HTTP/2 连接,视频缓冲占满链路时,小请求排在后面(日志里同一时刻结束的 9 秒、17 秒的小请求);
+ *  - HTTP/2 每 10 秒发一次 PING:连接在系统层面已经死了(切换网络、云转发掉线)但没有收到 RST 时,几十秒读取超时之前就能发现并断开;
+ *  - DNS 失败时用上一次解析成功的地址。
+ */
+fun buildHttpClients(store: SessionStore, local: LocalMedia, connectSec: Int, readSec: Int, onUnauthorized: (Session) -> Unit): HttpClients {
+    val base = buildHttpClient(store, local, connectSec, readSec, onUnauthorized)
+    val media = base.newBuilder()
+        .dispatcher(okhttp3.Dispatcher().apply { maxRequests = 64; maxRequestsPerHost = 16 })
+        .build()
+    val api = base.newBuilder()
+        .dispatcher(okhttp3.Dispatcher().apply { maxRequests = 32; maxRequestsPerHost = 16 })
+        .connectionPool(okhttp3.ConnectionPool(4, 2, TimeUnit.MINUTES))
+        .callTimeout(40, TimeUnit.SECONDS) // 一次接口请求从头到尾最多 40 秒(含连接、等待响应、读完内容)
+        .build()
+    return HttpClients(media, api)
+}
+
+private fun buildHttpClient(store: SessionStore, local: LocalMedia, connectSec: Int, readSec: Int, onUnauthorized: (Session) -> Unit): OkHttpClient {
     val (sslCtx, trust) = Tls.pinnedContext { store.trustedPins() }
     return OkHttpClient.Builder()
+        .dns(FallbackDns())
+        .pingInterval(10, TimeUnit.SECONDS)
         // HTTPS:只接受指纹已被用户确认的自签名证书(不校验主机名,服务器 IP 变了也能连);HTTP 地址不受影响
         .sslSocketFactory(sslCtx.socketFactory, trust)
         .hostnameVerifier { _, _ -> true }
@@ -88,16 +114,41 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
 
     private val base: String get() = store.session.value?.baseUrl ?: error("未登录")
 
-    private suspend inline fun <reified T> call(request: Request): T = withContext(Dispatchers.IO) {
-        http.newCall(request).await().use { resp ->
-            val body = resp.body.string()
-            if (!resp.isSuccessful) {
-                val code = Regex("\"code\"\\s*:\\s*\"([^\"]*)\"").find(body)?.groupValues?.get(1) ?: "http.${resp.code}"
-                val msg = Regex("\"message\"\\s*:\\s*\"([^\"]*)\"").find(body)?.groupValues?.get(1) ?: "HTTP ${resp.code}"
-                throw ApiException(resp.code, code, msg)
+    private suspend inline fun <reified T> call(request: Request): T = AppJson.decodeFromString<T>(callBody(request))
+
+    /**
+     * 发一次接口请求并返回响应内容。网络类失败(断网、DNS、连接超时、连接被掐、切换网络时请求被取消)自动重试:
+     *  - 离线时先等网络回来(最多 10 秒),不白白失败;
+     *  - GET / PUT / DELETE 是幂等的,最多重试 3 次(间隔 0.7 / 1.4 / 2.1 秒);登录等 POST 不重试;
+     *  - 服务端返回了错误码(4xx / 5xx)是确定的结果,不重试。
+     */
+    private suspend fun callBody(request: Request): String = withContext(Dispatchers.IO) {
+        var attempt = 0
+        while (true) {
+            if (!Net.online) Net.awaitOnline(10_000)
+            val gen = Net.gen
+            try {
+                return@withContext http.newCall(request).await().use { resp ->
+                    val body = resp.body.string()
+                    if (!resp.isSuccessful) {
+                        val code = Regex("\"code\"\\s*:\\s*\"([^\"]*)\"").find(body)?.groupValues?.get(1) ?: "http.${resp.code}"
+                        val msg = Regex("\"message\"\\s*:\\s*\"([^\"]*)\"").find(body)?.groupValues?.get(1) ?: "HTTP ${resp.code}"
+                        throw ApiException(resp.code, code, msg)
+                    }
+                    body
+                }
+            } catch (e: ApiException) {
+                throw e
+            } catch (e: IOException) {
+                val idempotent = request.method == "GET" || request.method == "PUT" || request.method == "DELETE" || request.method == "HEAD"
+                val netSwitched = Net.gen != gen // 失败是因为切换网络时请求被取消:不算一次重试机会
+                attempt++
+                if (!idempotent || (attempt > 3 && !netSwitched) || attempt > 6) throw e
+                com.localtg.AppLog.i("net", "${request.method} ${request.url.encodedPath} 失败(${e.javaClass.simpleName}),${attempt * 700}ms 后重试($attempt)")
+                kotlinx.coroutines.delay(attempt * 700L)
             }
-            AppJson.decodeFromString<T>(body)
         }
+        @Suppress("UNREACHABLE_CODE") ""
     }
 
     // ---- 登录前(显式传入地址)----

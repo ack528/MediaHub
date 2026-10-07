@@ -363,6 +363,32 @@ async fn admin_rescan(root_id: Option<i64>) -> Result<(), String> {
     blocking(move || rescan_blocking(root_id)).await
 }
 
+// ---------------------------------------------------------------- 命令:软件更新(服务端每 10 分钟自动检查 GitHub Releases,这里只是显示状态 / 手动触发)
+
+/// 服务端的更新状态(服务没运行时返回 state = "offline")。
+#[tauri::command]
+async fn update_status() -> Value {
+    blocking(|| {
+        let cfg = read_json(&config_path());
+        let Some(key) = admin_key(&cfg) else { return json!({ "state": "offline", "message": "服务没有运行" }) };
+        http_get(&format!("{}/api/v1/admin/update", base_url(&cfg)), Some(&key), 3000)
+            .unwrap_or_else(|e| json!({ "state": "offline", "message": e }))
+    })
+    .await
+}
+
+/// kind = "check":立即检查;"apply":立即检查并安装(有新版本就下载、替换、重启服务)。
+#[tauri::command]
+async fn update_action(kind: String) -> Result<(), String> {
+    blocking(move || {
+        let cfg = read_json(&config_path());
+        let key = admin_key(&cfg).ok_or("找不到管理密钥(服务未运行?)")?;
+        let path = if kind == "apply" { "apply" } else { "check" };
+        http_post_empty(&format!("{}/api/v1/admin/update/{}", base_url(&cfg), path), &key)
+    })
+    .await
+}
+
 // ---------------------------------------------------------------- 命令:账号(调用服务程序的 CLI)
 
 fn run_cli(args: &[&str], stdin: Option<&str>) -> Result<String, String> {
@@ -687,6 +713,8 @@ pub fn run() {
             firewall_status,
             firewall_add,
             open_path,
+            update_status,
+            update_action,
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;

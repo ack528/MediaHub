@@ -2,4 +2,6 @@
 <paths>
     <!-- 日志打包后放在 cache/shared/,通过系统分享面板发出 -->
     <cache-path name="shared" path="shared/" />
+    <!-- 检查更新下载的安装包 -->
+    <cache-path name="updates" path="updates/" />
 </paths>

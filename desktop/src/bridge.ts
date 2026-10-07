@@ -1,7 +1,7 @@
 // 前端与后端的桥:在 Tauri 里调用 Rust 命令;在普通浏览器里用 mock(方便只调界面)。
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { DEFAULT_CONFIG, type Config, type CrashFile, type Env, type LocalIp, type ServiceStatus, type UserInfo } from "./types";
+import { DEFAULT_CONFIG, type Config, type CrashFile, type Env, type LocalIp, type ServiceStatus, type UpdateStatus, type UserInfo } from "./types";
 
 export interface Bridge {
   readonly isMock: boolean;
@@ -26,6 +26,8 @@ export interface Bridge {
   firewallAdd(port: number): Promise<void>;
   pickFolder(): Promise<string | null>;
   openPath(path: string): Promise<void>;
+  updateStatus(): Promise<UpdateStatus>;
+  updateAction(kind: "check" | "apply"): Promise<void>;
 }
 
 const tauri: Bridge = {
@@ -54,6 +56,8 @@ const tauri: Bridge = {
     return typeof r === "string" ? r : null;
   },
   openPath: (path) => invoke("open_path", { path }),
+  updateStatus: () => invoke("update_status"),
+  updateAction: (kind) => invoke("update_action", { kind }),
 };
 
 // ------------------------------------------------------------------ mock(仅浏览器调试用)
@@ -121,6 +125,8 @@ const mockBridge: Bridge = {
   firewallAdd: async () => { localStorage.setItem("mock-fw", "1"); },
   pickFolder: async () => window.prompt("(浏览器模式)输入文件夹路径", "G:\\") || null,
   openPath: async (p) => { window.alert("打开:" + p); },
+  updateStatus: async () => ({ current: "1.0.0", state: "uptodate", message: "已是最新版本", progress: 0, checkedAt: new Date().toISOString(), installable: true, auto: true }),
+  updateAction: async () => {},
 };
 
 export const bridge: Bridge = "__TAURI_INTERNALS__" in window ? tauri : mockBridge;

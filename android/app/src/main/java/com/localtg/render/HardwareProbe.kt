@@ -158,7 +158,7 @@ object HardwareProbe {
         // ---------------- 内置 LSFG(Lossless Scaling 帧生成)
         val androidOk = Build.VERSION.SDK_INT >= 29
         val lsfgLib = LsfgNative.load()
-        val dllBundled = Lsfg.dllBundled(ctx)
+        val dllBundled = Lsfg.dllBundled(ctx) || Lsfg.cacheReady(ctx)
         val lsfgLevel = when {
             !Lsfg.deviceSupported -> 0
             !androidOk || vk.isEmpty() || !lsfgLib || !dllBundled -> 0

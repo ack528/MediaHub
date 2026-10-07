@@ -15,7 +15,8 @@ func Open(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(8)
+	// 6 个盘同时扫描 + 补元数据各占着连接,8 个不够,接口请求(浏览 / 播放)拿不到连接就要排队等 —— 32 个连接对 SQLite 文件库几乎没有成本
+	db.SetMaxOpenConns(32)
 	return db, db.Ping()
 }
 

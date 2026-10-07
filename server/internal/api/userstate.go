@@ -4,9 +4,45 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 )
+
+// 浏览位置 / 播放进度的写入走"后台写":先应答 204,由单个后台协程写库(失败自动重试)。
+// 以前同步写 —— 扫描 / 补元数据正在占着 SQLite 写锁时,这个只有几十字节的 PUT 要等好几秒甚至十几秒(客户端日志里 PUT ... 204 (16718ms)),
+// 客户端那边的退出页面、保存进度都被拖住。丢一次写入的代价很小(下次滚动 / 退出会再写),所以不必让客户端等。
+var (
+	wbOnce sync.Once
+	wbCh   chan func() error
+)
+
+func writeBehind(fn func() error) {
+	wbOnce.Do(func() {
+		wbCh = make(chan func() error, 512)
+		go func() {
+			for f := range wbCh {
+				for i := 0; i < 5; i++ {
+					err := f()
+					if err == nil {
+						break
+					}
+					if i == 4 {
+						slog.Warn("后台写入浏览记录失败,已放弃", "err", err)
+						break
+					}
+					time.Sleep(time.Duration(i+1) * time.Second)
+				}
+			}
+		}()
+	})
+	select {
+	case wbCh <- fn:
+	default: // 队列满了(几百条积压):当场写,保证不丢
+		_ = fn()
+	}
+}
 
 // 每个用户的浏览记录 / 播放进度,存在服务器上:换一台设备打开同一个群或视频,回到上次退出的位置。
 //
@@ -53,12 +89,13 @@ func (s *Server) putView(w http.ResponseWriter, r *http.Request) {
 	if head.SavedAt <= 0 {
 		head.SavedAt = time.Now().UnixMilli()
 	}
-	if _, err := s.DB.Exec(`INSERT INTO user_view(user_id,dialog_id,json,saved_at) VALUES(?,?,?,?)
+	uid, js, at := userID(r), string(body), head.SavedAt
+	writeBehind(func() error {
+		_, err := s.DB.Exec(`INSERT INTO user_view(user_id,dialog_id,json,saved_at) VALUES(?,?,?,?)
 		ON CONFLICT(user_id,dialog_id) DO UPDATE SET json=excluded.json, saved_at=excluded.saved_at
-		WHERE excluded.saved_at >= user_view.saved_at`, userID(r), id, string(body), head.SavedAt); err != nil {
-		writeErr(w, 500, "internal", err.Error())
-		return
-	}
+		WHERE excluded.saved_at >= user_view.saved_at`, uid, id, js, at)
+		return err
+	})
 	w.WriteHeader(204)
 }
 
@@ -98,12 +135,13 @@ func (s *Server) putPlayback(w http.ResponseWriter, r *http.Request) {
 		in.SavedAt = time.Now().UnixMilli()
 	}
 	// pos=0 也保存(表示"看完了 / 重新开始"),这样在另一台设备上也会从头播放
-	if _, err := s.DB.Exec(`INSERT INTO user_playback(user_id,media_id,pos_ms,saved_at) VALUES(?,?,?,?)
+	uid := userID(r)
+	writeBehind(func() error {
+		_, err := s.DB.Exec(`INSERT INTO user_playback(user_id,media_id,pos_ms,saved_at) VALUES(?,?,?,?)
 		ON CONFLICT(user_id,media_id) DO UPDATE SET pos_ms=excluded.pos_ms, saved_at=excluded.saved_at
-		WHERE excluded.saved_at >= user_playback.saved_at`, userID(r), id, in.PosMs, in.SavedAt); err != nil {
-		writeErr(w, 500, "internal", err.Error())
-		return
-	}
+		WHERE excluded.saved_at >= user_playback.saved_at`, uid, id, in.PosMs, in.SavedAt)
+		return err
+	})
 	w.WriteHeader(204)
 }
 

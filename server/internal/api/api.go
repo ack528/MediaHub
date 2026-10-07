@@ -21,6 +21,7 @@ import (
 	"mediahub/internal/index"
 	"mediahub/internal/jellyfin"
 	"mediahub/internal/logx"
+	"mediahub/internal/update"
 	"mediahub/internal/winfs"
 )
 
@@ -48,6 +49,8 @@ type Server struct {
 	AdminKey string
 	// StartedAt:服务启动时间,用于状态页显示运行时长
 	StartedAt time.Time
+	// Update:自动更新(可为空)
+	Update *update.Updater
 }
 
 type ctxKey int
@@ -89,6 +92,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/media/{id}/hls", authd(s.mediaHLSStop))
 	mux.Handle("GET /api/v1/admin/status", authd(s.adminStatus))
 	mux.Handle("POST /api/v1/admin/rescan", authd(s.adminRescan))
+	mux.Handle("GET /api/v1/admin/update", s.adminOnly(s.adminUpdateStatus))
+	mux.Handle("POST /api/v1/admin/update/check", s.adminOnly(s.adminUpdateCheck))
+	mux.Handle("POST /api/v1/admin/update/apply", s.adminOnly(s.adminUpdateApply))
 	mux.Handle("GET /api/v1/admin/logs", s.adminOnly(s.adminLogs))
 	mux.Handle("GET /api/v1/admin/logs/bundle", s.adminOnly(s.adminLogBundle))
 	mux.Handle("POST /api/v1/admin/logs/level", s.adminOnly(s.adminLogLevel))

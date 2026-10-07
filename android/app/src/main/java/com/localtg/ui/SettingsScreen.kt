@@ -448,7 +448,7 @@ private fun LsfgPage(s: AppSettings) {
     )
     Header("状态")
     InfoRow("原生库", if (lib) "已加载" else "没有加载(安装包没有编进 LSFG 原生部分,或设备架构不支持)")
-    InfoRow("Lossless.dll", if (bundled) "已内置在安装包里" else "安装包里没有(先运行 tools\\setup-lsfg.ps1 再重新打包)")
+    InfoRow("Lossless.dll", if (com.localtg.render.Lsfg.dllInAssets(ctx)) "已内置在安装包里(同时保存了一份在应用私有目录,更新应用后仍保留)" else if (bundled) "安装包不含,但应用私有目录里保存着一份(更新应用后仍保留),补帧可用" else if (com.localtg.render.Lsfg.cacheReady(ctx)) "安装包不含(版权原因不公开分发),着色器已提取过,补帧可用" else "安装包不含(版权原因不公开分发);要用补帧请自己用 tools\\setup-lsfg.ps1 打一个带 DLL 的安装包装一次")
     InfoRow(
         "着色器缓存",
         when (st) {
@@ -738,6 +738,109 @@ private fun AboutPage(c: AppContainer) {
     InfoRow("服务端", server)
     InfoRow("系统", "Android ${android.os.Build.VERSION.RELEASE}(API ${android.os.Build.VERSION.SDK_INT})")
     InfoRow("设备", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+    UpdateSection(ver)
+    ChangelogSection(ver)
+}
+
+/** 软件更新:手动检查 GitHub Releases 最新版本,发现新版本后点一下下载(校验 SHA-256)并调起系统安装器。 */
+@Composable
+private fun UpdateSection(ver: String) {
+    val ctx = LocalContext.current
+    val tg = LocalTg.current
+    var checking by remember { mutableStateOf(false) }
+    var rel by remember { mutableStateOf<com.localtg.data.AppUpdater.Release?>(null) }
+    var msg by remember { mutableStateOf("") }
+    var progress by remember { mutableStateOf(-1) } // -1 = 没在下载
+    val newer = rel?.let { com.localtg.data.AppUpdater.compare(it.version, ver) > 0 } == true
+    Header("软件更新")
+    ActionRow(
+        if (checking) "正在检查…" else "检查更新",
+        if (msg.isNotEmpty()) msg else "当前 v$ver · 从 GitHub(${com.localtg.data.AppUpdater.REPO})检查最新版本",
+    ) {
+        if (checking || progress >= 0) return@ActionRow
+        checking = true; msg = ""
+        try {
+            val r = com.localtg.data.AppUpdater.latest()
+            rel = r
+            msg = when {
+                r == null -> "最新发布里没有安装包"
+                com.localtg.data.AppUpdater.compare(r.version, ver) > 0 -> "发现新版本 v${r.version}"
+                else -> "已是最新版本(v$ver)"
+            }
+        } catch (e: Exception) {
+            com.localtg.AppLog.w("update", "检查更新失败", e)
+            msg = "检查失败:${e.message ?: e.javaClass.simpleName}(GitHub 在手机网络下可能访问不了)"
+        } finally { checking = false }
+    }
+    val r = rel
+    if (r != null && newer) {
+        if (r.notes.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                Text("v${r.version} 更新内容", color = tg.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Text(r.notes, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+            }
+        }
+        ActionRow(
+            if (progress >= 0) "正在下载… $progress%" else "下载并安装 v${r.version}",
+            "大小 ${formatSize(r.size)};下载完成会校验后调起系统安装器(第一次需要允许本应用「安装未知应用」)",
+        ) {
+            if (progress >= 0) return@ActionRow
+            progress = 0
+            try {
+                val f = com.localtg.data.AppUpdater.download(ctx, r) { done, total -> progress = if (total > 0) (done * 100 / total).toInt().coerceIn(0, 100) else 0 }
+                progress = -1
+                msg = if (com.localtg.data.AppUpdater.install(ctx, f)) "已调起安装器" else "请先在系统设置里允许本应用安装未知应用,然后再点一次"
+            } catch (e: Exception) {
+                progress = -1
+                com.localtg.AppLog.w("update", "下载更新失败", e)
+                msg = "下载失败:${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+}
+
+/** 更新说明:随安装包带的 CHANGELOG(assets/changelog.md 的「手机端」部分),当前版本展开,其余历史版本点开看。 */
+@Composable
+private fun ChangelogSection(ver: String) {
+    val ctx = LocalContext.current
+    val tg = LocalTg.current
+    val entries = remember { parseChangelog(ctx, "手机端") }
+    var all by remember { mutableStateOf(false) }
+    Header("更新说明")
+    if (entries.isEmpty()) {
+        Text("没有找到更新说明", color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+        return
+    }
+    val shown = if (all) entries else entries.take(1)
+    shown.forEachIndexed { i, e ->
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text(e.first + if (i == 0 && !all) "(当前版本)" else "", color = tg.name, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            e.second.forEach { line -> Text("• $line", color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp)) }
+        }
+    }
+    if (entries.size > 1) {
+        Text(
+            if (all) "收起历史版本" else "查看历史版本(${entries.size - 1})",
+            color = tg.accent, fontSize = 14.sp,
+            modifier = Modifier.fillMaxWidth().clickable { all = !all }.padding(horizontal = 16.dp, vertical = 12.dp),
+        )
+    }
+}
+
+/** 解析 assets/changelog.md:取「## <section>」下的每个「### 版本」及其「- 条目」,按文件里的顺序(新 → 旧)返回。 */
+private fun parseChangelog(ctx: android.content.Context, section: String): List<Pair<String, List<String>>> {
+    val text = runCatching { ctx.assets.open("changelog.md").bufferedReader(Charsets.UTF_8).use { it.readText() } }.getOrNull() ?: return emptyList()
+    val out = ArrayList<Pair<String, MutableList<String>>>()
+    var inSection = false
+    for (raw in text.lines()) {
+        val l = raw.trimEnd()
+        when {
+            l.startsWith("## ") -> inSection = l.removePrefix("## ").contains(section)
+            inSection && l.startsWith("### ") -> out += l.removePrefix("### ").trim() to mutableListOf()
+            inSection && l.startsWith("- ") && out.isNotEmpty() -> out.last().second += l.removePrefix("- ").trim()
+        }
+    }
+    return out
 }
 
 @Composable

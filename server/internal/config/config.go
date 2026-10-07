@@ -60,6 +60,13 @@ type Config struct {
 	TLS struct {
 		Enabled bool `json:"enabled"`
 	} `json:"tls"`
+	// Update:自动更新(检查 GitHub Releases,发现新版本后自动下载安装并重启服务;见 internal/update)
+	Update struct {
+		Enabled         bool   `json:"enabled"`         // 默认开启
+		Repo            string `json:"repo"`            // owner/name,默认 ack528/MediaHub
+		IntervalMinutes int    `json:"intervalMinutes"` // 检查间隔,默认 10 分钟
+		Mirror          string `json:"mirror"`          // 下载加速前缀(访问不了 GitHub 时用),默认空
+	} `json:"update"`
 	// AdminListen:仅本机的管理端口(明文 HTTP,只监听回环地址,桌面管理程序用它)。留空 = 监听端口 + 1。TLS 关闭时不使用。
 	AdminListen string `json:"adminListen"`
 	// Log.Level:服务端日志级别 debug / info / warn / error,默认 info
@@ -92,6 +99,9 @@ func Default() *Config {
 	c.Auth.TokenDays = 180
 	c.Log.Level = "info"
 	c.TLS.Enabled = true
+	c.Update.Enabled = true
+	c.Update.Repo = "ack528/MediaHub"
+	c.Update.IntervalMinutes = 10
 	c.Scan.SkipWithinHours = 12
 	c.Scan.IntervalHours = 24
 	return c

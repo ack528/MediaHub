@@ -40,9 +40,10 @@ import (
 	"mediahub/internal/logx"
 	"mediahub/internal/store"
 	"mediahub/internal/tlsx"
+	"mediahub/internal/update"
 )
 
-const version = "1.3.1"
+const version = "1.4.0"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -373,6 +374,14 @@ func run(args []string, serve bool) int {
 			}
 		},
 	}
+	// 自动更新:每隔 10 分钟(可配置)检查 GitHub Releases,有新版本就下载、替换并重启服务(只有便携版布局才会自动安装)
+	srv.Update = update.New(update.Options{
+		Version: version, Repo: cfg.Update.Repo, Interval: time.Duration(cfg.Update.IntervalMinutes) * time.Minute, Mirror: cfg.Update.Mirror,
+		Root: projectRoot(), ConfigPath: cfg.Path, Log: log, Exit: stop,
+	}, cfg.Update.Enabled)
+	if cfg.Update.Enabled {
+		logx.Go("自动更新", func() { srv.Update.Run(ctx) })
+	}
 	var certFile, keyFile string
 	if cfg.TLS.Enabled {
 		var fp string
@@ -384,7 +393,10 @@ func run(args []string, serve bool) int {
 		srv.TLSFingerprint = fp
 	}
 	handler := srv.Handler()
-	hs := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	hs := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 5 * time.Minute}
+	// HTTP/2 保活:手机切换网络 / 云转发掉线后,服务端这边的连接不会收到任何通知(没有 RST),正在发送的大文件会一直占着协程和磁盘读取直到 TCP 超时(很久)。
+	// 每 20 秒发一次 PING,15 秒没有回应就断开,资源马上释放。
+	hs.HTTP2 = &http.HTTP2Config{SendPingTimeout: 20 * time.Second, PingTimeout: 15 * time.Second}
 	var adminHS *http.Server
 	if cfg.TLS.Enabled {
 		hs.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}

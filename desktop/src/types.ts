@@ -103,5 +103,12 @@ export interface ServiceStatus {
   pids: number[];
 }
 
+/** 服务端的自动更新状态(/admin/update)。state: idle | checking | uptodate | available | downloading | installing | error | disabled | offline */
+export interface UpdateStatus {
+  current?: string; latest?: string; tag?: string; notes?: string;
+  state: string; message?: string; progress?: number; checkedAt?: string;
+  installable?: boolean; auto?: boolean;
+}
+
 export interface UserInfo { name: string; created: number }
 export interface LocalIp { name: string; ip: string; private: boolean }

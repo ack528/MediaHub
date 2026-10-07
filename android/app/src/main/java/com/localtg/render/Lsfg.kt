@@ -60,8 +60,38 @@ object Lsfg {
     fun dir(ctx: Context) = File(ctx.filesDir, "lsfg")
     fun cacheDir(ctx: Context): String = File(dir(ctx), "cache").path
 
-    /** 安装包里有没有内置 Lossless.dll */
-    fun dllBundled(ctx: Context): Boolean = runCatching { ctx.assets.list("lsfg")?.contains("Lossless.dll") == true }.getOrDefault(false)
+    /** 安装包(assets)里有没有内置 Lossless.dll */
+    fun dllInAssets(ctx: Context): Boolean = runCatching { ctx.assets.list("lsfg")?.contains("Lossless.dll") == true }.getOrDefault(false)
+
+    /**
+     * 应用私有目录里保存的 Lossless.dll 副本。带 DLL 的安装包第一次启动时把它复制到这里并**一直保留**:
+     * 通过「检查更新」装上发布版(发布版不内置 DLL,版权原因不公开分发)之后,应用的私有数据会保留,DLL 还在,
+     * 需要重新提取着色器时(「重新提取着色器」)照样能用。卸载应用才会丢。
+     */
+    fun dllFile(ctx: Context) = File(dir(ctx), "Lossless.dll")
+
+    /** 有可用的 DLL:安装包里有,或私有目录里留着副本。 */
+    fun dllBundled(ctx: Context): Boolean = dllInAssets(ctx) || dllFile(ctx).let { it.isFile && it.length() > 0 }
+
+    /** 安装包里带着 DLL 时,确保私有目录里有一份一样的副本(只在没有或大小不同时复制)。后台线程调用。 */
+    fun keepDll(ctx: Context) {
+        runCatching {
+            if (!dllInAssets(ctx)) return
+            val dst = dllFile(ctx)
+            // assets 里的文件是压缩存放的,openFd 打不开,流式数一遍字节数(几 MB,后台线程,毫秒级)
+            var len = 0L
+            ctx.assets.open("lsfg/Lossless.dll").use { i -> val buf = ByteArray(64 * 1024); while (true) { val n = i.read(buf); if (n < 0) break; len += n } }
+            if (dst.isFile && dst.length() == len) return
+            dir(ctx).mkdirs()
+            val tmp = File(dir(ctx), "Lossless.dll.tmp")
+            ctx.assets.open("lsfg/Lossless.dll").use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
+            tmp.renameTo(dst)
+            AppLog.i("lsfg", "已把 Lossless.dll 保存到应用私有目录(更新应用后仍然保留)")
+        }.onFailure { AppLog.w("lsfg", "保存 Lossless.dll 副本失败:${it.message}") }
+    }
+
+    /** 着色器缓存已经提取好了(发布版安装包不内置 Lossless.dll,但之前用带 DLL 的版本提取过的手机,更新后补帧照常可用)。 */
+    fun cacheReady(ctx: Context): Boolean = File(dir(ctx), MARKER).exists() && File(dir(ctx), "cache").isDirectory
 
     fun prepareAsync(ctx: Context) {
         synchronized(this) {
@@ -89,11 +119,12 @@ object Lsfg {
         val marker = File(d, MARKER)
         val cache = File(d, "cache")
         if (marker.exists() && cache.isDirectory) return null
-        if (!dllBundled(ctx)) return "安装包里没有内置 Lossless.dll(先运行 tools\\setup-lsfg.ps1 再重新打包)"
+        if (!dllBundled(ctx)) return "没有 Lossless.dll(安装包里没有,应用私有目录里也没有保存过;先用 tools\\setup-lsfg.ps1 打一个带 DLL 的安装包装一次)"
         d.mkdirs()
-        val dll = File(d, "Lossless.dll")
+        keepDll(ctx)
+        val dll = dllFile(ctx)
         try {
-            ctx.assets.open("lsfg/Lossless.dll").use { i -> dll.outputStream().use { o -> i.copyTo(o) } }
+            if (!dll.isFile) return "找不到 Lossless.dll"
             cache.deleteRecursively()
             cache.mkdirs() // 原生提取不会创建最外层缓存目录
             val rc = LsfgNative.nativeExtract(dll.path, cache.path)
@@ -102,8 +133,6 @@ object Lsfg {
             return null
         } catch (e: Throwable) {
             return "提取着色器出错:${e.message}"
-        } finally {
-            dll.delete() // 着色器已经提取,不用留 DLL 副本
         }
     }
 }

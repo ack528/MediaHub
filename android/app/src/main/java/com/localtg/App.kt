@@ -12,7 +12,7 @@ import coil3.request.crossfade
 import com.localtg.data.Api
 import com.localtg.data.Item
 import com.localtg.data.SessionStore
-import com.localtg.data.buildHttpClient
+import com.localtg.data.buildHttpClients
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,8 +31,12 @@ class AppContainer(app: Application) {
     val settings = com.localtg.data.SettingsStore(app, scope)
     val playback = com.localtg.data.PlaybackStore(app) { session.ns() }
     val local = com.localtg.data.LocalMedia(app)
-    val http: OkHttpClient = buildHttpClient(session, local, settings.value.connectTimeoutSec, settings.value.readTimeoutSec) { s -> scope.launch { session.clearTokenIf(s.baseUrl) } }
-    val api = Api(http, session).also { it.serverRenderHeic = settings.value.heicMode == "server" }
+    private val clients = buildHttpClients(session, local, settings.value.connectTimeoutSec, settings.value.readTimeoutSec) { s -> scope.launch { session.clearTokenIf(s.baseUrl) } }
+    /** 图片 / 视频 / 播放器用的客户端(大流量)。 */
+    val http: OkHttpClient = clients.media
+    /** 浏览接口用的客户端:独立的连接池和调度器,不会被缩略图 / 视频流量拖住。 */
+    val apiHttp: OkHttpClient = clients.api
+    val api = Api(apiHttp, session).also { it.serverRenderHeic = settings.value.heicMode == "server" }
     init {
         // 设置改变后立即生效的项
         scope.launch { settings.state.collect { api.serverRenderHeic = it.heicMode == "server" } }
@@ -83,7 +87,16 @@ class App : Application(), SingletonImageLoader.Factory {
         super.onCreate()
         container = AppContainer(this)
         com.localtg.render.Assets.app = applicationContext
+        // 网络监听:断网时请求等网络回来;默认网络切换时清掉旧连接、取消卡在旧网络上的接口请求(接口请求会自动重试)
+        com.localtg.data.Net.init(this)
+        com.localtg.data.Net.onChange = {
+            container.http.connectionPool.evictAll()
+            container.apiHttp.connectionPool.evictAll()
+            container.apiHttp.dispatcher.cancelAll()
+        }
         // 内置了 Lossless.dll 的话,启动时就在后台提取着色器(只有第一次要几秒;之后读缓存),播放补帧时不用再等
+        // 带 DLL 的安装包:把 Lossless.dll 保存一份到应用私有目录(之后通过检查更新装发布版,私有数据保留,DLL 还在)
+        Thread({ com.localtg.render.Lsfg.keepDll(this) }, "lsfg-keepdll").start()
         if (com.localtg.render.Lsfg.deviceSupported && com.localtg.render.Lsfg.dllBundled(this)) com.localtg.render.Lsfg.prepareAsync(this)
         AppLog.init(this, container.settings.value.logLevel)
         AppLog.installCrashHandler()

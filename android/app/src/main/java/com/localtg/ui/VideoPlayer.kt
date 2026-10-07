@@ -264,10 +264,11 @@ fun VideoPage(
                     }.onFailure { AppLog.w("player", "音量增益不可用: ${it.message}") }
                 }
             })
+            var netRetries = 0 // 网络中断后自动恢复的次数(出了首帧清零)
             pl.playbackParameters = pl.playbackParameters.withSpeed(speed)
             pl.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             pl.addListener(object : Player.Listener {
-                override fun onRenderedFirstFrame() { firstFrame = true; error = null; AppLog.i("player", "首帧 ${item.name}") }
+                override fun onRenderedFirstFrame() { firstFrame = true; error = null; netRetries = 0; AppLog.i("player", "首帧 ${item.name}") }
                 override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying; c.videoPlaying = isPlaying }
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     state = playbackState
@@ -284,6 +285,19 @@ fun VideoPage(
                 }
                 override fun onPlayerError(e: PlaybackException) {
                     AppLog.e("player", "播放错误 ${e.errorCodeName} item=${item.name} 软解重试=$useSoftware", e)
+                    // 网络类错误(断网 / 连接超时,ExoPlayer 已经按退避重试了十次):不当作"播放错误"弹出来,等网络回来自动继续
+                    val netErr = e.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                        e.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+                    if (netErr && netRetries < 6) {
+                        netRetries++
+                        showHud(Hud(TgIcons.Warning, "网络中断,恢复后自动继续($netRetries / 6)"))
+                        scope.launch {
+                            delay(1500)
+                            com.localtg.data.Net.awaitOnline(30_000)
+                            if (player === pl) runCatching { pl.prepare() }
+                        }
+                        return
+                    }
                     val codecProblem = e.errorCode in setOf(
                         PlaybackException.ERROR_CODE_DECODING_FAILED,
                         PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
