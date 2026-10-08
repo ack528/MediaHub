@@ -357,7 +357,7 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
         desc = "固定倍率:24fps 视频 × 3 = 72fps。倍率超过 屏幕刷新率 ÷ 源帧率 时按能显示的最大倍率算;每个源帧之间只生成需要的画面,GPU 压力比“自动”小。低功耗模式不看这一项",
     ) { u { copy(enhFrcMultiplier = it) } }
     ChoiceRow(
-        "LSFG 光流精度(标准模式)", s.lsfgFlowScale, listOf(0.25f to "25%(最快)", 0.5f to "50%(默认)", 0.75f to "75%", 1f to "100%(最准,最慢)"),
+        "LSFG 光流精度(标准模式)", s.lsfgFlowScale, listOf(0.25f to "25%(最快)", 0.5f to "50%(默认)", 0.75f to "75%", 1f to "100%(最准)"),
         desc = "内部光流的分辨率比例。1080p 以上建议 50% 以下;下一次开始播放生效。低功耗模式不看这一项(50% 起步,自动调整)",
     ) { u { copy(lsfgFlowScale = it) } }
     SwitchRow("LSFG 性能模式(标准模式)", "用 LSFG 3.1P(更轻量的变体)。关闭后用标准的 3.1,画质略好但更费 GPU;低功耗模式强制开启", s.lsfgPerf) { u { copy(lsfgPerf = it) } }

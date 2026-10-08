@@ -56,3 +56,9 @@ bugs/
 android/app/src/main/cpp/lsfg/vendor/
 android/app/src/main/assets/lsfg/
 android/app/.cxx/
+probe/app/build/
+probe/app/.cxx/
+probe/.gradle/
+probe/build/
+probe/app/src/main/assets/lsfg/
+probe/app/src/main/assets/play_src.mp4

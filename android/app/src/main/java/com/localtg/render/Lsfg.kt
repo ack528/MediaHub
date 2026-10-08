@@ -38,18 +38,16 @@ object Lsfg {
     private const val MARKER = "extracted-v1"
 
     /**
-     * 补帧(LSFG)只在高通处理器(骁龙 / Adreno)上启用。天玑 / Mali 等在实测里生成耗时远超帧间隔、覆盖率上不去、画面抖动,
-     * 检测到非高通处理器直接禁用补帧(设置里的补帧选项、播放器菜单、着色器提取、渲染器全部关掉)。
-     * 判断:SoC 厂商(Android 12+)/ 硬件名 / SoC 型号,任意一个是高通就算。
+     * 补帧(LSFG)在所有带 Vulkan 的 arm64 设备上启用。早先"非高通一律禁用"是误判。
+     * 天玑 / Mali 上运动画面重影、扭曲的真正原因是 Mali 驱动对"显式 LOD 采样 + 常量纹素偏移"算错(静止画面正常),
+     * 原生层加载着色器时已自动改写绕开(lsfg_bridge.cpp / spvpatch.cpp);2026-10-08 在天玑 9500 上和 Intel GPU 用真值片段逐级比对验证,见 docs/10。
      */
     val deviceSupported: Boolean by lazy {
         val mf = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MANUFACTURER.orEmpty() else ""
         val model = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL.orEmpty() else ""
         val hw = android.os.Build.HARDWARE.orEmpty().lowercase()
-        val ok = mf.equals("QTI", true) || mf.contains("qualcomm", true) || hw.contains("qcom") || hw.contains("qti") ||
-            Regex("""^(SM|SDM|SXR|QCM|QCS|SG|SA)\d""", RegexOption.IGNORE_CASE).containsMatchIn(model)
-        AppLog.i("lsfg", "处理器检测:厂商=$mf 型号=$model 硬件=$hw → ${if (ok) "高通,可用补帧" else "非高通,禁用补帧"}")
-        ok
+        AppLog.i("lsfg", "处理器检测:厂商=$mf 型号=$model 硬件=$hw → 允许补帧")
+        true
     }
     const val UNSUPPORTED_TEXT = "检测到非高通处理器,补帧已禁用(补帧只在骁龙 / Adreno 上验证过,天玑 / Mali 等性能跟不上)"
 

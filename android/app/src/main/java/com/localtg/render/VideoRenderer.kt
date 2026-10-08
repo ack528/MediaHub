@@ -22,6 +22,7 @@ import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 
 /** 增强渲染的配置。 */
 data class EnhanceConfig(
@@ -85,6 +86,10 @@ class VideoRenderer(
     private var dpy: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var ctx: EGLContext = EGL14.EGL_NO_CONTEXT
     private var win: EGLSurface = EGL14.EGL_NO_SURFACE
+    private var eglCfg: EGLConfig? = null
+    // 自动化测试的屏幕内录:把每个上屏的帧再画进编码器的输入表面(见 FrameRecorder)
+    private var recorder: FrameRecorder? = null
+    private var recSurf: EGLSurface = EGL14.EGL_NO_SURFACE
     var hdrSurface = false; private set
     private var halfOk = false
 
@@ -145,7 +150,9 @@ class VideoRenderer(
     private var lsfgExec: java.util.concurrent.ExecutorService? = null
     private var lsfgOk = 0
     private lateinit var pool8: Gl.Pool     // 生成帧用 RGBA8 的纹理池(比 16F 省 4 倍带宽,每帧要拷 k 张)
-    private val flowSteps = floatArrayOf(1f, 0.75f, 0.5f, 0.35f, 0.25f)
+    // 光流精度档位只到 50%,再往下画质损失明显;耗时不够再减半倍数 / 降输入分辨率。
+    // (以前"精度越低越慢"的实测是桥接层把光流比例传反了造成的,2.12.0 已修正:现在精度低确实更快。)
+    private val flowSteps = floatArrayOf(1f, 0.75f, 0.5f)
     @Volatile private var lsfgStep = 0      // 自动降级的档位(见 [ladder]:先降光流精度,再降输入分辨率)
     private var lsfgStartId = Long.MAX_VALUE // 当前会话从哪一帧开始(前几个区间还在预热,不计覆盖率)
     private var lastCountedA = -1L
@@ -158,6 +165,7 @@ class VideoRenderer(
     private var pacingSin = 0.0
     private var pacingN = 0
     private var lastSelA = -1L
+    private var notNeededSince = 0L        // 补帧"不需要"状态开始的时间(0 = 需要)
     private var covTotal = 0                // 统计窗口:上屏的帧区间数 / 其中有生成帧的区间数
     private var covOk = 0
     @Volatile private var lsfgCoverage = -1 // 最近一个窗口的覆盖率(%),显示在右上角
@@ -200,6 +208,10 @@ class VideoRenderer(
     private fun poke() { handler.post { dirty = true; if (!released && !choreoPosted && ring.isNotEmpty()) scheduleVsync() } }
     fun setVideoSize(w: Int, h: Int, par: Float) { vw = w; vh = h; vpar = if (par > 0f) par else 1f; poke() }
     fun setResizeMode(m: String) { resizeMode = m; poke() }
+
+    /** 视频格式里声明的帧率(0 = 未知)。补帧倍率用它定,不用到达间隔估计:4K / 高码率视频解码吃力时到达间隔乱跳(日志里 15 → 35 → 48 → 19fps),倍率跟着跳、会话反复重建。 */
+    @Volatile private var nominalFps = 0.0
+    fun setNominalFps(f: Float) { nominalFps = if (f > 1f) f.toDouble() else 0.0 }
     fun setConfig(c: EnhanceConfig) {
         trace.enabled = c.trace
         if (c.frc != config.frc) { lsfgGaveUp = false; lsfgBadStreak = 0; lsfgCoverage = -1; resetScaleTuning() }
@@ -214,6 +226,8 @@ class VideoRenderer(
     // 1.12.1 的日志(Adreno 829,1080p 30fps):精度 25%、k=1 时 worker 要 41ms(超过 33ms 的帧间隔,覆盖率 0%),
     // 而精度 50%、k=3 只要 25ms —— 精度压到 25% 反而更慢。所以低功耗从 50% 起步,自动降级只在"降了确实更快"时才继续往下降。
     private val lowFlowScale = 0.5f
+    private val LSFG_MAX_PIXELS = 1920.0 * 1088.0
+    private val LSFG_MAX_PIXELS_HIGHFPS = 1280.0 * 736.0
 
     /** 补帧的目标刷新率:低功耗 = 60Hz;标准 = 这块屏同分辨率下 ≤120Hz 里最高的。 */
     private fun targetHz(cfg: EnhanceConfig): Double = if (cfg.lowPower) lowTargetHz else maxRefreshRate.toDouble()
@@ -259,6 +273,7 @@ class VideoRenderer(
             intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, 0x3100 /* EGL_CONTEXT_PRIORITY_LEVEL_IMG */, 0x3101 /* EGL_CONTEXT_PRIORITY_HIGH_IMG */, EGL14.EGL_NONE)
         else intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE)
         ctx = EGL14.eglCreateContext(dpy, cfg, EGL14.EGL_NO_CONTEXT, c3, 0)
+        eglCfg = cfg
         check(ctx != EGL14.EGL_NO_CONTEXT) { "无法创建 OpenGL ES 3 上下文" }
         // HDR:带 BT.2020 PQ 色彩空间的 10 位表面(SurfaceFlinger 会按显示器能力做色调映射);失败就退回普通 SDR 表面
         if (cfg === hdrConfigTried) {
@@ -271,6 +286,7 @@ class VideoRenderer(
             val cfg8 = if (cfg === hdrConfigTried) chooseConfig(8, 8)!! else cfg
             win = EGL14.eglCreateWindowSurface(dpy, cfg8, surface, intArrayOf(EGL14.EGL_NONE), 0)
             if (cfg8 !== cfg) { // 上下文要和表面配置兼容:重建上下文
+                eglCfg = cfg8
                 EGL14.eglDestroyContext(dpy, ctx)
                 ctx = EGL14.eglCreateContext(dpy, cfg8, EGL14.EGL_NO_CONTEXT, c3, 0)
             }
@@ -326,6 +342,7 @@ class VideoRenderer(
     }
 
     private fun teardown() {
+        runCatching { stopRecordingNow() }
         chains.clear()
         ring.forEach { retire(it) }
         ring.clear()
@@ -419,7 +436,17 @@ class VideoRenderer(
         }
         val slot = Slot(ts, img, pyr, nextId++)
         val prev = ring.lastOrNull()
-        if (lsfgOn && frcNeeded(cfg)) runLsfg(slot, cfg) else if (lsfg != null) stopLsfg()
+        if (lsfgOn && frcNeeded(cfg)) { notNeededSince = 0L; runLsfg(slot, cfg) }
+        else if (lsfg != null) {
+            // 系统(vivo 等)会把屏幕临时降到 60Hz,60fps 视频在 60Hz 上"不需要补帧"→ 会话被释放,一转眼屏幕又回 120Hz → 重建会话(0.5 ~ 0.7 秒卡顿),
+            // 日志里每 1 ~ 2 秒一次。所以"不需要"要持续 5 秒以上才释放会话;期间只是不提交新帧(覆盖率统计也只在需要补帧时计)。
+            if (!lsfgOn) stopLsfg()
+            else {
+                val nowMs = SystemClock.elapsedRealtime()
+                if (notNeededSince == 0L) notNeededSince = nowMs
+                else if (nowMs - notNeededSince > 5000L) { stopLsfg(); notNeededSince = 0L }
+            }
+        }
         if (prev != null) {
             val dt = ts - prev.ts
             if (dt in 4_000_000L..200_000_000L) interval = if (interval == 0L) dt else (interval * 7 + dt) / 8
@@ -448,7 +475,7 @@ class VideoRenderer(
             }
         }
         // 覆盖率 = 上屏的帧区间里有生成帧的比例。画面"一会卡一会流畅"就是有的区间有生成帧、有的没有(生成速度偶尔跟不上)。
-        // 低于 85% 就先降光流精度(逐档 100→75→50→35→25%),到最低档还不够就停用补帧
+        // 低于 85% 就先降光流精度(逐档 100→75→50%),到最低档还不够就停用补帧
         if (lsfgOn && covTotal >= 24) {
             val cov = covOk * 100 / covTotal
             lsfgCoverage = cov
@@ -654,12 +681,61 @@ class VideoRenderer(
         GLES20.glUniform1i(Gl.loc(pFinal, "uHdr"), if (hdrActive(cfg)) 1 else 0)
         GLES20.glUniform1f(Gl.loc(pFinal, "uPeak"), cfg.hdrPeakNits.toFloat())
         Gl.draw()
+        recorder?.let { recordFrame(it, d, vsyncNs) }
         val tS0 = System.nanoTime()
         EGL14.eglSwapBuffers(dpy, win)
         trace.swap(tDraw0, tS0, System.nanoTime(), period)
         shown++
         updateStats(cfg, generating, a)
         if (ring.isNotEmpty() && (wanted || b != null)) scheduleVsync()
+    }
+
+    /** 开始内录(渲染线程执行)。宽度 = 屏幕宽度 × scale,高度按比例,取偶数。 */
+    fun startRecording(path: String, scale: Float = 0.5f) {
+        handler.post {
+            runCatching { stopRecordingNow() }
+            val w = (surfaceW * scale).toInt() and 1.inv()
+            val h = (surfaceH * scale).toInt() and 1.inv()
+            runCatching { recorder = FrameRecorder(path, w, h); AppLog.i("record", "开始录制 $path ${w}x$h") }
+                .onFailure { AppLog.w("record", "无法开始录制:${it.message}") }
+            dirty = true
+            if (!choreoPosted) scheduleVsync()
+        }
+    }
+
+    /** 结束内录并等文件写完(在调用线程上等,最多约 10 秒)。 */
+    fun stopRecording() {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        handler.post { runCatching { stopRecordingNow() }; latch.countDown() }
+        latch.await(12, java.util.concurrent.TimeUnit.SECONDS)
+    }
+
+    private fun stopRecordingNow() {
+        val r = recorder ?: return
+        recorder = null
+        if (recSurf != EGL14.EGL_NO_SURFACE) { EGL14.eglDestroySurface(dpy, recSurf); recSurf = EGL14.EGL_NO_SURFACE }
+        r.finish()
+    }
+
+    private fun recordFrame(r: FrameRecorder, d: Rect, vsyncNs: Long) {
+        try {
+            if (recSurf == EGL14.EGL_NO_SURFACE) {
+                recSurf = EGL14.eglCreateWindowSurface(dpy, eglCfg, r.surface, intArrayOf(EGL14.EGL_NONE), 0)
+                if (recSurf == EGL14.EGL_NO_SURFACE) { AppLog.w("record", "编码器表面创建失败 0x${Integer.toHexString(EGL14.eglGetError())}"); recorder = null; r.finish(); return }
+            }
+            if (!EGL14.eglMakeCurrent(dpy, recSurf, recSurf, ctx)) return
+            EGL14.eglSwapInterval(dpy, 0)
+            val k = r.w.toFloat() / surfaceW
+            GLES30.glViewport(0, 0, r.w, r.h)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            GLES30.glViewport((d.x * k).toInt(), (d.y * k).toInt(), (d.w * k).toInt(), (d.h * k).toInt())
+            Gl.draw()
+            android.opengl.EGLExt.eglPresentationTimeANDROID(dpy, recSurf, vsyncNs)
+            EGL14.eglSwapBuffers(dpy, recSurf)
+            r.onFrame()
+        } finally {
+            EGL14.eglMakeCurrent(dpy, win, win, ctx)
+        }
     }
 
     /** 节拍校准:见 [pacingShift] 的说明。只在没有生成帧、而且 刷新周期 / 源帧间隔 接近整数时工作,否则复位。 */
@@ -799,19 +875,46 @@ class VideoRenderer(
      */
     private fun lsfgGenerated(cfg: EnhanceConfig): Int {
         // 刚开始的十几帧源帧间隔的估计还没稳(日志里 12.98 → 17.96 → 25 → 30fps,k 从 7 → 5 → 3 连续重建了三次会话),等估计稳了再定
-        if (interval <= 0L || frames < 12) return 0
-        val src = stdRate(1e9 / interval)
+        val nom = nominalFps
+        if (nom > 0.0) { if (frames < 3) return 0 } else if (interval <= 0L || frames < 12) return 0
+        val src = stdRate(if (nom > 0.0) nom else 1e9 / interval)
         val key = "${cfg.frc}/${if (cfg.lowPower) 0 else cfg.frcMultiplier}"
-        if (lsfgK > 0 && lsfgKKey == key && abs(src - lsfgKSrc) / lsfgKSrc < 0.3) return lsfgK
+        if (lsfgK > 0 && lsfgKKey == key && (if (nom > 0.0) abs(src - lsfgKSrc) < 0.5 else abs(src - lsfgKSrc) / lsfgKSrc < 0.3)) return lsfgK
         // 倍率不超过 目标刷新率 / 源帧率(30fps 在 120Hz 上 ×5 = 150 > 120,多生成的相位上屏时只能跳过,白白多花 GPU 时间 ——
         // 日志里 k=4 时生成耗时 29.5ms 贴着 33ms 的帧间隔,k=3 只要 23ms)。低功耗:24fps → ×2 = 48,30fps → ×2 = 60,25fps → ×2 = 50。
         val cap = max(2, floor(targetHz(cfg) / src + 0.15).toInt())
-        val m = if (!cfg.lowPower && cfg.frcMultiplier > 0) min(cfg.frcMultiplier, cap) else cap
+        val m = if (!cfg.lowPower && cfg.frcMultiplier > 0) min(cfg.frcMultiplier, cap) else evenMultiplier(src, cfg, cap)
         lsfgK = (m - 1).coerceIn(1, 7)
         lsfgKKey = key
         lsfgKSrc = src
         AppLog.i("frc", "LSFG 每帧生成数定为 $lsfgK(${if (cfg.lowPower) "低功耗,目标 60fps" else "倍率 ${if (cfg.frcMultiplier > 0) "${cfg.frcMultiplier}" else "自动"}"},源帧率按 ${"%.3f".format(src)}fps 计)")
         return lsfgK
+    }
+
+    /**
+     * 上屏节奏要"规则":每个 vsync 前进的相位数 step = 倍率 × 源帧率 / 屏幕刷新率,只有 step 是整数(每次跳 1 个、2 个相位)或 1/整数(每个相位停 2、3 个 vsync)
+     * 时节奏才均匀,否则就是 3:2 下拉那种长短不一的停顿 —— 24fps × 2 = 48fps 放在 60Hz 上 step = 0.8,每 5 帧有 1 帧停两个 vsync(录屏里 60Hz 段 12% 的画面间隔是 33 / 50ms);
+     * 放在 120Hz 上 step = 0.4(2、3、2、3 个 vsync)也不均匀。24fps 正确的是 ×5(120Hz 上 step = 1,60Hz 上 step = 2)。
+     * vivo 等系统会在 60 / 120Hz 之间来回切,所以倍率要在两种刷新率下都规则(容差 5%,25fps × 5 = 125 在 60Hz 上 step = 2.08 可以接受)。
+     */
+    private fun regularStep(step: Double): Boolean {
+        val v = if (step >= 1.0) step else 1.0 / step
+        return abs(v - Math.rint(v)) / v < 0.05
+    }
+
+    private fun evenMultiplier(src: Double, cfg: EnhanceConfig, cap: Int): Int {
+        val rates = doubleArrayOf(60.0, maxRefreshRate.toDouble().coerceAtLeast(60.0))
+        fun regularAll(n: Int) = rates.all { regularStep(n * src / it) }
+        if (cfg.lowPower) {
+            // 低功耗:目标 60fps 左右,在 2..6 里挑最小的、60 / 120Hz 都规则的倍率;没有就退回只要求 60Hz 规则的
+            for (n in 2..6) if (regularAll(n)) return n
+            for (n in 2..6) if (regularStep(n * src / 60.0)) return n
+            return cap
+        }
+        // 标准:补到屏幕最高刷新率附近(cap),这个倍率不规则时试试多一档(25fps:×4 = 100 在 120Hz 上不均匀,×5 = 125 可以)
+        if (regularStep(cap * src / targetHz(cfg))) return cap
+        if (cap + 1 <= 8 && regularStep((cap + 1) * src / targetHz(cfg))) return cap + 1
+        return cap
     }
 
     /** 停掉会话。worker 还在生成时不能释放(原生层正在用),等它完成后在 [onLsfgDone] 里释放。 */
@@ -848,7 +951,12 @@ class VideoRenderer(
         val k = adjustK(kFull, rung(cfg))
         val scale = lsfgScale(cfg)
         val perf = cfg.lsfgPerf || cfg.lowPower
-        val inScale = lsfgInScale(cfg)
+        // 输入像素上限约 1080p:天玑 9500 实测 1080p 性能模式 14ms、2K 3.1 要 53ms,4K 的帧生成要 90ms+(远超帧间隔),
+        // 生成帧在 1080p 级别上做、上屏时线性放大(真实帧仍是原分辨率)。降级档位的输入缩放在此基础上再乘。
+        // 高帧率源的预算更紧:天玑 9500 按 16.7ms 节奏实测,720p 性能模式 10.8ms(0% 超预算),1080p 要 14ms 以上、4K 60fps 的日志里 12% 的帧超预算 → 覆盖率掉到 66 ~ 87% 反复降级重建
+        val srcFps = if (nominalFps > 0.0) nominalFps else if (interval > 0L) 1e9 / interval else 30.0
+        val maxPx = if (srcFps > 40.0) LSFG_MAX_PIXELS_HIGHFPS else LSFG_MAX_PIXELS
+        val inScale = lsfgInScale(cfg) * min(1f, sqrt(maxPx / (slot.img.w.toDouble() * slot.img.h)).toFloat())
         val fp16 = !cfg.lsfgFp32
         // 输入分辨率:按档位缩小(偶数、至少 64),帧生成整个在这个尺寸上做
         val sw = max(64, (slot.img.w * inScale).toInt() and 1.inv())

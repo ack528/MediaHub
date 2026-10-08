@@ -20,12 +20,14 @@
 
 #include <volk.h>
 
+#include <algorithm>
 #include <cstring>
 #include <exception>
 #include <string>
 #include <vector>
 
 #include "android_shader_loader.hpp"
+#include "spvpatch.hpp"
 #include "lsfg_3_1.hpp"
 #include "lsfg_3_1p.hpp"
 
@@ -186,8 +188,12 @@ JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeStart(
     // FP16 初始化失败(驱动不接受)就退回 FP32 重来一次。
     const bool fp16Ok = lsfg_android::fp16_shaders_available(cache);
     const bool fp32Ok = lsfg_android::fp32_spirv_shaders_available(cache);
-    auto makeLoader = [cache](int mode) {
-        return [cache, mode](const std::string &name) -> std::vector<uint8_t> {
+    // Mali(ARM,vendorID 0x13B5)驱动 r54p1 对"显式 LOD 采样 + 常量纹素偏移(ConstOffset)"算错,LSFG 从 alpha 阶段起光流全错,
+    // 运动画面出现重影 / 扭曲(静止画面正常)。2026-10-08 用检测程序在天玑 9500 上和 Intel GPU 逐级比对确认;
+    // 把偏移换算进采样坐标后两者结果一致(见 spvpatch.cpp、docs/10)。其它厂商不改写。
+    const bool fixConstOffset = (uuid >> 32) == 0x13B5;
+    auto makeLoader = [cache, fixConstOffset](int mode) {
+        return [cache, mode, fixConstOffset](const std::string &name) -> std::vector<uint8_t> {
             std::vector<uint8_t> spirv;
             if (mode == 16) {
                 const uint32_t id = lsfg_android::shader_name_to_resource_id_fp16(name);
@@ -201,6 +207,10 @@ JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeStart(
                 if (id) spirv = lsfg_android::load_cached_spirv(cache, id, lsfg_android::ShaderCache::Dxbc);
             }
             if (spirv.empty()) LOGE("着色器 '%s' 缺失", name.c_str());
+            if (fixConstOffset && !spirv.empty()) {
+                int n = 0;
+                spirv = spvRemoveConstOffset(spirv, &n);
+            }
             return spirv;
         };
     };
@@ -212,8 +222,11 @@ JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeStart(
         const int mode = modes[mi];
         try {
             auto loader = makeLoader(mode);
-            if (S.perf) LSFG_3_1P::initialize(uuid, false, flowScale, static_cast<uint64_t>(generated), loader);
-            else LSFG_3_1::initialize(uuid, false, flowScale, static_cast<uint64_t>(generated), loader);
+            // framegen 的 flowScale 参数是"光流比例的倒数"(50% → 2.0),和参考项目 LSFG-Android、Linux 版 lsfg-vk 一致。
+            // 以前直接传 0.5,光流在输入两倍的分辨率上算,Mali 上 ×5 要 36ms(改后约 15ms),"精度越低越慢"的怪现象也是这个原因。
+            const float fgFlow = 1.0f / std::max(0.25f, std::min(1.0f, flowScale));
+            if (S.perf) LSFG_3_1P::initialize(uuid, false, fgFlow, static_cast<uint64_t>(generated), loader);
+            else LSFG_3_1::initialize(uuid, false, fgFlow, static_cast<uint64_t>(generated), loader);
             S.initialized = true;
             S.variant = mode == 16 ? "FP16" : mode == 32 ? "FP32" : "DXBC";
             rcInit = 0;
@@ -224,7 +237,7 @@ JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeStart(
         }
     }
     if (rcInit != 0) return 3;
-    LOGI("帧生成着色器:%s", S.variant.c_str());
+    LOGI("帧生成着色器:%s%s", S.variant.c_str(), fixConstOffset ? "(已去掉 ConstOffset,Mali 修正)" : "");
 
     for (int i = 0; i < 2; i++) {
         S.in[i] = allocAhb(S.w, S.h);

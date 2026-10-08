@@ -39,6 +39,7 @@ find_library(log-lib log)
 
 add_library(lsfgbridge SHARED
     lsfg/lsfg_bridge.cpp
+    lsfg/spvpatch.cpp
     lsfg/vendor/app/android_shader_loader.cpp
 )
 target_include_directories(lsfgbridge PRIVATE lsfg/shim lsfg/vendor/app)

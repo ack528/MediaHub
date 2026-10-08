@@ -37,15 +37,25 @@ class EnhancedVideoView(context: Context) : SurfaceView(context), SurfaceHolder.
     private val main = Handler(Looper.getMainLooper())
 
     private val listener = object : Player.Listener {
+        override fun onTracksChanged(tracks: androidx.media3.common.Tracks) { pushFps() }
         override fun onVideoSizeChanged(v: VideoSize) {
+            pushFps()
             val swap = v.unappliedRotationDegrees % 180 != 0
             renderer?.setVideoSize(if (swap) v.height else v.width, if (swap) v.width else v.height, v.pixelWidthHeightRatio)
         }
     }
 
+    private fun pushFps() { renderer?.setNominalFps(attached?.videoFormat?.frameRate ?: -1f) }
+
     init {
         holder.addCallback(this)
     }
+
+    /** 自动化测试用:渲染器就绪了没有 / 开始、结束内录(见 FrameRecorder)。 */
+    val rendererReady: Boolean get() = renderer != null
+    fun startRecording(path: String, scale: Float = 0.5f) { renderer?.startRecording(path, scale) }
+    fun stopRecording() { renderer?.stopRecording() }
+    fun statsText(): String = renderer?.stats.orEmpty()
 
     fun setEnhance(c: EnhanceConfig, resize: String) {
         config = c
@@ -71,6 +81,7 @@ class EnhancedVideoView(context: Context) : SurfaceView(context), SurfaceHolder.
         p.setVideoSurface(s)
         val v = p.videoSize
         if (v.width > 0) listener.onVideoSizeChanged(v)
+        pushFps()
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {}
