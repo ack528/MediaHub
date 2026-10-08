@@ -38,7 +38,8 @@ type Options struct {
 	Version    string        // 当前版本
 	Repo       string        // owner/name
 	Interval   time.Duration // 检查间隔
-	Mirror     string        // 下载地址前缀(给访问不了 GitHub 的网络用,例如 https://ghfast.top/),留空直连
+	Mirror     string        // 用户自己指定的镜像前缀(例如 https://ghfast.top/),排在内置镜像前面;留空只用内置的
+	Mirrors    []string      // 内置的 GitHub 镜像前缀(配置文件 update.mirrors),直连失败或更慢时使用
 	Root       string        // 便携版根目录
 	ConfigPath string        // 当前使用的配置文件(重启服务时原样带上)
 	Log        *slog.Logger
@@ -62,7 +63,8 @@ type Status struct {
 
 type Updater struct {
 	o      Options
-	client *http.Client
+	client *http.Client // 访问 GitHub API / SHA256SUMS:带备用 DNS
+	dl     *http.Client // 下载大文件:不设整体超时(由 context 控制)
 	mu     sync.Mutex
 	st     Status
 	busy   bool
@@ -77,7 +79,7 @@ func New(o Options, auto bool) *Updater {
 	if o.Repo == "" {
 		o.Repo = "ack528/MediaHub"
 	}
-	u := &Updater{o: o, auto: auto, failed: map[string]time.Time{}, client: &http.Client{Timeout: 30 * time.Second}}
+	u := &Updater{o: o, auto: auto, failed: map[string]time.Time{}, client: newHTTPClient(30 * time.Second), dl: newHTTPClient(0)}
 	u.st = Status{Current: o.Version, State: "idle", Installable: u.installable(), Auto: auto}
 	return u
 }
@@ -230,11 +232,13 @@ func (u *Updater) get(ctx context.Context, url string, accept string) (*http.Res
 	return resp, nil
 }
 
-func (u *Updater) withMirror(url string) string {
-	if u.o.Mirror == "" {
-		return url
+// mirrorList 用户指定的镜像(若有)排在内置列表前面。
+func (u *Updater) mirrorList() []string {
+	var out []string
+	if u.o.Mirror != "" {
+		out = append(out, u.o.Mirror)
 	}
-	return strings.TrimRight(u.o.Mirror, "/") + "/" + url
+	return append(out, u.o.Mirrors...)
 }
 
 // fetchViaRedirect 不走 GitHub API(匿名每小时只有 60 次,共用出口 IP / 代理时很容易被限流返回 403):
@@ -289,8 +293,14 @@ func (u *Updater) fetchLatest(ctx context.Context) (*release, error) {
 		u.o.Log.Info("GitHub API 不可用(多半是匿名限流),改用 releases/latest 跳转 + SHA256SUMS.txt", "err", err)
 	}
 	r, err := u.fetchViaRedirect(ctx, "")
-	if err != nil && u.o.Mirror != "" {
-		r, err = u.fetchViaRedirect(ctx, strings.TrimRight(u.o.Mirror, "/")+"/")
+	for _, m := range u.mirrorList() {
+		if err == nil {
+			break
+		}
+		if !strings.HasSuffix(m, "/") {
+			m += "/"
+		}
+		r, err = u.fetchViaRedirect(ctx, m)
 	}
 	return r, err
 }
@@ -298,13 +308,10 @@ func (u *Updater) fetchLatest(ctx context.Context) (*release, error) {
 func (u *Updater) fetchLatestAPI(ctx context.Context) (*release, error) {
 	api := "https://api.github.com/repos/" + u.o.Repo + "/releases/latest"
 	var lastErr error
-	for _, url := range []string{api, u.withMirror(api)} {
+	for _, url := range candidates(api, u.mirrorList()) {
 		resp, err := u.get(ctx, url, "application/vnd.github+json")
 		if err != nil {
 			lastErr = err
-			if u.o.Mirror == "" {
-				break
-			}
 			continue
 		}
 		var r release
@@ -321,7 +328,8 @@ func (u *Updater) fetchLatestAPI(ctx context.Context) (*release, error) {
 
 func (u *Updater) wantSum(ctx context.Context, sumURL, name string) (string, error) {
 	var lastErr error
-	for _, url := range []string{sumURL, u.withMirror(sumURL)} {
+	// 校验和只从直连或镜像取到的内容里取;镜像不能决定"正确的 hash"只靠它自己,所以 SHA256SUMS 直连优先
+	for _, url := range candidates(sumURL, u.mirrorList()) {
 		resp, err := u.get(ctx, url, "")
 		if err != nil {
 			lastErr = err
@@ -354,12 +362,23 @@ func (u *Updater) download(ctx context.Context, ver, zipURL, sumURL string) erro
 	}
 	zipPath := filepath.Join(dir, name)
 	u.set(func(s *Status) { s.State = "downloading"; s.Progress = 0; s.Message = "正在下载 " + ver })
+	// 候选地址(直连 + 镜像)同时探测,先响应的那个先下;失败再按顺序试其余的。校验和不对的文件会被删掉重来。
+	urls := candidates(zipURL, u.mirrorList())
+	first := race(ctx, u.client, urls, "MediaHub-Updater/"+u.o.Version)
+	ordered := append([]string{first}, urls...)
 	var dlErr error
-	for _, url := range []string{zipURL, u.withMirror(zipURL)} {
+	tried := map[string]bool{}
+	for _, url := range ordered {
+		if tried[url] {
+			continue
+		}
+		tried[url] = true
+		u.o.Log.Info("下载更新", "from", url)
 		dlErr = u.fetchFile(ctx, url, zipPath, want)
-		if dlErr == nil || u.o.Mirror == "" {
+		if dlErr == nil {
 			break
 		}
+		u.o.Log.Warn("下载失败,换下一个地址", "from", url, "err", dlErr)
 	}
 	if dlErr != nil {
 		return dlErr
@@ -382,8 +401,7 @@ func (u *Updater) fetchFile(ctx context.Context, url, dst, wantSum string) error
 	defer cancel()
 	req, _ := http.NewRequestWithContext(dctx, "GET", url, nil)
 	req.Header.Set("User-Agent", "MediaHub-Updater/"+u.o.Version)
-	c := &http.Client{} // 大文件:不设整体超时(由 dctx 控制)
-	resp, err := c.Do(req)
+	resp, err := u.dl.Do(req) // 大文件:不设整体超时(由 dctx 控制)
 	if err != nil {
 		return err
 	}

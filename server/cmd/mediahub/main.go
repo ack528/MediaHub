@@ -43,7 +43,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "1.8.0"
+const version = "1.9.0"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -376,7 +376,7 @@ func run(args []string, serve bool) int {
 	}
 	// 自动更新:每隔 10 分钟(可配置)检查 GitHub Releases,有新版本就下载、替换并重启服务(只有便携版布局才会自动安装)
 	srv.Update = update.New(update.Options{
-		Version: version, Repo: cfg.Update.Repo, Interval: time.Duration(cfg.Update.IntervalMinutes) * time.Minute, Mirror: cfg.Update.Mirror,
+		Version: version, Repo: cfg.Update.Repo, Interval: time.Duration(cfg.Update.IntervalMinutes) * time.Minute, Mirror: cfg.Update.Mirror, Mirrors: cfg.Update.Mirrors,
 		Root: projectRoot(), ConfigPath: cfg.Path, Log: log, Exit: stop,
 	}, cfg.Update.Enabled)
 	if cfg.Update.Enabled {

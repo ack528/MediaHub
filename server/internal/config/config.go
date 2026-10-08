@@ -62,10 +62,11 @@ type Config struct {
 	} `json:"tls"`
 	// Update:自动更新(检查 GitHub Releases,发现新版本后自动下载安装并重启服务;见 internal/update)
 	Update struct {
-		Enabled         bool   `json:"enabled"`         // 默认开启
-		Repo            string `json:"repo"`            // owner/name,默认 ack528/MediaHub
-		IntervalMinutes int    `json:"intervalMinutes"` // 检查间隔,默认 10 分钟
-		Mirror          string `json:"mirror"`          // 下载加速前缀(访问不了 GitHub 时用),默认空
+		Enabled         bool     `json:"enabled"`         // 默认开启
+		Repo            string   `json:"repo"`            // owner/name,默认 ack528/MediaHub
+		IntervalMinutes int      `json:"intervalMinutes"` // 检查间隔,默认 10 分钟
+		Mirror          string   `json:"mirror"`          // 自己指定的加速前缀(排在内置镜像前面),默认空
+		Mirrors         []string `json:"mirrors"`         // 内置的 GitHub 镜像前缀;直连更慢或失败时自动使用。可在配置里改:[] = 不用镜像
 	} `json:"update"`
 	// AdminListen:仅本机的管理端口(明文 HTTP,只监听回环地址,桌面管理程序用它)。留空 = 监听端口 + 1。TLS 关闭时不使用。
 	AdminListen string `json:"adminListen"`
@@ -79,6 +80,15 @@ type Config struct {
 		// IntervalHours:服务运行期间定时重新扫描的间隔(小时);0 = 不定时扫描
 		IntervalHours int `json:"intervalHours"`
 	} `json:"scan"`
+}
+
+// DefaultUpdateMirrors 是内置的 GitHub 下载镜像(前缀拼在完整的 github.com 地址前面)。
+// 检查更新时和直连同时探测,谁先响应用谁;失败再按顺序试其余的。
+var DefaultUpdateMirrors = []string{
+	"https://ghfast.top/",
+	"https://gh-proxy.com/",
+	"https://ghproxy.net/",
+	"https://gh.llkk.cc/",
 }
 
 func Default() *Config {
@@ -102,6 +112,7 @@ func Default() *Config {
 	c.Update.Enabled = true
 	c.Update.Repo = "ack528/MediaHub"
 	c.Update.IntervalMinutes = 10
+	c.Update.Mirrors = append([]string(nil), DefaultUpdateMirrors...)
 	c.Scan.SkipWithinHours = 12
 	c.Scan.IntervalHours = 24
 	return c
