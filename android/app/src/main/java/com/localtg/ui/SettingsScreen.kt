@@ -58,7 +58,7 @@ import kotlinx.coroutines.withContext
 
 /** 设置页分类:id → (标题, 简介)。 */
 private val SECTIONS = listOf(
-    Triple("appearance", "外观", "主题、字体大小、头像形状、动画、隐私"),
+    Triple("appearance", "外观", "主题、字体大小、头像形状、屏幕刷新率、动画、隐私"),
     Triple("folders", "文件夹列表", "排序、隐藏小文件夹、头像与第二行内容"),
     Triple("browse", "浏览", "默认排序、网格间距与清晰度、聊天流外观"),
     Triple("viewer", "图片查看器", "预加载、清晰度、放大上限"),
@@ -134,6 +134,12 @@ private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) ->
         desc = "在系统字号的基础上再缩放,只影响本应用",
     ) { u { copy(fontScale = it) } }
     ChoiceRow("头像形状", s.avatarShape, listOf("round" to "圆角方形(默认)", "circle" to "圆形", "square" to "方形")) { u { copy(avatarShape = it) } }
+    Header("屏幕")
+    SwitchRow(
+        "强制屏幕保持 120 Hz 及以上", "应用在前台时,让系统把屏幕固定在 120 Hz 及以上(同分辨率下刷新率 ≥ 120 的最高档,例如 120 / 144 Hz);" +
+            "屏幕没有这样的档位就不起作用。比自动刷新率更耗电;系统省电模式、过热降频、在系统设置里手动锁了刷新率时,系统仍可能覆盖",
+        s.forceHighRefresh,
+    ) { u { copy(forceHighRefresh = it) } }
     Header("动画")
     ChoiceRow(
         "界面动画", s.motion,

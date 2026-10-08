@@ -1,0 +1,16 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) buffer Out { float o[]; };
+layout(push_constant) uniform PC { uint iters; } pc;
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    float a0 = float(id) * 1e-6, a1 = a0 + 0.1, a2 = a0 + 0.2, a3 = a0 + 0.3;
+    float a4 = a0 + 0.4, a5 = a0 + 0.5, a6 = a0 + 0.6, a7 = a0 + 0.7;
+    for (uint i = 0u; i < pc.iters; i++) {
+        a0 = fma(a0, 0.999f, 0.001f); a1 = fma(a1, 0.999f, 0.002f);
+        a2 = fma(a2, 0.999f, 0.003f); a3 = fma(a3, 0.999f, 0.004f);
+        a4 = fma(a4, 0.999f, 0.005f); a5 = fma(a5, 0.999f, 0.006f);
+        a6 = fma(a6, 0.999f, 0.007f); a7 = fma(a7, 0.999f, 0.008f);
+    }
+    o[id] = a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7;
+}

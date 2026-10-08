@@ -118,7 +118,10 @@ class EnhancedVideoView(context: Context) : SurfaceView(context), SurfaceHolder.
      * 窗口的 preferredRefreshRate + Surface.setFrameRate(Android 11+,Android 12+ 允许无缝切换之外的切换)+ Android 15+ 的"高帧率类别"。
      * rate = 0 表示不再需要,恢复系统自己决定。
      */
-    private fun applyRateHint(rate: Float) {
+    private fun applyRateHint(requested: Float) {
+        // 开着「强制屏幕保持 120 Hz 及以上」时,补帧申请的刷新率(例如低功耗档的 60 Hz)也不低于那个档位:60 帧内容在 120 Hz 屏上是整数倍,画面照样均匀
+        val forcedMode = HighRefresh.forcedMode(context, display)
+        val rate = if (requested > 0f && forcedMode != null && requested < forcedMode.refreshRate) forcedMode.refreshRate else requested
         // 同分辨率下刷新率最接近目标的显示模式:preferredDisplayModeId 比 preferredRefreshRate 更"硬",系统更不容易自己降下去
         val d = display
         val cur = d?.mode
@@ -134,9 +137,12 @@ class EnhancedVideoView(context: Context) : SurfaceView(context), SurfaceHolder.
         )
         context.findActivity()?.window?.let { w ->
             val lp = w.attributes
-            val modeId = if (rate > 0 && best != null) best.modeId else 0
-            if (lp.preferredRefreshRate != rate || lp.preferredDisplayModeId != modeId) {
-                lp.preferredRefreshRate = rate
+            // 释放时(rate = 0):开着「强制高刷新率」就退回那个模式,而不是交给系统
+            val forced = if (rate <= 0f) HighRefresh.forcedMode(context, d) else null
+            val modeId = if (rate > 0 && best != null) best.modeId else forced?.modeId ?: 0
+            val wantRate = if (rate > 0) rate else forced?.refreshRate ?: 0f
+            if (lp.preferredRefreshRate != wantRate || lp.preferredDisplayModeId != modeId) {
+                lp.preferredRefreshRate = wantRate
                 lp.preferredDisplayModeId = modeId
                 w.attributes = lp
             }
@@ -146,7 +152,7 @@ class EnhancedVideoView(context: Context) : SurfaceView(context), SurfaceHolder.
             else if (Build.VERSION.SDK_INT >= 30) holder.surface.setFrameRate(rate, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
         }
         runCatching {
-            if (Build.VERSION.SDK_INT >= 35) requestedFrameRate = if (rate > 0) REQUESTED_FRAME_RATE_CATEGORY_HIGH else REQUESTED_FRAME_RATE_CATEGORY_NO_PREFERENCE
+            if (Build.VERSION.SDK_INT >= 35) requestedFrameRate = if (rate > 0 || HighRefresh.forcedMode(context, display) != null) REQUESTED_FRAME_RATE_CATEGORY_HIGH else REQUESTED_FRAME_RATE_CATEGORY_NO_PREFERENCE
         }
     }
 

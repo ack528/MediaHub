@@ -1,0 +1,9 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(rgba16f, binding = 0) uniform readonly image2D src;
+layout(rgba16f, binding = 1) uniform writeonly image2D dst;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    vec4 c = imageLoad(src, p);
+    imageStore(dst, p, c * 0.999 + vec4(0.001));
+}

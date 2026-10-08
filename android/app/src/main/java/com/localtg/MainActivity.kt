@@ -63,10 +63,13 @@ abstract class TgActivity : ComponentActivity() {
         val c = container
         applyWindowBackground(c.settings.value.theme)
         applySecure(c.settings.value.screenSecure)
+        applyHighRefresh()
+        displayListener = com.localtg.render.HighRefresh.register(this) { applyHighRefresh() }
         setContent {
             val st by c.settings.state.collectAsState()
             LaunchedEffect(st.theme) { applyWindowBackground(st.theme) }
             LaunchedEffect(st.screenSecure) { applySecure(st.screenSecure) }
+            LaunchedEffect(st.forceHighRefresh) { applyHighRefresh() }
             val base = androidx.compose.ui.platform.LocalDensity.current
             val density = remember(base, st.fontScale) { androidx.compose.ui.unit.Density(base.density, base.fontScale * st.fontScale) }
             TgTheme(st.theme) {
@@ -76,6 +79,21 @@ abstract class TgActivity : ComponentActivity() {
                 ) { Content() }
             }
         }
+    }
+
+    private var displayListener: android.hardware.display.DisplayManager.DisplayListener? = null
+
+    /** 强制保持屏幕 120 Hz 及以上(设置 → 外观 → 屏幕);每次回到前台、显示模式变化时重新套用,系统(省电 / 画中画 / 多窗口)可能已经把请求清掉。 */
+    private fun applyHighRefresh() = com.localtg.render.HighRefresh.apply(this, container.settings.value.forceHighRefresh)
+
+    override fun onResume() {
+        super.onResume()
+        applyHighRefresh()
+    }
+
+    override fun onDestroy() {
+        displayListener?.let { com.localtg.render.HighRefresh.unregister(this, it) }
+        super.onDestroy()
     }
 
     /** 隐私:禁止截屏 / 录屏,同时最近任务里不显示画面。 */
