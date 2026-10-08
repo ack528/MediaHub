@@ -102,6 +102,7 @@ class App : Application(), SingletonImageLoader.Factory {
         if (com.localtg.render.Lsfg.deviceSupported && com.localtg.render.Lsfg.dllBundled(this)) com.localtg.render.Lsfg.prepareAsync(this)
         AppLog.init(this, container.settings.value.logLevel)
         AppLog.installCrashHandler()
+        if (container.isLocal && com.localtg.data.LocalMedia.hasPermission(this)) container.local.preload()
         AppLog.i("app", "启动\n" + AppLog.deviceInfo().trimEnd() + "\n设置: " + container.settings.value)
     }
 

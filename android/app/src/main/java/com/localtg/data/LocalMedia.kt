@@ -7,7 +7,10 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Size
 import com.localtg.AppLog
@@ -51,18 +54,59 @@ class LocalMedia(private val ctx: Context) {
     @Volatile private var all: List<LItem> = emptyList()
     @Volatile private var byId: Map<Long, LItem> = emptyMap()
     @Volatile private var loaded = false
+    @Volatile private var dirty = true           // MediaStore 有变化(新拍 / 删除 / 别的应用改动)后置位
+    @Volatile private var lastReloadMs = 0L
+    @Volatile private var bgRunning = false
     private val sortCache = HashMap<String, List<LItem>>()
 
+    init {
+        // 媒体库变化时标脏:进入列表只在"确实变了"时才重新读取,不用每次都查(以前每次进列表都强制重读两遍 MediaStore,
+        // 小米 / 澎湃 OS 上一次要 10 秒,整个列表都卡在这里)
+        val obs = object : android.database.ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) { dirty = true }
+        }
+        runCatching { ctx.contentResolver.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, obs) }
+        runCatching { ctx.contentResolver.registerContentObserver(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, obs) }
+    }
+
+    /** 启动时在后台先读一遍,打开列表时数据已经在了。 */
+    fun preload() { Thread({ runCatching { ensure() } }, "local-preload").start() }
+
+    /**
+     * 重新读取 MediaStore。图片和视频两个查询并行;maxAgeMs > 0 时,别的线程刚读完(这么多毫秒内)就直接用它的结果,
+     * 不排队再读一遍(以前并发的几个请求会各读一遍,一个 10 秒就变成几个 10 秒)。
+     */
     @Synchronized
-    fun reload() {
-        val list = ArrayList<LItem>()
-        runCatching { list += query(false) }.onFailure { AppLog.w("local", "读取本机图片失败", it) }
-        runCatching { list += query(true) }.onFailure { AppLog.w("local", "读取本机视频失败", it) }
+    fun reload(maxAgeMs: Long = 0L) {
+        if (loaded && maxAgeMs > 0 && SystemClock.elapsedRealtime() - lastReloadMs < maxAgeMs) return
+        val t0 = SystemClock.elapsedRealtime()
+        dirty = false // 读取期间又有变化会再次置位
+        var imgs: List<LItem> = emptyList(); var vids: List<LItem> = emptyList()
+        var imgMs = 0L; var vidMs = 0L
+        val th = Thread({
+            val t = SystemClock.elapsedRealtime()
+            vids = runCatching { query(true) }.onFailure { AppLog.w("local", "读取本机视频失败", it) }.getOrDefault(emptyList())
+            vidMs = SystemClock.elapsedRealtime() - t
+        }, "local-query-video")
+        th.start()
+        val t1 = SystemClock.elapsedRealtime()
+        imgs = runCatching { query(false) }.onFailure { AppLog.w("local", "读取本机图片失败", it) }.getOrDefault(emptyList())
+        imgMs = SystemClock.elapsedRealtime() - t1
+        th.join()
+        val list = ArrayList<LItem>(imgs.size + vids.size).also { it += imgs; it += vids }
         all = list
         byId = list.associateBy { it.id }
         sortCache.clear()
         loaded = true
-        AppLog.i("local", "本机媒体 ${list.size} 个,${list.map { it.bucketId }.distinct().size} 个文件夹")
+        lastReloadMs = SystemClock.elapsedRealtime()
+        AppLog.i("local", "本机媒体 ${list.size} 个,${list.map { it.bucketId }.distinct().size} 个文件夹(图片 ${imgs.size} 个 ${imgMs}ms,视频 ${vids.size} 个 ${vidMs}ms,合计 ${lastReloadMs - t0}ms)")
+    }
+
+    /** 后台刷新:先用旧数据立刻应答,新数据读完后下次请求就能用上。 */
+    private fun reloadInBackground() {
+        if (bgRunning) return
+        bgRunning = true
+        Thread({ try { reload(maxAgeMs = 1000) } finally { bgRunning = false } }, "local-refresh").start()
     }
 
     @Synchronized
@@ -126,7 +170,9 @@ class LocalMedia(private val ctx: Context) {
 
     /** 文件夹列表:按"最新一个文件的时间"从新到旧(没有别的排序方式,服务端的 sort 参数忽略)。 */
     fun dialogs(): DialogsResp {
-        reload() // 下拉刷新 / 进入列表时重新读取,新拍的照片马上出现
+        // 没有缓存或媒体库有变化:现读(并发的请求共用同一次读取);否则用缓存,太久没刷新就顺便在后台更新一次
+        if (!loaded || dirty) reload(maxAgeMs = 2000)
+        else if (SystemClock.elapsedRealtime() - lastReloadMs > 30_000) reloadInBackground()
         val groups = all.groupBy { it.bucketId }.values.map { g ->
             val sorted = g.sortedWith(compareByDescending<LItem> { it.takenMs }.thenByDescending { it.id })
             val last = sorted.first()
@@ -267,11 +313,27 @@ class LocalMedia(private val ctx: Context) {
 
     fun openFd(i: LItem): ParcelFileDescriptor? = runCatching { ctx.contentResolver.openFileDescriptor(i.uri, "r") }.getOrNull()
 
-    /** 缩略图(JPEG 字节):Android 10+ 用系统的 loadThumbnail(有系统缓存,很快),更低版本自己解码。 */
+    // 同时生成的缩略图个数:列表一屏几十张同时请求,每张都从原图解码(几千万像素的照片一张就几十到几百 MB),
+    // 应用堆只有 256MB,并发太多会反复 GC / OOM,比串行还慢
+    private val thumbGate = java.util.concurrent.Semaphore(3)
+
+    /** 缩略图(JPEG 字节)。小尺寸(≤ 640)优先用系统的 loadThumbnail(MediaProvider 有缓存,很快);大尺寸从原图缩小(系统缩略图太小,放大会糊)。 */
     fun thumbnail(i: LItem, size: Int): ByteArray? {
+        thumbGate.acquire()
+        val t0 = SystemClock.elapsedRealtime()
+        try {
+            val r = thumbnailInner(i, size)
+            val ms = SystemClock.elapsedRealtime() - t0
+            if (ms > 400) AppLog.w("local", "缩略图慢:${i.name} ${i.w}x${i.h} ${i.size / 1024}KB ${if (i.video) "视频" else "图片"} 目标${size}px ${ms}ms")
+            return r
+        } finally { thumbGate.release() }
+    }
+
+    private fun thumbnailInner(i: LItem, size: Int): ByteArray? {
         var bmp: Bitmap? = null
+        if (size <= 640 && Build.VERSION.SDK_INT >= 29) bmp = runCatching { ctx.contentResolver.loadThumbnail(i.uri, Size(size, size), null) }.getOrNull()
         // 图片:自己从原图缩小(系统缩略图只有几百像素,放大显示会糊,且 ImageDecoder 会处理 EXIF 方向)
-        if (!i.video && Build.VERSION.SDK_INT >= 28) bmp = runCatching {
+        if (bmp == null && !i.video && Build.VERSION.SDK_INT >= 28) bmp = runCatching {
             android.graphics.ImageDecoder.decodeBitmap(android.graphics.ImageDecoder.createSource(ctx.contentResolver, i.uri)) { d, info, _ ->
                 val m = maxOf(info.size.width, info.size.height)
                 if (m > size) {
@@ -346,11 +408,15 @@ class LocalInterceptor(private val local: LocalMedia) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val req = chain.request()
         if (req.url.host != LocalMode.HOST) return chain.proceed(req)
+        val t0 = SystemClock.elapsedRealtime()
         return try { handle(req) } catch (e: LocalMedia.NotFound) {
             err(req, 404, "notfound", "条目不存在")
         } catch (e: Exception) {
             AppLog.w("local", "本地接口出错 ${req.url.encodedPath}", e)
             err(req, 500, "internal", e.message ?: "出错了")
+        }.also {
+            val ms = SystemClock.elapsedRealtime() - t0
+            if (ms > 500) AppLog.w("local", "接口慢:${req.url.encodedPath} ${ms}ms")
         }
     }
 
