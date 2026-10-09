@@ -187,6 +187,7 @@ fun VideoPage(
     val ctx = LocalContext.current
     val act = remember(ctx) { ctx.findActivity() }
     val cfg = LocalSettings.current
+    val hap = LocalHaptics.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val inPip by c.inPip.collectAsState()
 
@@ -504,6 +505,7 @@ fun VideoPage(
 
     fun seekBy(sign: Int, steps: Int) {
         val p = pl ?: return
+        hap.perform(Hap.Tick)
         val dur = p.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
         val target = (p.currentPosition + sign * steps * seekStep * 1000L).coerceIn(0, dur)
         p.seekTo(target)
@@ -622,6 +624,7 @@ fun VideoPage(
                             val w = size.width
                             val side = when { off.x < w / 3f -> -1; off.x > w * 2f / 3f -> 1; else -> 0 }
                             if (side == 0) {
+                                hap.perform(Hap.Click)
                                 pl?.let { if (it.isPlaying) it.pause() else it.play() }
                                 showHud(Hud(if (pl?.isPlaying == true) TgIcons.Play else TgIcons.Pause, if (pl?.isPlaying == true) "播放" else "暂停"))
                             } else {
@@ -633,6 +636,7 @@ fun VideoPage(
                             if (!gestures) return@detectTapGestures
                             pl?.let {
                                 longPress = true
+                                hap.perform(Hap.Long)
                                 it.playbackParameters = it.playbackParameters.withSpeed(cfg.longPressSpeed)
                                 showHud(Hud(TgIcons.Speed, "${cfg.longPressSpeed}x 倍速播放中"))
                                 hudTick = Int.MAX_VALUE / 2 // 长按期间一直显示
@@ -642,6 +646,7 @@ fun VideoPage(
                             tryAwaitRelease()
                             if (longPress) {
                                 longPress = false
+                                hap.perform(Hap.Tick)
                                 pl?.let { it.playbackParameters = it.playbackParameters.withSpeed(speed) }
                                 hud = null
                             }
@@ -825,7 +830,7 @@ fun VideoPage(
                                     if (abs(dx) > cfg.barSwipeDp.dp.toPx()) {
                                         val goPrev = if (dx > 0) rsp else !rsp
                                         val act = if (goPrev) prevNow else nextNow
-                                        if (act != null) act() else showHud(Hud(null, if (goPrev) "已经是第一个" else "已经是最后一个"))
+                                        if (act != null) { hap.perform(Hap.Tick); act() } else { hap.perform(Hap.Reject); showHud(Hud(null, if (goPrev) "已经是第一个" else "已经是最后一个")) }
                                     }
                                 },
                                 onDragCancel = { dx = 0f },
@@ -1132,15 +1137,17 @@ private fun selectTrack(p: ExoPlayer, o: TrackOpt) {
 
 @Composable
 private fun CtrlIcon(icon: ImageVector, desc: String, enabled: Boolean = true, tint: Color = Color.White, onClick: () -> Unit) {
+    val hap = LocalHaptics.current
     Box(
-        Modifier.size(44.dp).clip(CircleShape).clickable(enabled = enabled, onClick = onClick),
+        Modifier.size(44.dp).clip(CircleShape).clickable(enabled = enabled) { hap.perform(Hap.Click); onClick() },
         contentAlignment = Alignment.Center,
     ) { Icon(icon, desc, tint = if (enabled) tint else Color(0x55FFFFFF), modifier = Modifier.size(24.dp)) }
 }
 
 @Composable
 private fun TextCtrl(text: String, onClick: () -> Unit) {
-    Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+    val hap = LocalHaptics.current
+    Box(Modifier.size(44.dp).clip(CircleShape).hapticClickable(onClick = onClick), contentAlignment = Alignment.Center) {
         Text(text, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
     }
 }
@@ -1148,7 +1155,7 @@ private fun TextCtrl(text: String, onClick: () -> Unit) {
 @Composable
 private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(
-        modifier.size(size).clip(CircleShape).background(Color(0x66000000)).clickable(onClick = onClick),
+        modifier.size(size).clip(CircleShape).background(Color(0x66000000)).hapticClickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, desc, tint = Color.White, modifier = Modifier.size(size * 0.55f)) }
 }

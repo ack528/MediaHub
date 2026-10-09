@@ -360,6 +360,7 @@ fun ChatPager(c: AppContainer, startId: String, titleHint: String?, onBack: () -
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, active: Boolean = true, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
+    val hap = LocalHaptics.current
     val vm: ChatViewModel = viewModel(key = "chat-$dialogId", factory = viewModelFactory { initializer { ChatViewModel(c, dialogId) } })
     // 滑走时先把最后的位置存下来(此时仍算"在看"),再标记为不在看
     LaunchedEffect(active) { if (!active) vm.persistNow(); vm.active = active }
@@ -446,7 +447,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                     BarIcon(TgIcons.More, "更多") { menu = true }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         SORT_KEYS.forEach { (k, label) ->
-                            DropdownMenuItem(text = { Text((if (k == sortKey) "✓  " else "     ") + label) }, onClick = { vm.change(null) { vm.sortKey.value = k; vm.ascGrid.value = (k == "name" || k == "type") } })
+                            DropdownMenuItem(text = { Text((if (k == sortKey) "✓  " else "     ") + label) }, onClick = { hap.perform(Hap.Tick); vm.change(null) { vm.sortKey.value = k; vm.ascGrid.value = (k == "name" || k == "type") } })
                         }
                         if (sortKey == "taken") {
                             DropdownMenuItem(text = { Text("跳转到日期…") }, onClick = { menu = false; datePicker = true })
@@ -648,7 +649,7 @@ private fun JumpButton(visible: Boolean, up: Boolean, modifier: Modifier = Modif
         exit = fadeOut(tween(120)) + androidx.compose.animation.scaleOut(tween(150), targetScale = 0.6f),
     ) {
         Box(
-            Modifier.size(44.dp).shadow(4.dp, CircleShape).clip(CircleShape).background(tg.bubbleIn).clickable(onClick = onClick),
+            Modifier.size(44.dp).shadow(4.dp, CircleShape).clip(CircleShape).background(tg.bubbleIn).hapticClickable(onClick = onClick),
             contentAlignment = Alignment.Center,
         ) {
             Icon(TgIcons.ChevronRight, if (up) "回到顶部" else "回到最新", tint = tg.message, modifier = Modifier.size(26.dp).rotate(if (up) -90f else 90f))
@@ -681,7 +682,7 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
     var w = maxW
     var h = w / aspect
     if (h > maxH) { h = maxH; w = h * aspect }
-    Box(Modifier.padding(start = 8.dp).width(w).height(h).mediaShared(item.id, shape).clip(shape).background(Color(0x33808080)).clickable(onClick = onClick)) {
+    Box(Modifier.padding(start = 8.dp).width(w).height(h).mediaShared(item.id, shape).clip(shape).background(Color(0x33808080)).hapticClickable(onClick = onClick)) {
         val url = if (item.isVideo) api.posterUrl(item) else api.imageUrl(item, LocalSettings.current.chatImageWidth)
         var failed by remember(item.id) { mutableStateOf(false) }
         LaunchedEffect(loadEnabled) { if (loadEnabled) failed = false } // 快速滑动时被暂停的请求不算失败
@@ -720,7 +721,7 @@ private fun MediaGrid(
     onOpen: (Item) -> Unit, onRestored: () -> Unit, onPosition: (String, Int, Boolean) -> Unit, fresh: Boolean, onJumpNewest: () -> Unit,
     onLongPress: (Item) -> Unit, scrollTarget: String?, onScrollDone: () -> Unit,
 ) {
-    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val hap = LocalHaptics.current
     val state = rememberLazyGridState()
     LaunchedEffect(scrollTarget) { // 从查看器返回:定位到查看器里最后停留的那一项
         val id = scrollTarget ?: return@LaunchedEffect
@@ -755,8 +756,8 @@ private fun MediaGrid(
             val item = items[index]
             if (item != null) {
                 MediaThumb(item, api, loadEnabled = !fast || !LocalSettings.current.pauseThumbsWhenFast, modifier = Modifier.aspectRatio(1f).mediaShared(item.id, androidx.compose.ui.graphics.RectangleShape).combinedClickable(
-                    onClick = { onOpen(item) },
-                    onLongClick = { haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); onLongPress(item) },
+                    onClick = { hap.perform(Hap.Click); onOpen(item) },
+                    onLongClick = { hap.perform(Hap.Long); onLongPress(item) },
                 ))
             } else {
                 Box(Modifier.aspectRatio(1f))

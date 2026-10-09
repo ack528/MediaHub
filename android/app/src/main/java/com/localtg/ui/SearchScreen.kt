@@ -103,7 +103,7 @@ fun SearchScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
             }
             Row(Modifier.fillMaxWidth()) {
                 listOf("全部", "照片", "视频").forEachIndexed { i, label ->
-                    Box(Modifier.clickable { typeTab = i }.padding(horizontal = 16.dp).height(40.dp), contentAlignment = Alignment.Center) {
+                    Box(Modifier.hapticClickable(Hap.Tick) { typeTab = i }.padding(horizontal = 16.dp).height(40.dp), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                             Text(label, color = if (typeTab == i) tg.barText else tg.barTabIdle, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                             Box(Modifier.padding(top = 6.dp).height(3.dp).width(28.dp).clip(RoundedCornerShape(2.dp)).background(if (typeTab == i) tg.barText else Color.Transparent))
@@ -139,7 +139,7 @@ fun SearchScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
                         items(results, key = { it.id }) { item ->
                             MediaThumb(
                                 item, c.api,
-                                modifier = Modifier.aspectRatio(1f).mediaShared(item.id, RectangleShape).clickable {
+                                modifier = Modifier.aspectRatio(1f).mediaShared(item.id, RectangleShape).hapticClickable {
                                     fm.clearFocus()
                                     val snapshot = results
                                     val q = query.trim()

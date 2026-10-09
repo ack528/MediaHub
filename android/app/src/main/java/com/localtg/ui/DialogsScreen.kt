@@ -112,11 +112,13 @@ fun DialogsScreen(
     val tg = LocalTg.current
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val ctx = androidx.compose.ui.platform.LocalContext.current
+    val hap = LocalHaptics.current
     // 侧边栏「重新生成随机序列」:让服务端清除所有历史随机序列并重新生成,手机端也回到"还没选序列"
     fun resetRandom() {
         scope.launch {
             val msg = if (c.isLocal) "本地媒体没有服务端随机序列" else runCatching { c.api.randomReset() }
                 .fold({ c.settings.update { copy(randomSeed = 0) }; "已让服务器清除所有随机序列并重新生成" }, { if (it is com.localtg.data.ApiException && it.http == 404) "服务端版本太旧,请先更新到 1.8.0 或更新的版本" else "重新生成失败:" + friendlyError(it) })
+            hap.perform(if (msg.startsWith("已让服务器")) Hap.Confirm else Hap.Reject)
             android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
         }
     }
@@ -172,7 +174,7 @@ fun DialogsScreen(
 
             // 下拉刷新
             androidx.compose.material3.pulltorefresh.PullToRefreshBox(
-                isRefreshing = loading && all.isNotEmpty(), onRefresh = { vm.refresh() }, modifier = Modifier.weight(1f).fillMaxWidth(),
+                isRefreshing = loading && all.isNotEmpty(), onRefresh = { hap.perform(Hap.Long); vm.refresh() }, modifier = Modifier.weight(1f).fillMaxWidth(),
             ) {
                 androidx.compose.foundation.pager.HorizontalPager(
                     pager, Modifier.fillMaxSize(), userScrollEnabled = st.swipeGroups && pageCount > 1, beyondViewportPageCount = 0,
@@ -252,7 +254,7 @@ private fun AppDrawer(
             // 服务器切换:点哪台就切到哪台
             servers.forEach { e ->
                 Row(
-                    Modifier.fillMaxWidth().clickable { if (e.id != activeId) onSwitch(e.id) else expanded = false }.padding(horizontal = 20.dp, vertical = 8.dp),
+                    Modifier.fillMaxWidth().hapticClickable { if (e.id != activeId) onSwitch(e.id) else expanded = false }.padding(horizontal = 20.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(Modifier.size(10.dp).clip(RoundedCornerShape(5.dp)).background(if (e.id == activeId) tg.accent else Color.Transparent))
@@ -286,7 +288,7 @@ private fun AppDrawer(
 private fun DrawerItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit, tint: Color? = null) {
     val tg = LocalTg.current
     Row(
-        Modifier.fillMaxWidth().height(50.dp).clickable(onClick = onClick).padding(horizontal = 20.dp),
+        Modifier.fillMaxWidth().height(50.dp).hapticClickable(onClick = onClick).padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         androidx.compose.material3.Icon(icon, null, tint = tint ?: tg.message, modifier = Modifier.size(24.dp))
@@ -297,7 +299,7 @@ private fun DrawerItem(icon: androidx.compose.ui.graphics.vector.ImageVector, la
 @Composable
 private fun FolderTab(text: String, selected: Boolean, onClick: () -> Unit) {
     val tg = LocalTg.current
-    Column(Modifier.height(44.dp).clickable(onClick = onClick).padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.height(44.dp).hapticClickable(Hap.Tick, onClick).padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
             Text(text, color = if (selected) tg.barText else tg.barTabIdle, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
         }
@@ -312,7 +314,7 @@ private fun FolderTab(text: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 private fun RandomRow(label: String?, onClick: () -> Unit) {
     val tg = LocalTg.current
-    Box(Modifier.fillMaxWidth().height(70.dp).clickable(onClick = onClick)) {
+    Box(Modifier.fillMaxWidth().height(70.dp).hapticClickable(onClick = onClick)) {
         Box(
             Modifier.padding(start = 11.dp, top = 9.dp).size(52.dp).clip(RoundedCornerShape(26.dp)).background(tg.accent),
             contentAlignment = Alignment.Center,
@@ -327,7 +329,7 @@ private fun RandomRow(label: String?, onClick: () -> Unit) {
 @Composable
 private fun DialogRow(d: Dialog, c: AppContainer, onClick: () -> Unit) {
     val tg = LocalTg.current
-    Box(Modifier.fillMaxWidth().height(70.dp).clickable(onClick = onClick)) {
+    Box(Modifier.fillMaxWidth().height(70.dp).hapticClickable(onClick = onClick)) {
         Box(Modifier.padding(start = 11.dp, top = 9.dp)) {
             TgAvatar(d.title, d.id, 52.dp, d.last?.toItem(d.id), c.api)
         }

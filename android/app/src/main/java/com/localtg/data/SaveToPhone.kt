@@ -71,6 +71,7 @@ suspend fun saveToPhone(ctx: Context, http: OkHttpClient, api: Api, item: Item):
 suspend fun saveToPhoneWithToast(ctx: Context, http: OkHttpClient, api: Api, item: Item) {
     Toast.makeText(ctx, "正在保存…", Toast.LENGTH_SHORT).show()
     val err = saveToPhone(ctx, http, api, item)
+    (ctx.applicationContext as? com.localtg.App)?.container?.haptics?.perform(if (err == null) com.localtg.ui.Hap.Confirm else com.localtg.ui.Hap.Reject)
     Toast.makeText(
         ctx, err ?: (if (item.isVideo) "已保存到 影片/MediaHub" else "已保存到 图片/MediaHub"),
         if (err == null) Toast.LENGTH_SHORT else Toast.LENGTH_LONG,

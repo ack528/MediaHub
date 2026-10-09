@@ -162,7 +162,7 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
             Row(Modifier.fillMaxWidth()) {
                 listOf("全部", "图片", "视频").forEachIndexed { i, label ->
                     Box(
-                        Modifier.clickable { c.settings.update { copy(randomType = i) } }.padding(horizontal = 16.dp).height(40.dp),
+                        Modifier.hapticClickable(Hap.Tick) { c.settings.update { copy(randomType = i) } }.padding(horizontal = 16.dp).height(40.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
@@ -195,7 +195,7 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
                     items(vm.items, key = { it.id }) { item ->
                         MediaThumb(
                             item, c.api,
-                            modifier = Modifier.aspectRatio(1f).mediaShared(item.id, RectangleShape).clickable {
+                            modifier = Modifier.aspectRatio(1f).mediaShared(item.id, RectangleShape).hapticClickable {
                                 val snap = vm.items
                                 // 查看器翻到末尾接着取固定序列的下一批;游标只表示"还有",内容去重由 ViewerFeed 处理
                                 vm.viewerNext = vm.batches

@@ -75,6 +75,7 @@ abstract class TgActivity : ComponentActivity() {
             TgTheme(st.theme) {
                 CompositionLocalProvider(
                     LocalSettings provides st,
+                    com.localtg.ui.LocalHaptics provides c.haptics,
                     androidx.compose.ui.platform.LocalDensity provides density,
                 ) { Content() }
             }

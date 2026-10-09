@@ -48,7 +48,8 @@ fun TgBar(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> 
 
 @Composable
 fun BarIcon(icon: ImageVector, desc: String?, onClick: () -> Unit) {
-    IconButton(onClick = onClick) { Icon(icon, desc, tint = LocalTg.current.barText) }
+    val hap = com.localtg.ui.LocalHaptics.current
+    IconButton(onClick = { hap?.perform(com.localtg.ui.Hap.Click); onClick() }) { Icon(icon, desc, tint = LocalTg.current.barText) }
 }
 
 private val avatarColors = listOf(0xFFE56555, 0xFFF28C48, 0xFF8E85EE, 0xFF76C84D, 0xFF5FBED5, 0xFF549CDD, 0xFFF2749A)

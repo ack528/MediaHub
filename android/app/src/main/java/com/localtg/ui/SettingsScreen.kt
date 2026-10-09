@@ -140,6 +140,11 @@ private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) ->
             "屏幕没有这样的档位就不起作用。比自动刷新率更耗电;系统省电模式、过热降频、在系统设置里手动锁了刷新率时,系统仍可能覆盖",
         s.forceHighRefresh,
     ) { u { copy(forceHighRefresh = it) } }
+    Header("交互")
+    ChoiceRow(
+        "震动反馈", s.hapticLevel, listOf(0 to "关闭", 1 to "轻", 2 to "标准(默认)"),
+        desc = "翻页、切换标签、开关、长按、保存完成、已经是第一个 / 最后一个等操作时轻微震动;不受系统「触感反馈」总开关影响,由这里决定",
+    ) { u { copy(hapticLevel = it) } }
     Header("动画")
     ChoiceRow(
         "界面动画", s.motion,
@@ -915,15 +920,17 @@ private fun NavRow(title: String, desc: String, onClick: () -> Unit) {
 @Composable
 private fun SwitchRow(title: String, desc: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
     val tg = LocalTg.current
+    val hap = LocalHaptics.current
+    val change: (Boolean) -> Unit = { hap.perform(Hap.Click); onChange(it) }
     Row(
-        Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(horizontal = 16.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().clickable { change(!checked) }.padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f).padding(end = 12.dp)) {
             Text(title, color = tg.name, fontSize = 16.sp)
             if (desc != null) Text(desc, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = change)
     }
 }
 
@@ -931,8 +938,9 @@ private fun SwitchRow(title: String, desc: String?, checked: Boolean, onChange: 
 private fun <T> ChoiceRow(title: String, value: T, options: List<Pair<T, String>>, desc: String? = null, onSelect: (T) -> Unit) {
     val tg = LocalTg.current
     var open by remember { mutableStateOf(false) }
+    val hap = LocalHaptics.current
     val label = options.firstOrNull { it.first == value }?.second ?: value.toString()
-    Column(Modifier.fillMaxWidth().clickable { open = true }.padding(horizontal = 16.dp, vertical = 10.dp)) {
+    Column(Modifier.fillMaxWidth().clickable { hap.perform(Hap.Click); open = true }.padding(horizontal = 16.dp, vertical = 10.dp)) {
         Text(title, color = tg.name, fontSize = 16.sp)
         Text(label, color = tg.accent, fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp))
         if (desc != null) Text(desc, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
@@ -945,10 +953,10 @@ private fun <T> ChoiceRow(title: String, value: T, options: List<Pair<T, String>
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     options.forEach { (v, name) ->
                         Row(
-                            Modifier.fillMaxWidth().clickable { onSelect(v); open = false }.padding(vertical = 2.dp),
+                            Modifier.fillMaxWidth().clickable { hap.perform(Hap.Tick); onSelect(v); open = false }.padding(vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            RadioButton(selected = v == value, onClick = { onSelect(v); open = false })
+                            RadioButton(selected = v == value, onClick = { hap.perform(Hap.Tick); onSelect(v); open = false })
                             Text(name, modifier = Modifier.padding(start = 4.dp))
                         }
                     }

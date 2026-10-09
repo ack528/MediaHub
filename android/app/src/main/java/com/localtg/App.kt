@@ -29,6 +29,8 @@ class AppContainer(app: Application) {
     val session = SessionStore(app)
     val viewState = com.localtg.data.ViewStateStore(app) { session.ns() }
     val settings = com.localtg.data.SettingsStore(app, scope)
+    /** 震动反馈(强度现读设置,改了马上生效)。 */
+    val haptics = com.localtg.ui.Haptics(app) { settings.value.hapticLevel }
     val playback = com.localtg.data.PlaybackStore(app) { session.ns() }
     val local = com.localtg.data.LocalMedia(app)
     private val clients = buildHttpClients(session, local, settings.value.connectTimeoutSec, settings.value.readTimeoutSec) { s -> scope.launch { session.clearTokenIf(s.baseUrl) } }

@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- 视频音量增益(LoudnessEnhancer) -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- 震动反馈(设置 → 外观 → 交互) -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- 本地媒体模式:读取手机上的照片和视频 -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
