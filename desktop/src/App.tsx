@@ -6,6 +6,7 @@ import { About } from "./pages/About";
 import { Library } from "./pages/Library";
 import { Logs } from "./pages/Logs";
 import { Network } from "./pages/Network";
+import { Optimize } from "./pages/Optimize";
 import { Overview } from "./pages/Overview";
 import { Storage } from "./pages/Storage";
 import { Video } from "./pages/Video";
@@ -51,6 +52,7 @@ function PageBody({ page, tab }: { page: PageId; tab: string }) {
     case "library": return <Library tab={tab} />;
     case "storage": return <Storage tab={tab} />;
     case "video": return <Video tab={tab} />;
+    case "optimize": return <Optimize tab={tab} />;
     case "accounts": return <Accounts tab={tab} />;
     case "network": return <Network tab={tab} />;
     case "logs": return <Logs tab={tab} />;
@@ -88,7 +90,7 @@ export default function App() {
             <div className="header-tabs">
               <Tabs tabs={def.tabs} active={tab} onChange={(t) => setTabs({ ...tabs, [page]: t })} />
               <span className="grow" />
-              <span className="count-pill">{countOf(page, tab)} 项设置</span>
+              {page !== "optimize" && <span className="count-pill">{countOf(page, tab)} 项设置</span>}
             </div>
           )}
           {searching && <div className="header-tabs"><span className="grow" /><span className="count-pill">{results.length} 项匹配</span></div>}

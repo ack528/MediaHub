@@ -42,6 +42,7 @@ class PlaybackTestActivity : Activity() {
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
         mode = intent.getStringExtra("mode") ?: "lsfg_low"
+        if (intent.getBooleanExtra("land", false)) requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         val mult = intent.getIntExtra("mult", 0)
         segs = (intent.getStringExtra("segs") ?: "31:10,64:12").split(',').mapNotNull { s -> s.split(':').takeIf { it.size == 2 }?.let { it[0].toInt() to it[1].toInt() } }
         val outName = intent.getStringExtra("out") ?: mode
@@ -51,10 +52,18 @@ class PlaybackTestActivity : Activity() {
 
         view = EnhancedVideoView(this)
         setContentView(view)
-        view.setEnhance(EnhanceConfig(frc = mode, frcMultiplier = mult, lsfgFlowScale = 0.5f, lsfgPerf = true, trace = true, frcAdaptive = true), "fit")
-        player = ExoPlayer.Builder(this).build()
+        val up = intent.getStringExtra("up") ?: "off"
+        val hdr = intent.getStringExtra("hdr") ?: "off"
+        meta.appendLine("up=$up hdr=$hdr peak=${intent.getIntExtra("peak", 600)} maxh=${intent.getIntExtra("maxh", 900)}")
+        view.setEnhance(EnhanceConfig(upscale = up, frc = mode, frcMultiplier = mult, lsfgFlowScale = 0.5f, lsfgPerf = true, trace = true, frcAdaptive = true,
+            hdr = hdr, hdrPeakNits = intent.getIntExtra("peak", 600), upscaleMaxSrcHeight = intent.getIntExtra("maxh", 900), upscaleAuto = intent.getBooleanExtra("auto", true)), "fit")
+        // 模拟器的 goldfish 硬件解码器配合 GL 外部纹理会报错 → 过滤掉,用软件解码器(手机上不受影响)
+        val rf = androidx.media3.exoplayer.DefaultRenderersFactory(this).setMediaCodecSelector { mime, secure, tunneling ->
+            androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT.getDecoderInfos(mime, secure, tunneling).filter { !it.name.contains("goldfish") }
+        }
+        player = ExoPlayer.Builder(this, rf).build()
         player.volume = 0f
-        player.setMediaItem(MediaItem.fromUri(Uri.parse("asset:///play_src.mp4")))
+        player.setMediaItem(MediaItem.fromUri(intent.getStringExtra("src")?.let { Uri.fromFile(File(it)) } ?: Uri.parse("asset:///play_src.mp4")))
         player.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) { fail("播放错误:${error.message}") }
         })
@@ -78,7 +87,7 @@ class PlaybackTestActivity : Activity() {
         player.seekTo(segs.first().first * 1000L)
         player.playWhenReady = true
         main.postDelayed({
-            view.startRecording(File(outDir, "out.mp4").path, 0.5f)
+            view.startRecording(File(outDir, "out.mp4").path, intent.getFloatExtra("rscale", 0.5f))
             recStartMs = SystemClock.elapsedRealtime()
             runSeg()
         }, 2500)

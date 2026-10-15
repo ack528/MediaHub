@@ -264,5 +264,5 @@ class Runner(
     }
 }
 
-object BuildInfo { const val VERSION = "0.9.7" }
+object BuildInfo { const val VERSION = "0.9.10" }
 

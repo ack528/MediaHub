@@ -47,6 +47,34 @@ function Update() {
   );
 }
 
+interface Src { name: string; url: string; ok: boolean; ms: number; code?: number; err?: string }
+
+/** 下载源与 DNS:服务端更新时同时探测直连和内置镜像(谁先响应用谁);这里现在就测一遍,看每个源的延迟和是否真的能下载。 */
+function Mirrors() {
+  const { toast } = useApp();
+  const [res, setRes] = useState<{ sources: Src[]; doh: string[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const test = async () => {
+    setBusy(true);
+    try { setRes(await bridge.admin("GET", "/api/v1/admin/update/mirrors", undefined, 30000)); }
+    catch (e) { toast(String(e), "err"); }
+    setBusy(false);
+  };
+  const tone = (s: Src): "green" | "orange" | "red" => (!s.ok ? "red" : s.ms < 600 ? "green" : s.ms < 1800 ? "orange" : "red");
+  return (
+    <Card icon="globe" title="更新下载源与 DNS" extra={<Btn icon="refresh" disabled={busy} onClick={test}>{busy ? "测试中…" : "测试全部下载源"}</Btn>}>
+      <Row icon="link" title="直连 + 8 个内置镜像"
+           desc="检查更新 / 下载更新包时同时探测直连和所有镜像,谁先响应用谁,失败再换下一个;镜像只搬运文件,更新包的 SHA-256 必须和直连取到的校验和一致才会安装。可在 config.json 的 update.mirrors 里增删镜像(填 [] 表示不用镜像),update.mirror 是你自己指定、排最前面的镜像。" />
+      <Row icon="server" title="域名解析" desc={`先并发问 DoH 服务器(${res?.doh?.join("、") ?? "阿里 DNS、DNSPod、Cloudflare、Google、AdGuard、dns.sb"}),哪个先答用哪个,系统 DNS 兜底;同一个域名有多个 IP 时选 TCP 连接最快的。`} />
+      {res?.sources.map((s) => (
+        <Row key={s.name} icon="globe" title={s.name} desc={s.ok ? `HTTP ${s.code ?? 200}` : s.err || "不通"}>
+          <Badge tone={tone(s)}>{s.ok ? `${s.ms} ms` : "不通"}</Badge>
+        </Row>
+      ))}
+    </Card>
+  );
+}
+
 /** 解析随程序打包的 CHANGELOG.md:取「## 服务端 / 管理程序」下每个「### 版本」及其「- 条目」(新 → 旧)。 */
 function parseChangelog(text: string, section: string): { title: string; items: string[] }[] {
   const out: { title: string; items: string[] }[] = [];
@@ -82,6 +110,7 @@ export function About() {
   return (
     <>
     <Update />
+    <Mirrors />
     <Changelog />
     <Card icon="info" title="关于 MediaHub">
       <Row icon="server" title="MediaHub 管理程序" desc={`v${env?.appVersion ?? "?"} · 服务端 ${svc?.info?.version ?? "未运行"} · Tauri 2`} />

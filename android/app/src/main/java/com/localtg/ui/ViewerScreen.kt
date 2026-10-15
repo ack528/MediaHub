@@ -81,6 +81,18 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
         var first = true
         androidx.compose.runtime.snapshotFlow { pager.settledPage }.collect { if (first) first = false else hapV.perform(Hap.Tick) }
     }
+    // 记住了转码画质:在看当前这一项时,让服务端提前把相邻两个视频的开头转好(切过去几乎秒开)。预热失败 / 服务端不支持都没有影响。
+    LaunchedEffect(pager.settledPage, cfg.playerQuality, cfg.rememberPlayback, cfg.playerCodec) {
+        if (!cfg.rememberPlayback || cfg.playerQuality <= 0 || c.isLocal || !c.api.caps.hlsPrepare) return@LaunchedEffect
+        kotlinx.coroutines.delay(800) // 快速连续翻页时别每一页都预热
+        val page = pager.settledPage
+        for (d in intArrayOf(1, -1)) {
+            val n = items.getOrNull(page + d) ?: continue
+            val br = rememberedTranscode(c, n) ?: continue
+            if (!n.isVideo) continue
+            c.api.hlsPrepare(n, br, c.hlsSid(n.id), com.localtg.data.DeviceCodecs.resolveCodec(cfg.playerCodec, c.api.caps.codecs))
+        }
+    }
     LaunchedEffect(cur.id) { AppLog.i("viewer", "查看 ${cur.name} (${cur.type}, ${pager.currentPage + 1}/${items.size})") }
     // 每滑到一项就记下来:退出查看器后,群组页定位到最后停留的这一项(不是打开时的那一项)
     LaunchedEffect(cur.id) { feed.originDialogId?.let { c.viewerReturn.value = it to cur.id } }

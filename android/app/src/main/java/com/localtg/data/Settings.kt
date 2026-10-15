@@ -76,6 +76,14 @@ data class AppSettings(
     val swipeSeek: Boolean = true,             // 视频页水平滑动 = 快进快退(VLC 方式);关闭则水平滑动切换上 / 下一项
     val randomSeed: Long = 0,                  // 随机浏览用服务端预先准备的第几份随机序列(1..12):不点「重新洗牌」就一直用它,序列不变(0 = 还没选)
     val randomType: Int = 0,                   // 随机浏览:0 全部 / 1 图片 / 2 视频(记住上次的选择)
+    // ---- 播放器记住的转码偏好(同步到服务器)、网络测速、更新下载源
+    val rememberPlayback: Boolean = true,      // 记住播放设置(设置 → 视频播放):播放器里选的转码画质 / 编码,切到下一个视频直接用,并同步到服务器(多台手机共用)
+    val playerQuality: Int = -1,               // 记住的画质:-1 = 还没选过;0 = 原画(直接播放);>0 = 转码码率(bps,最高 6 Mbps)
+    val playerCodec: String = "auto",          // 转码输出编码:auto(服务端能出 H.265 且手机硬解就用 H.265)/ h264 / h265
+    val playerPrefAt: Long = 0,                // 这份偏好最后修改的时间(毫秒):和服务器上的比,新的覆盖旧的
+    val updateSource: String = "",             // 检查更新的下载源:空 = 自动(直连和镜像里最快的);否则是指定的镜像前缀
+    val speedSeconds: Int = 15,                // 测速时长(秒),最少 15
+    val speedThreads: Int = 1,                 // 测速连接数:1 = 单连接(最接近播放视频),4 = 多连接(测最大带宽)
     val hapticLevel: Int = 2,                  // 震动反馈:0 关闭 / 1 轻 / 2 标准
     val forceHighRefresh: Boolean = true,      // 应用在前台时强制屏幕保持 120 Hz 及以上(屏幕没有这样的模式就不起作用)
     val barSwipeDp: Int = 40,                  // 功能条上左右滑动切换媒体所需的滑动距离(dp)
@@ -118,7 +126,8 @@ data class AppSettings(
     val enhFpsOverlay: Boolean = true,         // 补帧时在画面右上角显示 源帧率 → 输出帧率
     val enhHdr: String = "off",                // off / auto(显示器支持 HDR 才启用)/ on
     val enhPeak: Int = 600,                    // SDR→HDR 的高光峰值亮度(nit)
-    val enhMaxH: Int = 900,                    // 视频高度超过这个值不做超分
+    val enhAuto: Boolean = true,               // 超分按画面实际清晰度处理(标称分辨率很高但很糊的视频)
+    val enhMaxH: Int = 1080,                   // 视频高度超过这个值不做超分(以前默认 900:1080p 视频完全不会超分)
     // ---- 日志
     val logLevel: String = "info",             // off / warn / info / debug
     // ---- 网络(重启生效)

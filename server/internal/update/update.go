@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,6 +71,9 @@ type Updater struct {
 	busy   bool
 	failed map[string]time.Time // 版本 → 上次失败时间(1 小时内不再自动重试)
 	auto   bool
+
+	msMu sync.Mutex
+	ms   map[string]int64 // 镜像前缀 → 最近一次探测的首字节耗时(毫秒);-1 = 不通。用来给镜像排序
 }
 
 func New(o Options, auto bool) *Updater {
@@ -232,13 +236,56 @@ func (u *Updater) get(ctx context.Context, url string, accept string) (*http.Res
 	return resp, nil
 }
 
-// mirrorList 用户指定的镜像(若有)排在内置列表前面。
+// mirrorList 用户指定的镜像(若有)排在最前面;其余按最近一次探测的延迟排序(测过不通的排最后,没测过的保持配置里的顺序)。
 func (u *Updater) mirrorList() []string {
 	var out []string
 	if u.o.Mirror != "" {
 		out = append(out, u.o.Mirror)
 	}
-	return append(out, u.o.Mirrors...)
+	rest := append([]string(nil), u.o.Mirrors...)
+	u.msMu.Lock()
+	rank := func(m string) int64 {
+		v, ok := u.ms[m]
+		switch {
+		case !ok:
+			return 5_000 // 没测过:排在测过且通的后面、测过不通的前面
+		case v < 0:
+			return 1 << 40
+		default:
+			return v
+		}
+	}
+	sort.SliceStable(rest, func(i, j int) bool { return rank(rest[i]) < rank(rest[j]) })
+	u.msMu.Unlock()
+	return append(out, rest...)
+}
+
+// ProbeMirrors 同时探测直连和所有镜像(首字节耗时 + 返回的是不是真文件),并记下结果用于排序。
+func (u *Updater) ProbeMirrors(ctx context.Context) []MirrorStatus {
+	probe := "https://github.com/" + u.o.Repo + "/releases/latest/download/SHA256SUMS.txt"
+	res := ProbeSources(ctx, u.client, probe, u.mirrorList(), "MediaHub-Updater/"+u.o.Version)
+	u.msMu.Lock()
+	if u.ms == nil {
+		u.ms = map[string]int64{}
+	}
+	for _, r := range res {
+		if r.URL == "" {
+			continue
+		}
+		if r.OK {
+			u.ms[r.URL] = r.Ms
+		} else {
+			u.ms[r.URL] = -1
+		}
+	}
+	u.msMu.Unlock()
+	sort.SliceStable(res, func(i, j int) bool {
+		if res[i].OK != res[j].OK {
+			return res[i].OK
+		}
+		return res[i].Ms < res[j].Ms
+	})
+	return res
 }
 
 // fetchViaRedirect 不走 GitHub API(匿名每小时只有 60 次,共用出口 IP / 代理时很容易被限流返回 403):

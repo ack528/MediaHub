@@ -67,6 +67,7 @@ private val SECTIONS = listOf(
     Triple("codec", "编解码器", "硬解 / 软解、缓冲、分辨率、音轨字幕"),
     Triple("enhance", "画质增强(实验)", "实时超分、补帧(倍率 / 光流)、SDR 转 HDR、硬件检测"),
     Triple("network", "网络", "连接与读取超时"),
+    Triple("speedtest", "网络测速", "服务器延迟、下载 / 上传速度(至少测 15 秒)"),
     Triple("storage", "存储与缓存", "清理缓存、记录,恢复默认设置"),
     Triple("account", "服务器管理", "已保存的服务器、切换、添加、退出登录"),
     Triple("log", "日志与诊断", "日志级别、查看、复制、分享给开发者"),
@@ -112,6 +113,7 @@ fun SettingsScreen(c: AppContainer, section: String?, onBack: () -> Unit, onOpen
                     "enhance-hw" -> HardwarePage(s, update)
                     "lsfg" -> LsfgPage(s)
                     "network" -> NetworkPage(s, update)
+                    "speedtest" -> SpeedTestPage(c, s, update)
                     "storage" -> StoragePage(c)
                     "account" -> AccountPage(c)
                     "log" -> LogPage(s, update, onOpenView = { onOpen("log-view") })
@@ -272,6 +274,11 @@ private fun ImagePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
 @Composable
 private fun VideoPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
     Header("播放")
+    SwitchRow(
+        "记住播放设置",
+        "在播放器里选过的转码画质 / 编码会记住,切到下一个视频直接用(例如选了 1.5M 转码,后面的视频默认也是 1.5M),并同步到服务器:多台手机共用,服务端还会提前把下一个视频的开头转好,切换几乎秒开。关闭后每个视频都从原画开始",
+        s.rememberPlayback,
+    ) { u { copy(rememberPlayback = it) } }
     SwitchRow("自动播放", "翻到视频页时自动开始播放", s.autoplay) { u { copy(autoplay = it) } }
     SwitchRow("循环播放", "播放结束后从头再播", s.loop) { u { copy(loop = it) } }
     SwitchRow("默认静音", null, s.muted) { u { copy(muted = it) } }
@@ -337,13 +344,17 @@ private fun EnhancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
     Header("实时超分")
     ChoiceRow(
         "超分算法", s.enhUpscale,
-        listOf("off" to "关闭", "fsr" to "FSR 1.0(通用,很快)", "anime4k_s" to "Anime4K 小模型(动漫,较快)", "anime4k_m" to "Anime4K 中模型(动漫,画质更好)"),
-        desc = "FSR:AMD 的边缘自适应放大 + 锐化,适合真人 / 影视;Anime4K:卷积神经网络,线条更干净,适合动画。视频已经比屏幕大时不处理",
+        listOf("off" to "关闭", "fsr" to "FSR 1.0(通用,很快)", "anime4k_s" to "Anime4K 小模型(动漫,较快)", "anime4k_m" to "Anime4K 中模型(动漫,画质更好)", "fsrcnnx_s" to "FSRCNNX 小模型(真人 / 影视,神经网络)", "fsrcnnx_m" to "FSRCNNX 中模型(真人 / 影视,更清楚更慢)"),
+        desc = "FSR:AMD 的边缘自适应放大 + 锐化,效果温和;FSRCNNX:卷积神经网络,真人 / 影视片源还原细节明显优于 FSR;Anime4K:线条更干净,只适合动画。视频已经比屏幕大时不处理",
     ) { u { copy(enhUpscale = it) } }
     ChoiceRow(
-        "只对低于此分辨率的视频超分", s.enhMaxH, listOf(540 to "540p", 720 to "720p", 900 to "900p", 1080 to "1080p"),
+        "只对低于此分辨率的视频超分", s.enhMaxH, listOf(540 to "540p", 720 to "720p", 900 to "900p", 1080 to "1080p", 1440 to "1440p"),
         desc = "高分辨率视频超分计算量很大;超过这个高度的视频直接显示",
     ) { u { copy(enhMaxH = it) } }
+    SwitchRow(
+        "按画面实际清晰度处理", "标称 1080p / 4K 但画面其实很糊(低清片源放大来的)时,先缩回有效分辨率再超分,上面的分辨率上限也按有效分辨率判断;关闭则只看标称分辨率",
+        s.enhAuto,
+    ) { u { copy(enhAuto = it) } }
     Header("补帧(LSFG)")
     val frcSupported = com.localtg.render.Lsfg.deviceSupported
     if (!frcSupported) {
@@ -440,7 +451,7 @@ private fun HardwarePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> U
     }
 }
 
-private fun upscaleName(v: String) = when (v) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K 小模型"; "anime4k_m" -> "Anime4K 中模型"; else -> "关闭" }
+private fun upscaleName(v: String) = when (v) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K 小模型"; "anime4k_m" -> "Anime4K 中模型"; "fsrcnnx_s" -> "FSRCNNX 小模型"; "fsrcnnx_m" -> "FSRCNNX 中模型"; else -> "关闭" }
 private fun frcName(v: String) = when (v) { "lsfg" -> "LSFG 标准"; "lsfg_low" -> "LSFG 低功耗"; else -> "关闭" }
 
 @Composable
@@ -522,9 +533,13 @@ private fun CodecPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
     ) { u { copy(bufferMode = it) } }
     Header("服务端转码")
     ChoiceRow(
-        "转码码率", s.maxBitrateMbps, listOf(0 to "自动(按原分辨率)", 40 to "40 Mbps", 20 to "20 Mbps", 10 to "10 Mbps", 5 to "5 Mbps", 2 to "2 Mbps"),
-        desc = "转码只调整码率,不改变分辨率(原来多少像素还是多少)。自动 = 按视频原分辨率:480p 1.5M / 720p 3M / 1080p 6M / 1440p 12M / 2160p 20M;网络不好时调低",
+        "转码码率", s.maxBitrateMbps.coerceAtMost(6), listOf(0 to "自动(按原分辨率)", 6 to "6 Mbps", 5 to "5 Mbps", 4 to "4 Mbps", 3 to "3 Mbps", 2 to "2 Mbps", 1 to "1 Mbps"),
+        desc = "转码只调整码率,不改变分辨率(原来多少像素还是多少),只提供 6 Mbps 及以下的档位。自动 = 按视频原分辨率:480p 1.5M / 720p 3M / 1080p 及以上 6M;网络不好时调低。更细的档位(0.5M / 0.8M / 1.5M 等)在播放器右上角菜单的「画质与解码」里选",
     ) { u { copy(maxBitrateMbps = it) } }
+    ChoiceRow(
+        "转码编码", s.playerCodec, listOf("auto" to "自动(推荐)", "h264" to "H.264", "h265" to "H.265"),
+        desc = "H.265 在相同码率下画质更好、相同画质更省流量。自动 = 服务端能输出 H.265(需要服务器有 Intel QSV 显卡硬编)且手机能硬解 H.265 就用 H.265,否则 H.264",
+    ) { u { copy(playerCodec = it) } }
     Header("音轨与字幕")
     val langs = listOf("" to "跟随系统", "zh" to "中文", "en" to "English", "ja" to "日本語", "ko" to "한국어")
     ChoiceRow("首选音轨语言", s.audioLanguage, langs, desc = "文件里有多条音轨时优先选这种语言") { u { copy(audioLanguage = it) } }
@@ -754,6 +769,7 @@ private fun AboutPage(c: AppContainer) {
     InfoRow("系统", "Android ${android.os.Build.VERSION.RELEASE}(API ${android.os.Build.VERSION.SDK_INT})")
     InfoRow("设备", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
     UpdateSection(ver)
+    MirrorSection(c.settings.value) { c.settings.update(it) }
     ChangelogSection(ver)
 }
 
@@ -1014,5 +1030,196 @@ private fun RestartRow(ctx: android.content.Context) {
             ctx.startActivity(i)
             android.os.Process.killProcess(android.os.Process.myPid())
         }
+    }
+}
+
+// ---------------------------------------------------------------- 网络测速
+
+private fun fmtMbps(m: Double) = "%.1f Mbps(%.2f MB/s)".format(m, m / 8)
+
+@Composable
+private fun SpeedTestPage(c: AppContainer, s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
+    val tg = LocalTg.current
+    val scope = rememberCoroutineScope()
+    val base = c.session.session.collectAsState().value?.baseUrl
+    var running by remember { mutableStateOf(false) }
+    var phase by remember { mutableStateOf("") }
+    var lat by remember { mutableStateOf<com.localtg.data.SpeedTest.Latency?>(null) }
+    var latDone by remember { mutableStateOf(0) }
+    var downNow by remember { mutableStateOf(0.0) }
+    var downAvg by remember { mutableStateOf(0.0) }
+    var downEl by remember { mutableStateOf(0L) }
+    var down by remember { mutableStateOf<com.localtg.data.SpeedTest.Flow?>(null) }
+    var upNow by remember { mutableStateOf(0.0) }
+    var upAvg by remember { mutableStateOf(0.0) }
+    var upEl by remember { mutableStateOf(0L) }
+    var up by remember { mutableStateOf<com.localtg.data.SpeedTest.Flow?>(null) }
+    var err by remember { mutableStateOf<String?>(null) }
+    var job by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { job?.cancel() } }
+    val secs = maxOf(15, s.speedSeconds)
+
+    if (c.isLocal || base == null) {
+        Text("本地媒体模式没有服务器,不能测速。请先连接服务器。", color = tg.message, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
+        return
+    }
+    Header("服务器")
+    InfoRow("地址", base.substringAfter("://"))
+    Header("测速设置")
+    ChoiceRow(
+        "测速时长", s.speedSeconds.coerceAtLeast(15), listOf(15 to "15 秒(最短)", 20 to "20 秒", 30 to "30 秒", 60 to "60 秒"),
+        desc = "下载和上传各测这么久。至少 15 秒:前几秒是 TCP 慢启动,时间太短测不准;「稳定速度」会去掉前 2 秒再算",
+    ) { u { copy(speedSeconds = it) } }
+    ChoiceRow(
+        "连接数", s.speedThreads, listOf(1 to "单连接(最接近播放视频)", 4 to "4 连接(测最大带宽)"),
+        desc = "播放视频通常是 1 ~ 2 个连接,单连接的结果更能代表观看体验;经云中继 / 高延迟链路时,多连接能测出链路的最大带宽",
+    ) { u { copy(speedThreads = it) } }
+
+    androidx.compose.material3.Button(
+        onClick = {
+            if (running) { job?.cancel(); return@Button }
+            job = scope.launch {
+                running = true; err = null; lat = null; down = null; up = null; latDone = 0
+                downNow = 0.0; downAvg = 0.0; downEl = 0; upNow = 0.0; upAvg = 0.0; upEl = 0
+                val st = com.localtg.data.SpeedTest(c)
+                try {
+                    phase = "延迟"
+                    lat = st.latency { i, _ -> latDone = i + 1 }
+                    phase = "下载"
+                    down = st.download(secs, s.speedThreads) { el, inst, avg -> downEl = el; downNow = inst; downAvg = avg }
+                    phase = "上传"
+                    up = st.upload(secs, s.speedThreads) { el, inst, avg -> upEl = el; upNow = inst; upAvg = avg }
+                    phase = "完成"
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    phase = "已停止"; throw e
+                } catch (e: Exception) {
+                    err = (e as? com.localtg.data.ApiException)?.message ?: com.localtg.data.friendlyError(e)
+                    phase = "出错"
+                } finally { running = false }
+            }
+        },
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+    ) { Text(if (running) "停止($phase)" else "开始测速(约 ${secs * 2 + 5} 秒)") }
+    if (err != null) Text(err!!, color = tg.danger, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+
+    val l = lat
+    if (l != null || phase == "延迟") {
+        Header("延迟")
+        if (l == null) InfoRow("正在测量…", "$latDone / 12")
+        else {
+            InfoRow("平均 / 最小 / 最大", "%.0f / %d / %d ms".format(l.avg, l.min, l.max))
+            InfoRow("抖动", "%.1f ms(越小越稳)".format(l.jitter))
+            InfoRow("丢包", "${l.lost} / ${l.samples.size + l.lost}")
+        }
+    }
+    if (phase == "下载" || down != null) {
+        Header("下载(服务器 → 手机)")
+        SpeedCard(running && phase == "下载", downNow, downAvg, downEl, secs, down)
+    }
+    if (phase == "上传" || up != null) {
+        Header("上传(手机 → 服务器)")
+        SpeedCard(running && phase == "上传", upNow, upAvg, upEl, secs, up)
+    }
+    Text(
+        "测速数据由服务器实时生成、不读写磁盘,测的是手机到服务器整条链路(含 Wi-Fi、路由器、云中继)的速度。" +
+            "视频能不能流畅播放主要看下载的「稳定速度」是否大于视频码率(1080p 约 8 ~ 20 Mbps,转码后 1.5 ~ 6 Mbps)。",
+        color = tg.message, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+    )
+}
+
+@Composable
+private fun SpeedCard(live: Boolean, now: Double, avg: Double, elapsedMs: Long, secs: Int, flow: com.localtg.data.SpeedTest.Flow?) {
+    val tg = LocalTg.current
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+        if (live || flow == null) {
+            Text("%.1f Mbps".format(now), color = tg.accent, fontSize = 30.sp, fontWeight = FontWeight.Medium)
+            Text("%.2f MB/s · 平均 %.1f Mbps · 已测 %.0f / %d 秒".format(now / 8, avg, elapsedMs / 1000.0, secs), color = tg.message, fontSize = 13.sp)
+            androidx.compose.material3.LinearProgressIndicator(
+                progress = { (elapsedMs / (secs * 1000f)).coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            )
+        } else {
+            Text("稳定速度  ${fmtMbps(flow.stableMbps)}", color = tg.accent, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+            Text("全程平均  ${fmtMbps(flow.avgMbps)}", color = tg.name, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
+            Text("峰值  ${fmtMbps(flow.peakMbps)}", color = tg.name, fontSize = 14.sp)
+            Text("共 ${formatSize(flow.bytes)} · ${"%.1f".format(flow.ms / 1000.0)} 秒", color = tg.message, fontSize = 12.sp)
+        }
+    }
+}
+
+// ---------------------------------------------------------------- 更新下载源与 DNS
+
+@Composable
+private fun statusColor(ok: Boolean, ms: Long, testing: Boolean): androidx.compose.ui.graphics.Color {
+    val tg = LocalTg.current
+    return when {
+        testing -> tg.message
+        !ok -> tg.danger
+        ms < 600 -> androidx.compose.ui.graphics.Color(0xFF3DA35D)
+        ms < 1800 -> tg.warn
+        else -> tg.danger
+    }
+}
+
+@Composable
+private fun StatusRow(name: String, detail: String, status: String, color: androidx.compose.ui.graphics.Color) {
+    val tg = LocalTg.current
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(name, color = tg.name, fontSize = 14.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            if (detail.isNotEmpty()) Text(detail, color = tg.message, fontSize = 11.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        }
+        Text(status, color = color, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+/** 检查更新 / 下载安装包用的下载源:直连 + 内置镜像,每个源的延迟和连通性;DNS(DoH + 系统)的延迟。 */
+@Composable
+private fun MirrorSection(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
+    var testing by remember { mutableStateOf(false) }
+    var src by remember { mutableStateOf<List<com.localtg.data.AppUpdater.SourceStatus>>(emptyList()) }
+    var dns by remember { mutableStateOf<List<com.localtg.data.AppUpdater.DnsStatus>>(emptyList()) }
+    Header("下载源与 DNS")
+    ActionRow(
+        if (testing) "正在测试…" else "测试全部下载源和 DNS",
+        "检查更新和下载安装包时会同时探测直连和 ${com.localtg.data.AppUpdater.MIRRORS.size} 个镜像,谁先响应用谁;这里可以看到每个源现在的延迟和是否连得通",
+    ) {
+        if (testing) return@ActionRow
+        testing = true
+        try {
+            kotlinx.coroutines.coroutineScope {
+                launch { src = com.localtg.data.AppUpdater.probeSources { src = it } }
+                launch { dns = com.localtg.data.AppUpdater.probeDns { dns = it } }
+            }
+        } finally { testing = false }
+    }
+    ChoiceRow(
+        "优先使用", s.updateSource,
+        listOf("" to "自动(最快的)", com.localtg.data.AppUpdater.DIRECT to "直连 github.com") + com.localtg.data.AppUpdater.MIRRORS.map { it to it.removePrefix("https://").trimEnd('/') },
+        desc = "自动 = 按最近一次测试的延迟排序、下载时再同时探测;指定后该源排在最前面,失败才换别的",
+    ) { u { copy(updateSource = it) } }
+    if (src.isNotEmpty()) {
+        Text("下载源", color = LocalTg.current.message, fontSize = 12.sp, modifier = Modifier.padding(start = 16.dp, top = 8.dp))
+        src.forEach { st ->
+            StatusRow(
+                st.name, if (!st.ok && !st.testing) st.note else "",
+                when { st.testing -> "测试中…"; st.ok -> "${st.ms} ms"; else -> "不通" },
+                statusColor(st.ok, st.ms, st.testing),
+            )
+        }
+    }
+    if (dns.isNotEmpty()) {
+        Text("DNS(解析 github.com)", color = LocalTg.current.message, fontSize = 12.sp, modifier = Modifier.padding(start = 16.dp, top = 8.dp))
+        dns.forEach { d ->
+            StatusRow(
+                d.name, if (d.ok) d.ips.take(3).joinToString(", ") else d.note,
+                when { d.testing -> "测试中…"; d.ok -> "${d.ms} ms"; else -> "失败" },
+                statusColor(d.ok, d.ms, d.testing),
+            )
+        }
+        Text(
+            "域名解析会并发问上面的 DoH 服务器(哪个先答用哪个),系统 DNS 兜底;一个域名有多个地址时选 TCP 连接最快的。",
+            color = LocalTg.current.message, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
     }
 }

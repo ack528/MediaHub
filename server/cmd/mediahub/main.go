@@ -43,7 +43,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "1.9.0"
+const version = "3.0.0"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -382,7 +382,8 @@ func run(args []string, serve bool) int {
 	if cfg.Update.Enabled {
 		logx.Go("自动更新", func() { srv.Update.Run(ctx) })
 	}
-	srv.WarmRandom(ctx) // 随机浏览预热:启动时就在后台算好各盘符的 id 范围、把数据库页读进缓存
+	srv.WarmRandom(ctx)
+	srv.StartOptimizeWorker(ctx) // 存储优化:视频压缩队列(没有任务时什么都不做) // 随机浏览预热:启动时就在后台算好各盘符的 id 范围、把数据库页读进缓存
 	var certFile, keyFile string
 	if cfg.TLS.Enabled {
 		var fp string

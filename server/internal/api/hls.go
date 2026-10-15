@@ -37,17 +37,22 @@ const (
 	hlsKeepBehind  = 200
 	hlsIdleSeconds = 90
 	hlsWaitSeconds = 45
+	hlsPrepareSegs = 3 // 预热(prepare)的会话:转出这么多段(≈12 秒)就先停下,等真正播放时再继续
+	// 转码码率的范围:只提供 6 Mbps 及以下的档位(再高的码率没有转码的意义,不如直接播原文件)
+	hlsMinBitrate     = 200_000
+	hlsDefaultBitrate = 3_000_000
 )
 
 type hlsParams struct {
 	MediaID int64
 	SID     string
-	Bitrate int // 视频码率 bps,0 = 默认;转码只调码率,始终保持原分辨率
-	Audio   int // 音频流在源文件里的序号,0 = 第一条音轨
+	Bitrate int    // 视频码率 bps,0 = 默认;转码只调码率,始终保持原分辨率
+	Audio   int    // 音频流在源文件里的序号,0 = 第一条音轨
+	Codec   string // 输出编码:h264 | h265("" = 取用户记住的偏好,没有就 h264)
 }
 
 func (p hlsParams) key() string {
-	return fmt.Sprintf("%d|%s|%d|%d", p.MediaID, p.SID, p.Bitrate, p.Audio)
+	return fmt.Sprintf("%d|%s|%d|%d|%s", p.MediaID, p.SID, p.Bitrate, p.Audio, p.Codec)
 }
 
 func parseHLSParams(id int64, r *http.Request) hlsParams {
@@ -58,6 +63,12 @@ func parseHLSParams(id int64, r *http.Request) hlsParams {
 	}
 	p.Bitrate, _ = strconv.Atoi(q.Get("maxBitrate"))
 	p.Audio, _ = strconv.Atoi(q.Get("audio"))
+	switch strings.ToLower(q.Get("codec")) {
+	case "h265", "hevc":
+		p.Codec = "h265"
+	case "h264", "avc":
+		p.Codec = "h264"
+	}
 	if p.Bitrate < 0 {
 		p.Bitrate = 0
 	}
@@ -80,6 +91,11 @@ type HLS struct {
 	qsvOnce sync.Once
 	qsvOK   bool        // ffmpeg 带 h264_qsv 编码器
 	qsvBad  atomic.Bool // 实际使用中 QSV 失败过,以后改用软编
+
+	probed   atomic.Bool // 启动时的 QSV 探测(h264 + h265)是否已完成
+	hevcOnce sync.Once
+	hevcQSV  bool        // hevc_qsv 能真的编出东西(启动时用一帧测试过,不只是编码器列表里有)
+	hevcBad  atomic.Bool // 实际使用中 HEVC 硬编失败过,以后 h265 请求退回 h264
 }
 
 type hlsSess struct {
@@ -96,8 +112,9 @@ type hlsSess struct {
 	runStart int
 	lastErr  string
 
-	last    atomic.Int64 // 最近一次被请求的时间(unix 秒)
-	lastReq atomic.Int64 // 最近一次请求的段号
+	last      atomic.Int64 // 最近一次被请求的时间(unix 秒)
+	lastReq   atomic.Int64 // 最近一次请求的段号
+	requested atomic.Bool  // 手机真的请求过段(false = 只是 prepare 预热,转几段就停)
 }
 
 // NewHLS 创建管理器并清掉上次运行残留的临时文件。
@@ -106,6 +123,11 @@ func NewHLS(cfg *config.Config, log *slog.Logger) *HLS {
 	_ = os.RemoveAll(h.dir)
 	_ = os.MkdirAll(h.dir, 0o755)
 	go h.janitor()
+	go func() { // 启动时就探测 QSV(H.265 要真的编一帧),别等到第一个请求来了才测
+		defer h.probed.Store(true)
+		h.hwEnabled()
+		h.hevcHW()
+	}()
 	return h
 }
 
@@ -118,6 +140,68 @@ func (h *HLS) hwEnabled() bool {
 		h.qsvOK = err == nil && bytes.Contains(out, []byte("h264_qsv"))
 	})
 	return h.qsvOK
+}
+
+// hevcHW 内置转码能不能用 QSV 硬件编 H.265。第一次调用时用一帧测试画面真的编一次(驱动 / 核显不支持时编码器列表里也有 hevc_qsv)。
+func (h *HLS) hevcHW() bool {
+	if h.cfg.Video.HWAccel != "qsv" || h.hevcBad.Load() {
+		return false
+	}
+	h.hevcOnce.Do(func() {
+		out, err := proc.Hide(exec.Command(h.cfg.Tools.FFmpeg, "-hide_banner", "-encoders")).Output()
+		if err != nil || !bytes.Contains(out, []byte("hevc_qsv")) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		err = proc.Hide(exec.CommandContext(ctx, h.cfg.Tools.FFmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=640x360:d=0.2",
+			"-vf", "format=nv12", "-c:v", "hevc_qsv", "-f", "null", "-")).Run()
+		h.hevcQSV = err == nil
+		h.log.Info("H.265 QSV 硬件编码检测", "available", h.hevcQSV)
+	})
+	return h.hevcQSV
+}
+
+// Codecs 内置转码能提供的输出编码(给 /server/info 的 caps 用)。H.265:有 QSV 硬编,或配置里允许软件编码(1080p 实时软编 x265 很吃 CPU)。
+func (h *HLS) Codecs() []string {
+	out := []string{"h264"}
+	if h.hevcHW() || h.cfg.Video.AllowSoftwareHEVC {
+		out = append(out, "h265")
+	}
+	return out
+}
+
+// QSV 报告 h264 / h265 的 QSV 可用情况(给 caps)。
+func (h *HLS) QSV() (h264, h265 bool) { return h.hwEnabled(), h.hevcHW() }
+
+// Probed 启动时的硬件探测是否完成;没完成时 /server/info 不去等它(返回 probing=true,手机稍后再问)。
+func (h *HLS) Probed() bool { return h.probed.Load() }
+
+// effective 把请求参数补齐成真正使用的值:码率限制在 [hlsMinBitrate, 配置的上限];h265 不可用就退回 h264。
+func (h *HLS) effective(p hlsParams, prefBitrate int, prefCodec string) hlsParams {
+	max := h.cfg.Video.MaxTranscodeBitrate
+	if max <= 0 {
+		max = 6_000_000
+	}
+	if p.Bitrate <= 0 {
+		p.Bitrate = prefBitrate
+	}
+	if p.Bitrate <= 0 {
+		p.Bitrate = hlsDefaultBitrate
+	}
+	if p.Bitrate > max {
+		p.Bitrate = max
+	}
+	if p.Bitrate < hlsMinBitrate {
+		p.Bitrate = hlsMinBitrate
+	}
+	if p.Codec == "" {
+		p.Codec = prefCodec
+	}
+	if p.Codec != "h265" || !(h.hevcHW() || h.cfg.Video.AllowSoftwareHEVC) {
+		p.Codec = "h264"
+	}
+	return p
 }
 
 // session 取得(或创建)会话。同一个 sid 切换了画质 / 音轨,旧参数的会话立即结束。
@@ -218,6 +302,9 @@ func (h *HLS) janitor() {
 				if s.cmd != nil && s.next(s.runStart)-int(s.lastReq.Load()) > hlsLeadSegs {
 					s.cancel()
 					s.cmd, s.cancel = nil, nil
+				} else if s.cmd != nil && !s.requested.Load() && s.next(s.runStart)-s.runStart >= hlsPrepareSegs {
+					s.cancel() // 预热的会话:转够几段就停,等真正播放(请求段)时再接着转
+					s.cmd, s.cancel = nil, nil
 				}
 				s.mu.Unlock()
 				if beh := int(s.lastReq.Load()) - hlsKeepBehind; beh > 0 {
@@ -250,14 +337,22 @@ func (s *hlsSess) args(idx int, hw bool) []string {
 	vf := "format=" + pix // 不缩放:转码只改码率,分辨率保持原样
 	br := s.p.Bitrate
 	if br <= 0 {
-		br = 5_000_000
+		br = hlsDefaultBitrate
 	}
 	rate := strconv.Itoa(br)
-	if hw {
+	switch {
+	case s.p.Codec == "h265" && hw:
+		a = append(a, "-vf", vf, "-c:v", "hevc_qsv", "-preset", "veryfast", "-profile:v", "main",
+			"-b:v", rate, "-maxrate", rate, "-g", "250",
+			"-forced_idr", "1")
+	case s.p.Codec == "h265":
+		a = append(a, "-vf", vf, "-c:v", "libx265", "-preset", "ultrafast", "-b:v", rate, "-maxrate", rate, "-bufsize", strconv.Itoa(br*2),
+			"-x265-params", "scenecut=0:open-gop=0:log-level=error", "-forced-idr", "1")
+	case hw:
 		a = append(a, "-vf", vf, "-c:v", "h264_qsv", "-preset", "veryfast", "-profile:v", "high",
 			"-b:v", rate, "-maxrate", rate, "-g", "250", "-bf", "2",
 			"-forced_idr", "1") // 必须:否则 QSV 不会在强制关键帧处插入 IDR,分段时长就和播放列表对不上
-	} else {
+	default:
 		a = append(a, "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-level", "4.1",
 			"-b:v", rate, "-maxrate", rate, "-bufsize", strconv.Itoa(br*2), "-sc_threshold", "0")
 	}
@@ -309,7 +404,7 @@ func (s *hlsSess) launchLocked(idx int, hw bool) error {
 		return err
 	}
 	s.cmd, s.cancel, s.runStart = cmd, cancel, idx
-	s.h.log.Info("转码开始", "id", s.p.MediaID, "seg", idx, "bitrate", s.p.Bitrate, "qsv", hw)
+	s.h.log.Info("转码开始", "id", s.p.MediaID, "seg", idx, "bitrate", s.p.Bitrate, "codec", s.p.Codec, "qsv", hw)
 	go func() {
 		defer func() { _ = recover() }()
 		err := cmd.Wait()
@@ -326,11 +421,19 @@ func (s *hlsSess) launchLocked(idx int, hw bool) error {
 		s.lastErr = msg
 		s.mu.Unlock()
 		if hw && !fileExists(s.segFile(idx)) { // 硬件编码没跑起来(驱动 / 核显不可用):以后改用软编,并立即重试
-			s.h.log.Warn("QSV 转码失败,改用软件编码", "err", msg)
-			s.h.qsvBad.Store(true)
 			s.mu.Lock()
+			next := false
+			if s.p.Codec == "h265" { // H.265 硬编失败:以后 h265 请求都退回 h264(能硬编就继续硬编)
+				s.h.log.Warn("H.265 QSV 转码失败,退回 H.264", "err", msg)
+				s.h.hevcBad.Store(true)
+				s.p.Codec = "h264"
+				next = s.h.hwEnabled()
+			} else {
+				s.h.log.Warn("QSV 转码失败,改用软件编码", "err", msg)
+				s.h.qsvBad.Store(true)
+			}
 			if s.cmd == nil {
-				_ = s.launchLocked(idx, false)
+				_ = s.launchLocked(idx, next)
 			}
 			s.mu.Unlock()
 			return
@@ -341,7 +444,7 @@ func (s *hlsSess) launchLocked(idx int, hw bool) error {
 }
 
 // ensure 保证第 idx 段"已有或正在被转"。
-func (s *hlsSess) ensure(idx int) error {
+func (s *hlsSess) ensure(idx int, evict bool) error {
 	s.h.runMu.Lock()
 	defer s.h.runMu.Unlock()
 	s.mu.Lock()
@@ -369,6 +472,9 @@ func (s *hlsSess) ensure(idx int) error {
 		}
 	}
 	s.h.mu.Unlock()
+	if !evict && len(running) >= max {
+		return errPrepareFull // 预热不去挤掉别人正在播放的转码
+	}
 	for len(running) >= max {
 		oldest := 0
 		for i, o := range running {
@@ -386,8 +492,18 @@ func (s *hlsSess) ensure(idx int) error {
 		running = append(running[:oldest], running[oldest+1:]...)
 		s.h.log.Info("转码路数已满,停止最久没动静的一路", "max", max)
 	}
-	return s.launchLocked(idx, s.h.hwEnabled())
+	return s.launchLocked(idx, s.hwFor())
 }
+
+// hwFor 这个会话该不该用 QSV:h265 看 hevc_qsv,h264 看 h264_qsv。
+func (s *hlsSess) hwFor() bool {
+	if s.p.Codec == "h265" {
+		return s.h.hevcHW()
+	}
+	return s.h.hwEnabled()
+}
+
+var errPrepareFull = fmt.Errorf("转码路数已满")
 
 // waitSeg 等第 idx 段出现。ffmpeg 已经退出而段还没有时返回 false。
 func (s *hlsSess) waitSeg(ctx context.Context, idx int) bool {
@@ -435,7 +551,8 @@ func (s *Server) builtinHLS(w http.ResponseWriter, r *http.Request, id, durMs in
 		writeErr(w, 503, "transcode.disabled", "服务端没有启用转码")
 		return
 	}
-	p := parseHLSParams(id, r)
+	pp := s.playerPrefs(userID(r))
+	p := s.HLS.effective(parseHLSParams(id, r), pp.Bitrate, pp.Codec)
 	full, err := MediaPath(s.DB, id)
 	if err != nil {
 		writeErr(w, 404, "notfound", "媒体不存在")
@@ -486,9 +603,10 @@ func (s *Server) builtinHLS(w http.ResponseWriter, r *http.Request, id, durMs in
 		return
 	}
 	sess.lastReq.Store(int64(idx))
+	sess.requested.Store(true)
 	ok := false
 	for try := 0; try < 2 && !ok; try++ { // 第一次等不到(例如 ffmpeg 刚好被停掉了)再重启一次
-		if err := sess.ensure(idx); err != nil {
+		if err := sess.ensure(idx, true); err != nil {
 			s.Log.Warn("启动转码失败", "id", id, "err", err)
 			writeErr(w, 502, "transcode.start", "无法启动 ffmpeg:"+err.Error())
 			return
@@ -528,4 +646,47 @@ func firstLine(s string) string {
 		s = s[:200]
 	}
 	return s
+}
+
+// mediaHLSPrepare POST /api/v1/media/{id}/hls/prepare?sid=&maxBitrate=&codec=&audio= —— 手机在看当前视频时,提前让服务端把"下一个视频"的前几段转好:
+// 切过去时第一段已经在磁盘上,几乎秒开。预热不会挤掉别人正在播放的转码(路数满了就放弃),转够几段会自动停,闲置 90 秒回收。
+func (s *Server) mediaHLSPrepare(w http.ResponseWriter, r *http.Request) {
+	id, ok := idParam(r, "id")
+	if !ok || s.HLS == nil || (s.JF != nil && s.Cfg.Video.Engine != "ffmpeg" && s.jfItem(id) != "") {
+		w.WriteHeader(204)
+		return
+	}
+	full, err := MediaPath(s.DB, id)
+	if err != nil {
+		w.WriteHeader(204)
+		return
+	}
+	if st, err := os.Stat(full); err != nil || st.Size() == 0 {
+		w.WriteHeader(204)
+		return
+	}
+	var durMs int64
+	_ = s.DB.QueryRow(`SELECT COALESCE(duration_ms,0) FROM media WHERE id=? AND type=1`, id).Scan(&durMs)
+	if durMs <= 0 {
+		durMs = probeDurationMs(s.Cfg.Tools.FFprobe, full)
+	}
+	if durMs <= 0 {
+		w.WriteHeader(204)
+		return
+	}
+	pp := s.playerPrefs(userID(r))
+	p := s.HLS.effective(parseHLSParams(id, r), pp.Bitrate, pp.Codec)
+	sess := s.HLS.session(p, full, durMs)
+	sess.last.Store(time.Now().Unix())
+	if err := sess.ensure(0, false); err != nil && err != errPrepareFull {
+		s.Log.Debug("预热转码失败", "id", id, "err", err)
+	}
+	w.WriteHeader(202)
+}
+
+// jfItem 视频在 Jellyfin 里的条目 id(没有收录返回空)。
+func (s *Server) jfItem(id int64) string {
+	var jfid string
+	_ = s.DB.QueryRow(`SELECT COALESCE(jf_item_id,'') FROM media WHERE id=?`, id).Scan(&jfid)
+	return jfid
 }

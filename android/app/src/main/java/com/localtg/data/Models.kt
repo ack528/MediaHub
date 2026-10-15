@@ -3,7 +3,26 @@ package com.localtg.data
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class ServerInfo(val name: String, val version: String, val apiVersion: Int)
+data class ServerInfo(val name: String, val version: String, val apiVersion: Int, val caps: ServerCaps = ServerCaps())
+
+/** 服务端能力(/server/info 的 caps):老服务端没有这项,全部取默认值(= 不支持)。 */
+@Serializable
+data class ServerCaps(
+    val codecs: List<String> = listOf("h264"),    // 转码能输出的编码
+    val qsvH264: Boolean = false,
+    val qsvH265: Boolean = false,
+    val maxTranscodeBitrate: Int = 0,             // 0 = 老服务端(不限制)
+    val probing: Boolean = false,                 // 服务端还在启动时的硬件探测
+    val speedtest: Boolean = false,
+    val playerPrefs: Boolean = false,
+    val hlsPrepare: Boolean = false,
+    val thumbWebp: Boolean = false,
+    val optimize: Boolean = false,
+)
+
+/** 播放器记住的转码偏好(服务端按用户保存)。bitrate = 0 或 direct = true 表示原画直接播放。 */
+@Serializable
+data class PlayerPref(val bitrate: Int = 0, val codec: String = "h264", val direct: Boolean = false, val savedAt: Long = 0)
 
 @Serializable
 data class LoginResp(val token: String, val expiresAt: String = "")

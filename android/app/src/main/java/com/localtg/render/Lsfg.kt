@@ -49,7 +49,7 @@ object Lsfg {
         AppLog.i("lsfg", "处理器检测:厂商=$mf 型号=$model 硬件=$hw → 允许补帧")
         true
     }
-    const val UNSUPPORTED_TEXT = "检测到非高通处理器,补帧已禁用(补帧只在骁龙 / Adreno 上验证过,天玑 / Mali 等性能跟不上)"
+    const val UNSUPPORTED_TEXT = "此设备不支持补帧(需要 arm64 处理器和 Vulkan)" // deviceSupported 现在对所有 arm64 + Vulkan 设备为 true,这条文字基本不会出现
 
     /** 0 还没准备 / 1 准备中 / 2 就绪 / 3 不可用(原因见 [error]) */
     @Volatile var state = 0; private set

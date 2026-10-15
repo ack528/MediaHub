@@ -44,6 +44,8 @@ object HardwareProbe {
         "fsr" to listOf("FSR.glsl"),
         "anime4k_s" to listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_S.glsl", "Anime4K_Upscale_CNN_x2_S.glsl", "Anime4K_AutoDownscalePre_x2.glsl"),
         "anime4k_m" to listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_M.glsl", "Anime4K_Upscale_CNN_x2_M.glsl", "Anime4K_AutoDownscalePre_x2.glsl", "Anime4K_Upscale_CNN_x2_S.glsl"),
+        "fsrcnnx_s" to listOf("FSRCNNX_x2_8-0-4-1.glsl"),
+        "fsrcnnx_m" to listOf("FSRCNNX_x2_16-0-4-1.glsl"),
     )
 
     /** 每帧耗时占 30fps 帧间隔(33.3ms)的比例 → 等级。 */
@@ -174,7 +176,7 @@ object HardwareProbe {
         lines += HwLine("厂商系统级补帧(MEMC / 插帧)", 3, "高通 Adreno Frame Motion Engine、联发科 MEMC 等没有给第三方应用的公开接口,本应用无法调用;如果手机系统自带“视频插帧”,可以在系统设置里为本应用单独打开")
 
         // ---------------- 推荐
-        val upLvl = mapOf("fsr" to level(bench["upscale:fsr"]), "anime4k_s" to level(bench["upscale:anime4k_s"]), "anime4k_m" to level(bench["upscale:anime4k_m"]))
+        val upLvl = mapOf("fsr" to level(bench["upscale:fsr"]), "anime4k_s" to level(bench["upscale:anime4k_s"]), "anime4k_m" to level(bench["upscale:anime4k_m"]), "fsrcnnx_s" to level(bench["upscale:fsrcnnx_s"]), "fsrcnnx_m" to level(bench["upscale:fsrcnnx_m"]))
         val recUp = if ((upLvl["fsr"] ?: 0) >= 1) "fsr" else "off"
         val recFrc = when {
             !glOk || glMajor < 3 || !halfOk || lsfgLevel == 0 -> "off"
@@ -186,6 +188,7 @@ object HardwareProbe {
             append(if (recUp == "off") "不建议开启" else "FSR(通用,较省)")
             if ((upLvl["anime4k_s"] ?: 0) >= 1) append(";动画可用 Anime4K 小模型") else append(";Anime4K 在这台设备上不建议")
             if ((upLvl["anime4k_m"] ?: 0) >= 1) append(",中模型也可以")
+            if ((upLvl["fsrcnnx_s"] ?: 0) >= 1) append(";真人 / 影视可用 FSRCNNX 小模型(比 FSR 清楚得多)")
             append("。补帧 ")
             append(
                 when (recFrc) {
@@ -223,8 +226,8 @@ object HardwareProbe {
             val src = pool.acquire(960, 540)
             fill(src, 0f)
             var slow = false
-            for ((name, label) in listOf("fsr" to "FSR 1.0", "anime4k_s" to "Anime4K 小模型", "anime4k_m" to "Anime4K 中模型")) {
-                if (slow && name == "anime4k_m") {
+            for ((name, label) in listOf("fsr" to "FSR 1.0", "fsrcnnx_s" to "FSRCNNX 小模型(真人)", "anime4k_s" to "Anime4K 小模型", "fsrcnnx_m" to "FSRCNNX 中模型(真人)", "anime4k_m" to "Anime4K 中模型")) {
+                if (slow && (name == "anime4k_m" || name == "fsrcnnx_m")) {
                     lines += HwLine("超分:$label", 0, "小模型已经很慢,中模型跳过检测(不建议开启)")
                     continue
                 }

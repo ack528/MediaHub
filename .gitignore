@@ -62,3 +62,5 @@ probe/.gradle/
 probe/build/
 probe/app/src/main/assets/lsfg/
 probe/app/src/main/assets/play_src.mp4
+
+probe/app/src/main/assets/shaders/

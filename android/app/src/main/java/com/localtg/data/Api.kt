@@ -220,9 +220,60 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     fun posterUrl(item: Item): String = "$base/api/v1/media/${item.id}/poster?v=${item.v}"
     fun fileUrl(id: String): String = "$base/api/v1/media/$id/file"
 
-    /** 服务端转码(内置 ffmpeg 或 Jellyfin 的 HLS)的播放地址:maxHeight 目标高度,maxBitrate 视频码率(bps),sid 本次播放的会话标识。 */
-    fun hlsUrl(item: Item, maxBitrate: Int, sid: String, audioIndex: Int? = null): String =
-        "$base/api/v1/media/${item.id}/hls/master.m3u8?maxBitrate=$maxBitrate&sid=$sid" + (audioIndex?.let { "&audio=$it" } ?: "")
+    /** 服务端转码(内置 ffmpeg 或 Jellyfin 的 HLS)的播放地址:maxBitrate 视频码率(bps,最高 6 Mbps),sid 本次播放的会话标识,codec 输出编码(h264 / h265)。 */
+    fun hlsUrl(item: Item, maxBitrate: Int, sid: String, audioIndex: Int? = null, codec: String? = null): String =
+        "$base/api/v1/media/${item.id}/hls/master.m3u8?maxBitrate=$maxBitrate&sid=$sid" + (audioIndex?.let { "&audio=$it" } ?: "") + (codec?.let { "&codec=$it" } ?: "")
+
+    // ---- 服务端能力、播放器偏好同步、转码预热(服务端 3.0.0 起)----
+    /** 服务端能力;还没取到(或服务端太旧)时是全默认值。 */
+    @Volatile var caps: ServerCaps = ServerCaps()
+        private set
+    private var capsAt = 0L
+
+    /**
+     * 取服务端能力(同时也是一次"连接预热":TLS 握手 + HTTP/2 连接建好,之后第一次浏览不用再等握手)。10 分钟内不重复取;force = 切网络后强制重取。
+     * 服务端启动时还在探测 QSV(probing)就 1 分钟后再取一次。
+     */
+    suspend fun refreshCaps(force: Boolean = false): ServerCaps {
+        val now = System.currentTimeMillis()
+        if (!force && capsAt != 0L && now - capsAt < 10 * 60_000L) return caps
+        val info = call<ServerInfo>(Request.Builder().url("$base/api/v1/server/info").build())
+        caps = info.caps
+        capsAt = if (info.caps.probing) now - 9 * 60_000L else now
+        com.localtg.AppLog.i("net", "服务端能力:转码编码 ${info.caps.codecs},QSV h264=${info.caps.qsvH264} h265=${info.caps.qsvH265},码率上限 ${info.caps.maxTranscodeBitrate / 1000}kbps,缩略图 WebP=${info.caps.thumbWebp}")
+        return caps
+    }
+
+    /** 切换服务器 / 退出登录:能力作废。 */
+    fun resetCaps() { caps = ServerCaps(); capsAt = 0L }
+
+    @kotlinx.serialization.Serializable
+    private class PlayerPrefResp(val json: PlayerPref, val savedAt: Long = 0)
+
+    /** 服务器上记住的播放器偏好;没有记录或出错返回 null。 */
+    suspend fun getPlayerPrefRemote(): PlayerPref? = try {
+        val r = call<PlayerPrefResp>(Request.Builder().url("$base/api/v1/state/player").build())
+        r.json.copy(savedAt = r.savedAt)
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e
+    } catch (e: Exception) { null }
+
+    suspend fun putPlayerPref(p: PlayerPref) {
+        val body = AppJson.encodeToString(p)
+        send(Request.Builder().url("$base/api/v1/state/player").put(body.toRequestBody(json)).build())
+    }
+
+    /**
+     * 让服务端提前把另一个视频的前几段转好(切过去时第一段已经在磁盘上)。sid 要和之后真正播放时用的一致。
+     * 失败不影响任何事(只是少了一次预热)。
+     */
+    suspend fun hlsPrepare(item: Item, maxBitrate: Int, sid: String, codec: String?) {
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val url = "$base/api/v1/media/${item.id}/hls/prepare?maxBitrate=$maxBitrate&sid=$sid" + (codec?.let { "&codec=$it" } ?: "")
+                http.newCall(Request.Builder().url(url).post("".toRequestBody()).build()).await().close()
+            }
+        }
+    }
 
     // ---- 浏览记录 / 播放进度同步(存在服务器上,换设备打开回到上次的位置)----
     @kotlinx.serialization.Serializable
@@ -311,11 +362,23 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     fun imageUrl(item: Item, w: Int): String =
         // 本地媒体:动图和全屏查看直接读原文件(可无损放大),其余由本机缩小后返回
         if (store.local.value) { if (item.ext == "gif" || w > 2000) fileUrl(item) else "$base/api/v1/media/${item.id}/render?w=${w.coerceAtMost(4096)}&v=${item.v}" }
-        else if (needsServerRender(item.ext, serverRenderHeic)) "$base/api/v1/media/${item.id}/render?w=$w&v=${item.v}" else fileUrl(item)
+        else if (needsServerRender(item.ext, serverRenderHeic)) "$base/api/v1/media/${item.id}/render?w=$w&v=${item.v}"
+        // 小图(网格 / 聊天流 / 预加载):服务端生成并缓存好的 WebP 缩略图,几十 KB;不用为了一个小格子下载几 MB 的原图
+        else if (thumbEligible(item, w)) "$base/api/v1/media/${item.id}/render?w=$w&fmt=webp&v=${item.v}"
+        else fileUrl(item)
+
+    /** 是否用服务端的 WebP 缩略图:服务端支持、静态位图、原图明显比要显示的大。出错时调用方退回 [fileUrl]。 */
+    private fun thumbEligible(item: Item, w: Int): Boolean =
+        caps.thumbWebp && item.type == "photo" && item.ext.lowercase() in THUMB_EXT && w in 1..1440 && item.size > 120_000 && (item.w ?: 0) > w
+
+    /** 这个地址是不是缩略图地址(失败时要退回原图)。 */
+    fun isThumbUrl(url: String): Boolean = url.contains("fmt=webp")
     fun posterUrl(id: String): String = "$base/api/v1/media/$id/poster"
 }
 
 /** 把用户输入的地址规范成 http(s)://host:port。未写协议补 https://(加密传输),未写端口补 8480。 */
+private val THUMB_EXT = setOf("jpg", "jpeg", "jpe", "jfif", "png", "webp", "bmp")
+
 fun normalizeAddress(input: String): String {
     var s = input.trim().trimEnd('/')
     if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://$s"

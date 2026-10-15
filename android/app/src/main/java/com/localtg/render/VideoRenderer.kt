@@ -26,7 +26,7 @@ import kotlin.math.sqrt
 
 /** 增强渲染的配置。 */
 data class EnhanceConfig(
-    /** off | fsr | anime4k_s | anime4k_m */
+    /** off | fsr | anime4k_s | anime4k_m | fsrcnnx_s | fsrcnnx_m */
     val upscale: String = "off",
     /** off | lsfg(标准:补到屏幕最高刷新率,≤120Hz)| lsfg_low(低功耗:补到 60fps,光流精度从 50% 起步、自动降级始终开启) */
     val frc: String = "off",
@@ -46,7 +46,9 @@ data class EnhanceConfig(
     val hdr: String = "off",
     val hdrPeakNits: Int = 600,
     /** 视频高度超过这个值就不做超分(1080p 以上本来就够清晰,且计算量大) */
-    val upscaleMaxSrcHeight: Int = 900,
+    val upscaleMaxSrcHeight: Int = 1080,
+    /** 按"有效清晰度"处理:标称分辨率很高但画面其实很糊(低清片源放大来的)时,先缩回有效分辨率再超分;高度上限也按有效分辨率判断 */
+    val upscaleAuto: Boolean = true,
 ) {
     val frcOn get() = frc == "lsfg" || frc == "lsfg_low"
     val lowPower get() = frc == "lsfg_low"
@@ -103,6 +105,13 @@ class VideoRenderer(
     private var pOes = 0; private var pLuma = 0; private var pMerge = 0; private var pFinal = 0
     private lateinit var pool: Gl.Pool
     private var luma: LumaBuilder? = null
+    private var meter: SharpnessMeter? = null
+    private var pDown = 0
+    // 有效清晰度:EMA 平滑后的 R、当前采用的缩小倍数(1 = 本来就清晰),连续两次判成同一档才切换
+    private var sharpR = -1f
+    private var effScale = 1f
+    private var effPending = 1f
+    private var effLogged = false
     private val chains = HashMap<String, ShaderChain?>()
 
     // 视频信息(由播放器回调设置)
@@ -206,7 +215,10 @@ class VideoRenderer(
     // ---------------------------------------------------------------- 对外接口
 
     private fun poke() { handler.post { dirty = true; if (!released && !choreoPosted && ring.isNotEmpty()) scheduleVsync() } }
-    fun setVideoSize(w: Int, h: Int, par: Float) { vw = w; vh = h; vpar = if (par > 0f) par else 1f; poke() }
+    fun setVideoSize(w: Int, h: Int, par: Float) {
+        if (w != vw || h != vh) handler.post { sharpR = -1f; effScale = 1f; effPending = 1f } // 换了视频:有效清晰度重新测
+        vw = w; vh = h; vpar = if (par > 0f) par else 1f; poke()
+    }
     fun setResizeMode(m: String) { resizeMode = m; poke() }
 
     /** 视频格式里声明的帧率(0 = 未知)。补帧倍率用它定,不用到达间隔估计:4K / 高码率视频解码吃力时到达间隔乱跳(日志里 15 → 35 → 48 → 19fps),倍率跟着跳、会话反复重建。 */
@@ -216,6 +228,8 @@ class VideoRenderer(
         trace.enabled = c.trace
         if (c.frc != config.frc) { lsfgGaveUp = false; lsfgBadStreak = 0; lsfgCoverage = -1; resetScaleTuning() }
         if (c.lsfgFlowScale != config.lsfgFlowScale || c.lsfgFp32 != config.lsfgFp32) resetScaleTuning()
+        // 换了超分算法 / 分辨率上限:之前"跟不上而停用"的状态作废(否则从重模型切到 FSR 也一直是关着的)
+        if (c.upscale != config.upscale || c.upscaleMaxSrcHeight != config.upscaleMaxSrcHeight) handler.post { degraded = false; overBudget = 0 }
         config = c; poke()
     }
 
@@ -307,6 +321,10 @@ class VideoRenderer(
         pFinal = Gl.program(FINAL_FRAG)
         pBlit = Gl.program(BLIT_FRAG)
         luma = LumaBuilder(pool)
+        if (halfOk) {
+            meter = runCatching { SharpnessMeter() }.onFailure { AppLog.w("enhance", "有效清晰度检测不可用:${it.message}") }.getOrNull()
+            pDown = Gl.program(DOWNSCALE_FRAG)
+        }
 
         val t = IntArray(1)
         GLES30.glGenTextures(1, t, 0)
@@ -347,6 +365,7 @@ class VideoRenderer(
         ring.forEach { retire(it) }
         ring.clear()
         runCatching { luma?.destroy() }
+        runCatching { meter?.destroy() }
         lsfgExec?.let { ex -> ex.shutdown(); runCatching { ex.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS) } } // 等 worker 生成完,原生层才能安全释放
         lsfgBusy = false
         stopLsfg()
@@ -383,6 +402,8 @@ class VideoRenderer(
             "fsr" -> listOf("FSR.glsl")
             "anime4k_s" -> listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_S.glsl", "Anime4K_Upscale_CNN_x2_S.glsl", "Anime4K_AutoDownscalePre_x2.glsl")
             "anime4k_m" -> listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_M.glsl", "Anime4K_Upscale_CNN_x2_M.glsl", "Anime4K_AutoDownscalePre_x2.glsl", "Anime4K_Upscale_CNN_x2_S.glsl")
+            "fsrcnnx_s" -> listOf("FSRCNNX_x2_8-0-4-1.glsl")
+            "fsrcnnx_m" -> listOf("FSRCNNX_x2_16-0-4-1.glsl")
             else -> return@getOrPut null
         }
         try {
@@ -391,6 +412,19 @@ class VideoRenderer(
         } catch (e: Exception) {
             AppLog.w("enhance", "加载着色器 $name 失败:${e.message}"); null
         }
+    }
+
+    /** 测一次有效清晰度,更新 [effScale](平滑 + 两次确认,避免在两档之间来回跳、让补帧会话反复重建)。 */
+    private fun updateEffectiveScale(src: Gl.Tex) {
+        val r = meter?.measure(src) ?: return
+        if (r < 0f) return
+        sharpR = if (sharpR < 0f) r else sharpR * 0.6f + r * 0.4f
+        val f = SharpnessMeter.scaleFromR(sharpR)
+        if (f == effScale) { effPending = f; return }
+        if (f == effPending) {
+            AppLog.i("enhance", "有效清晰度变化:R=${"%.3f".format(sharpR)} → 画面相当于 ${(vw / f).toInt()}×${(vh / f).toInt()}(标称 ${vw}×${vh},缩小 ${f}×)")
+            effScale = f
+        } else effPending = f
     }
 
     private fun ingest() {
@@ -429,10 +463,33 @@ class VideoRenderer(
         val lsfgOn = lsfgUsable(cfg)
         val pyr = if (hdrActive(cfg) && halfOk) luma?.build(src) else null
         var img = src
-        if (cfg.upscale != "off" && halfOk && !degraded && h <= cfg.upscaleMaxSrcHeight) {
-            val d = destRect()
-            val up = chain(cfg.upscale)?.run(src, d.w, d.h)
-            if (up != null) { img = up; pool.release(src) }
+        if (cfg.upscale != "off" && halfOk && !degraded) {
+            if (cfg.upscaleAuto && frames % 24L == 5L) updateEffectiveScale(src)
+            val f = if (cfg.upscaleAuto) effScale else 1f
+            // 有效分辨率:糊的 4K 片源其实只有 1080p 的清晰度,上限按有效分辨率判断
+            val ew = max(((w / f).toInt()) and 1.inv(), 16); val eh = max(((h / f).toInt()) and 1.inv(), 16)
+            if (eh <= cfg.upscaleMaxSrcHeight) {
+                val d = destRect()
+                var inp = src
+                var small: Gl.Tex? = null
+                if (f > 1.01f && pDown != 0) {
+                    small = pool.acquire(ew, eh)
+                    Gl.target(small)
+                    Gl.use(pDown)
+                    Gl.bindTex(0, src.id)
+                    GLES20.glUniform1i(Gl.loc(pDown, "uTex"), 0)
+                    GLES20.glUniform2f(Gl.loc(pDown, "uRatio"), w.toFloat() / ew, h.toFloat() / eh)
+                    GLES20.glUniform1i(Gl.loc(pDown, "uN"), kotlin.math.ceil(f).toInt().coerceIn(2, 4))
+                    Gl.draw()
+                    inp = small
+                }
+                val up = chain(cfg.upscale)?.run(inp, d.w, d.h)
+                if (small != null) {
+                    pool.release(small)
+                    if (!effLogged) { effLogged = true; AppLog.i("enhance", "有效清晰度模式:超分输入 ${ew}×$eh → 输出 ${up?.w}×${up?.h}(目标显示区 ${d.w}×${d.h})") }
+                }
+                if (up != null) { img = up; pool.release(src) }
+            }
         }
         val slot = Slot(ts, img, pyr, nextId++)
         val prev = ring.lastOrNull()
@@ -771,8 +828,9 @@ class VideoRenderer(
         stats = buildString {
             append("增强渲染:")
             append(
-                when (cfg.upscale) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K-S"; "anime4k_m" -> "Anime4K-M"; else -> "" }.let { if (it.isNotEmpty() && degraded) "$it(已因性能停用)" else it }
+                when (cfg.upscale) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K-S"; "anime4k_m" -> "Anime4K-M"; "fsrcnnx_s" -> "FSRCNNX-S"; "fsrcnnx_m" -> "FSRCNNX-M"; else -> "" }.let { if (it.isNotEmpty() && degraded) "$it(已因性能停用)" else it }
             )
+            if (cfg.upscale != "off" && cfg.upscaleAuto && effScale > 1.01f && !degraded) append("[画面偏糊,按 ${(vw / effScale).toInt()}×${(vh / effScale).toInt()} 处理]")
             if (cfg.frcOn) append(" 补帧($engine)${if (!generating) "·待机" else ""}${if (lsfgGaveUp) "·已因性能停用" else ""}")
             if (hdrActive(cfg)) append(" HDR(PQ,${cfg.hdrPeakNits}nit)") else if (cfg.hdr != "off") append(" HDR:显示器/表面不支持")
             append("\n输出 ${"%.0f".format(fps)}fps  源 ${a.img.w}×${a.img.h}  处理 ${"%.1f".format(ingestEma)}ms  屏幕 ${"%.0f".format(1e9 / period)}Hz")
@@ -1075,6 +1133,28 @@ void main() {
 }
 """
 
+        /** 把源帧按有效清晰度缩小:每个输出像素覆盖源帧上 f×f 个像素,在这个范围里等间隔取 n×n 个双线性样点求平均(f 是整数时恰好是盒式滤波,不会多糊一圈)。 */
+        private const val DOWNSCALE_FRAG = """#version 300 es
+precision highp float;
+precision highp sampler2D;
+uniform sampler2D uTex;
+uniform vec2 uRatio;                            // 源 / 输出 的尺寸比(每个轴上的 f)
+uniform int uN;                                 // 每个轴上的样点数
+in vec2 vPos;
+out vec4 outColor;
+void main() {
+    vec2 srcSize = vec2(textureSize(uTex, 0));
+    vec2 start = floor(gl_FragCoord.xy) * uRatio;          // 输出像素在源帧上覆盖的区域起点(源像素单位)
+    vec3 acc = vec3(0.0);
+    for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
+        if (i >= uN || j >= uN) continue;
+        vec2 o = (vec2(float(i), float(j)) + 0.5) / float(uN) * uRatio;
+        acc += texture(uTex, (start + o) / srcSize).rgb;
+    }
+    outColor = vec4(acc / float(uN * uN), 1.0);
+}
+"""
+
         /** 上屏:SDR→HDR 逆色调映射(PQ,BT.2020)→ 输出(补帧的画面已经由 LSFG 生成,这里只负责显示)。 */
         private const val FINAL_FRAG = """#version 300 es
 precision highp float;
@@ -1095,13 +1175,15 @@ vec3 pq(vec3 nits) {
 void main() {
     vec3 c = texture(uA, vPos).rgb;
     if (uHdr == 0) { outColor = vec4(c, 1.0); return; }
-    // SDR → HDR:解码 gamma 得到相对亮度,对高光做扩展(阴影和中间调不动),大面积亮区少扩展(避免整屏刺眼),BT.709→BT.2020,PQ 编码
+    // SDR → HDR(逆色调映射):参考白 203 nit 不动;亮部按"伽马亮度"从 0.35 起平滑拉高,到纯白达到峰值(旧版用线性亮度的 4 次方,
+    // 只有最亮的一小撮像素才有增益,整体看起来和 SDR 一样);大面积亮区只压低到 40%(旧版压到 0,雪地 / 天空 / 白底画面完全没有 HDR 效果)
     vec3 lin = pow(max(c, 0.0), vec3(2.4));
-    float L = dot(lin, vec3(0.2126, 0.7152, 0.0722));
-    float area = uHasArea == 1 ? texture(uLA, vPos).r : L;
+    float yg = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float area = uHasArea == 1 ? texture(uLA, vPos).r : yg;
     float areaLin = pow(max(area, 0.0), 2.4);
     float k = max(uPeak / 203.0 - 1.0, 0.0);
-    float gain = 1.0 + k * pow(clamp(L, 0.0, 1.0), 4.0) * (1.0 - smoothstep(0.35, 0.75, areaLin));
+    float s = smoothstep(0.35, 1.0, yg);
+    float gain = 1.0 + k * s * sqrt(s) * (1.0 - 0.6 * smoothstep(0.45, 0.9, areaLin));
     vec3 hdrLin = lin * gain * 203.0; // 参考白 203 nit
     const mat3 M709to2020 = mat3(0.6274, 0.0691, 0.0164, 0.3293, 0.9195, 0.0880, 0.0433, 0.0114, 0.8956);
     outColor = vec4(pq(M709to2020 * hdrLin), 1.0);

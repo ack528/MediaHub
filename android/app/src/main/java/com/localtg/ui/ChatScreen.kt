@@ -683,7 +683,8 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
     var h = w / aspect
     if (h > maxH) { h = maxH; w = h * aspect }
     Box(Modifier.padding(start = 8.dp).width(w).height(h).mediaShared(item.id, shape).clip(shape).background(Color(0x33808080)).hapticClickable(onClick = onClick)) {
-        val url = if (item.isVideo) api.posterUrl(item) else api.imageUrl(item, LocalSettings.current.chatImageWidth)
+        var useOrig by remember(item.id) { mutableStateOf(false) } // 服务端缩略图失败时退回原图
+        val url = if (item.isVideo) api.posterUrl(item) else if (useOrig) api.fileUrl(item) else api.imageUrl(item, LocalSettings.current.chatImageWidth)
         var failed by remember(item.id) { mutableStateOf(false) }
         LaunchedEffect(loadEnabled) { if (loadEnabled) failed = false } // 快速滑动时被暂停的请求不算失败
         if (item.brokenLabel() != null) {
@@ -693,7 +694,7 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
                 model = ImageRequest.Builder(LocalContext.current).data(url).memoryCacheKey(thumbKey(item))
                     .networkCachePolicy(if (loadEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED).build(),
                 contentDescription = item.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
-                onError = { failed = true }, onSuccess = { failed = false },
+                onError = { if (!useOrig && api.isThumbUrl(url)) useOrig = true else failed = true }, onSuccess = { failed = false },
             )
             if (failed && loadEnabled) BrokenTile("预览不可用\n(点开仍可尝试播放)", Modifier.fillMaxSize())
         }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"time"
+
+	"mediahub/internal/update"
 )
 
 // 管理程序的"软件更新"接口(仅本机 + 管理密钥):
@@ -40,4 +42,15 @@ func (s *Server) adminUpdateApply(w http.ResponseWriter, r *http.Request) {
 		s.Update.Check(ctx, true)
 	}()
 	w.WriteHeader(202)
+}
+
+// adminUpdateMirrors GET /api/v1/admin/update/mirrors —— 现在就探测直连和所有镜像(延迟 + 是否真的能下载),管理程序「关于」页显示。
+func (s *Server) adminUpdateMirrors(w http.ResponseWriter, r *http.Request) {
+	if s.Update == nil {
+		writeErr(w, 400, "update.disabled", "自动更新没有启用")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	writeJSON(w, 200, map[string]any{"sources": s.Update.ProbeMirrors(ctx), "doh": update.DoHNames()})
 }

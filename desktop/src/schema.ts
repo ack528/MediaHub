@@ -2,7 +2,7 @@
 // 界面、"搜索配置项"、"N 项设置"计数都由这份定义生成。
 import type { Config } from "./types";
 
-export type PageId = "overview" | "library" | "storage" | "video" | "accounts" | "network" | "logs" | "about";
+export type PageId = "overview" | "library" | "storage" | "video" | "optimize" | "accounts" | "network" | "logs" | "about";
 
 export interface Option { value: string; label: string }
 
@@ -37,6 +37,7 @@ export const PAGES: PageDef[] = [
   { id: "library", label: "媒体库", icon: "folder", tabs: ["根目录", "扫描与过滤"] },
   { id: "storage", label: "缓存与图片", icon: "database", tabs: ["缓存", "图片"] },
   { id: "video", label: "视频转码", icon: "film", tabs: ["转码", "Jellyfin", "工具路径"] },
+  { id: "optimize", label: "存储优化", icon: "zap", tabs: ["重复文件", "视频压缩", "回收区"] },
   { id: "accounts", label: "账号安全", icon: "users", tabs: ["账号", "登录"] },
   { id: "network", label: "网络", icon: "globe", tabs: ["监听与访问", "开机与防火墙"] },
   { id: "logs", label: "日志", icon: "filetext", tabs: ["服务日志", "日志设置"] },

@@ -18,7 +18,7 @@
 | `LocalBrowse-<版本>.apk` | Android 手机端(Android 8.0+) |
 | `SHA256SUMS.txt` | 校验和 |
 
-> 发布的 APK **不含** `Lossless.dll`(Lossless Scaling 的版权文件,不能公开分发)。补帧(LSFG)需要你自己有该软件的授权,用 `tools\setup-lsfg.ps1` 自己打包带 DLL 的版本;并且补帧只在高通处理器上启用。
+> 发布的 APK **不含** `Lossless.dll`(Lossless Scaling 的版权文件,不能公开分发)。补帧(LSFG)需要你自己有该软件的授权,用 `tools\setup-lsfg.ps1` 自己打包带 DLL 的版本;补帧(LSFG)在所有带 Vulkan 的 arm64 手机上可用(含天玑 / Mali,已针对 Mali 驱动的采样偏移错误做了修正)。
 
 ## 开发
 

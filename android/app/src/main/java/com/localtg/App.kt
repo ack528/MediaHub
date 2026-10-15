@@ -16,6 +16,8 @@ import com.localtg.data.buildHttpClients
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import kotlinx.coroutines.launch
@@ -31,6 +33,10 @@ class AppContainer(app: Application) {
     val settings = com.localtg.data.SettingsStore(app, scope)
     /** 震动反馈(强度现读设置,改了马上生效)。 */
     val haptics = com.localtg.ui.Haptics(app) { settings.value.hapticLevel }
+    /** 每个视频本次运行里固定用一个转码会话标识:切到它之前服务端预热过的转码,播放时才能接上。 */
+    private val hlsSids = java.util.concurrent.ConcurrentHashMap<String, String>()
+    fun hlsSid(itemId: String): String = hlsSids.getOrPut(itemId) { java.util.UUID.randomUUID().toString().take(8) }
+    fun releaseHlsSid(itemId: String) { hlsSids.remove(itemId) }
     val playback = com.localtg.data.PlaybackStore(app) { session.ns() }
     val local = com.localtg.data.LocalMedia(app)
     private val clients = buildHttpClients(session, local, settings.value.connectTimeoutSec, settings.value.readTimeoutSec) { s -> scope.launch { session.clearTokenIf(s.baseUrl) } }
@@ -41,7 +47,15 @@ class AppContainer(app: Application) {
     val api = Api(apiHttp, session).also { it.serverRenderHeic = settings.value.heicMode == "server" }
     init {
         // 设置改变后立即生效的项
-        scope.launch { settings.state.collect { api.serverRenderHeic = it.heicMode == "server" } }
+        scope.launch { settings.state.collect { api.serverRenderHeic = it.heicMode == "server"; com.localtg.data.AppUpdater.preferred = it.updateSource } }
+        // 登录 / 切换服务器后:取服务端能力、预热连接、同步播放器偏好
+        scope.launch {
+            session.loaded.first { it }
+            session.session.map { s -> s?.takeIf { !session.local.value }?.baseUrl }.distinctUntilChanged().collect { base ->
+                api.resetCaps()
+                if (base != null) onServerReady()
+            }
+        }
         // 旧版本登录的是 http:// 地址;服务器升级为 HTTPS 后原地址连不上,提示重新连接(确认证书指纹)
         scope.launch {
             session.loaded.first { it }
@@ -53,6 +67,31 @@ class AppContainer(app: Application) {
                 AppLog.i("app", "服务器已升级为 HTTPS,旧的 http 登录失效,需要重新连接")
                 notice.value = "服务器已升级为加密传输(HTTPS),请重新连接并核对证书指纹"
                 session.clearToken()
+            }
+        }
+    }
+
+    /**
+     * 登录 / 切换服务器后:取服务端能力(同时预热连接),并同步播放器记住的转码偏好(谁最后改的听谁的)。
+     * 本地媒体模式没有服务端,什么都不做。
+     */
+    suspend fun onServerReady() {
+        runCatching { api.refreshCaps(true) }.onFailure { AppLog.w("net", "取服务端能力失败(服务端太旧或网络问题)", it); return }
+        syncPlayerPrefs()
+    }
+
+    suspend fun syncPlayerPrefs() {
+        if (isLocal || !api.caps.playerPrefs) return
+        val s = settings.value
+        val remote = api.getPlayerPrefRemote()
+        if (remote != null && remote.savedAt > s.playerPrefAt) {
+            // 服务器上的更新:采用(别的手机选过画质)
+            settings.update { copy(playerQuality = if (remote.direct || remote.bitrate <= 0) 0 else remote.bitrate, playerCodec = remote.codec, playerPrefAt = remote.savedAt) }
+            AppLog.i("player", "采用服务器上记住的播放画质:${if (remote.direct || remote.bitrate <= 0) "原画" else "转码 ${remote.bitrate / 1000}kbps ${remote.codec}"}")
+        } else if (s.playerQuality >= 0 && s.playerPrefAt > (remote?.savedAt ?: 0L)) {
+            // 本机的更新:推给服务器,服务端据此做默认值和预热
+            runCatching {
+                api.putPlayerPref(com.localtg.data.PlayerPref(bitrate = s.playerQuality, codec = if (s.playerCodec == "h265") "h265" else "h264", direct = s.playerQuality == 0, savedAt = s.playerPrefAt))
             }
         }
     }
@@ -97,6 +136,8 @@ class App : Application(), SingletonImageLoader.Factory {
             container.http.connectionPool.evictAll()
             container.apiHttp.connectionPool.evictAll()
             container.apiHttp.dispatcher.cancelAll()
+            // 新网络上马上建好到服务器的连接(同时刷新能力),之后第一次浏览不用再等握手
+            if (!container.isLocal && container.session.session.value != null) container.scope.launch { runCatching { container.api.refreshCaps(true) } }
         }
         // 内置了 Lossless.dll 的话,启动时就在后台提取着色器(只有第一次要几秒;之后读缓存),播放补帧时不用再等
         // 带 DLL 的安装包:把 Lossless.dll 保存一份到应用私有目录(之后通过检查更新装发布版,私有数据保留,DLL 还在)

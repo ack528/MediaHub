@@ -51,7 +51,7 @@ android {
 val syncMainRender = tasks.register<Copy>("syncMainRender") {
     from("../../android/app/src/main/java/com/localtg") {
         include("render/**", "AppLog.kt")
-        exclude("render/HardwareProbe.kt")
+        exclude("render/HardwareProbe.kt", "render/HighRefresh.kt") // HighRefresh 依赖主程序的 App / 设置,检测程序用同名桩代替
     }
     into(layout.buildDirectory.dir("generated/mainsrc/com/localtg"))
 }

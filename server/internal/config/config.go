@@ -34,10 +34,14 @@ type Config struct {
 		FallbackConvert bool   `json:"fallbackConvert"`
 	} `json:"images"`
 	Video struct {
-		Engine           string `json:"engine"` // auto(默认:有 Jellyfin 且已收录就用它,否则内置 ffmpeg)| ffmpeg(只用内置)
-		MaxTranscodes    int    `json:"maxTranscodes"`
-		HWAccel          string `json:"hwaccel"`
-		SoftwareFallback bool   `json:"softwareFallback"`
+		Engine        string `json:"engine"` // auto(默认:有 Jellyfin 且已收录就用它,否则内置 ffmpeg)| ffmpeg(只用内置)
+		MaxTranscodes int    `json:"maxTranscodes"`
+		HWAccel       string `json:"hwaccel"`
+		// MaxTranscodeBitrate 转码码率上限(bps),默认 6000000:只提供 6 Mbps 及以下的档位,再高的码率直接播原文件更好
+		MaxTranscodeBitrate int `json:"maxTranscodeBitrate"`
+		// AllowSoftwareHEVC 没有 QSV 硬编时是否允许软件编 H.265(libx265):1080p 实时软编很吃 CPU,默认不允许
+		AllowSoftwareHEVC bool `json:"allowSoftwareHEVC"`
+		SoftwareFallback  bool `json:"softwareFallback"`
 		// PosterSource:auto = 优先使用 Jellyfin 已生成的封面,没有再自己生成;own = 只自己生成
 		PosterSource string `json:"posterSource"`
 	} `json:"video"`
@@ -87,8 +91,12 @@ type Config struct {
 var DefaultUpdateMirrors = []string{
 	"https://ghfast.top/",
 	"https://gh-proxy.com/",
+	"https://gh-proxy.org/",
 	"https://ghproxy.net/",
 	"https://gh.llkk.cc/",
+	"https://ghm.078465.xyz/",
+	"https://ghfile.geekertao.top/",
+	"https://wget.la/",
 }
 
 func Default() *Config {
@@ -103,6 +111,7 @@ func Default() *Config {
 	c.Video.Engine = "auto"
 	c.Video.MaxTranscodes = 2
 	c.Video.HWAccel = "qsv"
+	c.Video.MaxTranscodeBitrate = 6_000_000
 	c.Video.SoftwareFallback = true
 	c.Video.PosterSource = "auto"
 	c.Jellyfin.URL = "http://127.0.0.1:8096"

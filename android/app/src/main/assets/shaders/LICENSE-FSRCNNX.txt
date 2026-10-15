@@ -1,0 +1,12 @@
+FSRCNNX_x2_8-0-4-1.glsl / FSRCNNX_x2_16-0-4-1.glsl
+
+Copyright (C) 2017-2021 igv
+Source: https://github.com/igv/FSRCNN-TensorFlow (release 1.1)
+
+These shader files are licensed under the GNU Lesser General Public License,
+version 3.0 or (at your option) any later version (see the header of each .glsl
+file). They are shipped as separate, unmodified text assets that the application
+loads at run time; they can be replaced by any other version of the same files
+without rebuilding the application.
+
+The full text of the LGPL-3.0: https://www.gnu.org/licenses/lgpl-3.0.html

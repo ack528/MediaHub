@@ -58,6 +58,9 @@ func (s *Server) mediaHLS(w http.ResponseWriter, r *http.Request) {
 			"PlaySessionId": {"mh" + strconv.FormatInt(id, 10) + "-" + sid}, "DeviceId": {jfDeviceID},
 		}
 		if b, _ := strconv.Atoi(q.Get("maxBitrate")); b > 0 {
+			if max := s.Cfg.Video.MaxTranscodeBitrate; max > 0 && b > max {
+				b = max // 只提供 6 Mbps 及以下的转码档位
+			}
 			nq.Set("VideoBitRate", strconv.Itoa(b))
 			nq.Set("MaxStreamingBitrate", strconv.Itoa(b+192000))
 		}

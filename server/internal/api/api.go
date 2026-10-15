@@ -29,6 +29,7 @@ const APIVersion = 1
 
 type Server struct {
 	rnd    randomState // 随机浏览用的各根目录 id 范围(见 random.go)
+	opt    optState    // 存储优化:重复文件检测、视频压缩(见 optimize_common.go)
 	DB     *sql.DB
 	Cfg    *config.Config
 	Auth   *auth.Service
@@ -87,6 +88,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/search", authd(s.search))
 	mux.Handle("GET /api/v1/random", authd(s.random))
 	mux.Handle("POST /api/v1/random/reset", authd(s.randomReset))
+	mux.Handle("GET /api/v1/speedtest/ping", authd(s.speedPing))
+	mux.Handle("GET /api/v1/speedtest/down", authd(s.speedDown))
+	mux.Handle("POST /api/v1/speedtest/up", authd(s.speedUp))
+	mux.Handle("GET /api/v1/state/player", authd(s.getPlayerPref))
+	mux.Handle("PUT /api/v1/state/player", authd(s.putPlayerPref))
+	mux.Handle("POST /api/v1/media/{id}/hls/prepare", authd(s.mediaHLSPrepare))
 	mux.Handle("GET /api/v1/media/{id}/file", authd(s.mediaFile))
 	mux.Handle("HEAD /api/v1/media/{id}/file", authd(s.mediaFile))
 	mux.Handle("GET /api/v1/media/{id}/poster", authd(s.mediaPoster))
@@ -98,10 +105,28 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/admin/update", s.adminOnly(s.adminUpdateStatus))
 	mux.Handle("POST /api/v1/admin/update/check", s.adminOnly(s.adminUpdateCheck))
 	mux.Handle("POST /api/v1/admin/update/apply", s.adminOnly(s.adminUpdateApply))
+	mux.Handle("GET /api/v1/admin/update/mirrors", s.adminOnly(s.adminUpdateMirrors))
+	// 存储优化(仅本机管理程序)
+	mux.Handle("POST /api/v1/admin/dedupe/scan", s.adminOnly(s.adminDedupeScan))
+	mux.Handle("GET /api/v1/admin/dedupe/status", s.adminOnly(s.adminDedupeStatus))
+	mux.Handle("POST /api/v1/admin/dedupe/cancel", s.adminOnly(s.adminDedupeCancel))
+	mux.Handle("GET /api/v1/admin/dedupe/groups", s.adminOnly(s.adminDedupeGroups))
+	mux.Handle("POST /api/v1/admin/dedupe/trash", s.adminOnly(s.adminDedupeTrash))
+	mux.Handle("GET /api/v1/admin/trash", s.adminOnly(s.adminTrashList))
+	mux.Handle("POST /api/v1/admin/trash/restore", s.adminOnly(s.adminTrashRestore))
+	mux.Handle("POST /api/v1/admin/trash/purge", s.adminOnly(s.adminTrashPurge))
+	mux.Handle("GET /api/v1/admin/compress/caps", s.adminOnly(s.adminCompressCaps))
+	mux.Handle("POST /api/v1/admin/compress/enqueue", s.adminOnly(s.adminCompressEnqueue))
+	mux.Handle("GET /api/v1/admin/compress/jobs", s.adminOnly(s.adminCompressJobs))
+	mux.Handle("POST /api/v1/admin/compress/cancel", s.adminOnly(s.adminCompressCancel))
+	mux.Handle("POST /api/v1/admin/compress/remove", s.adminOnly(s.adminCompressRemove))
+	mux.Handle("POST /api/v1/admin/compress/apply", s.adminOnly(s.adminCompressApply))
+	mux.Handle("POST /api/v1/admin/compress/pause", s.adminOnly(s.adminCompressPause(true)))
+	mux.Handle("POST /api/v1/admin/compress/resume", s.adminOnly(s.adminCompressPause(false)))
 	mux.Handle("GET /api/v1/admin/logs", s.adminOnly(s.adminLogs))
 	mux.Handle("GET /api/v1/admin/logs/bundle", s.adminOnly(s.adminLogBundle))
 	mux.Handle("POST /api/v1/admin/logs/level", s.adminOnly(s.adminLogLevel))
-	return s.logging(mux)
+	return s.logging(gzipJSON(mux))
 }
 
 func (s *Server) logging(next http.Handler) http.Handler {
@@ -215,7 +240,8 @@ func rfc(ms int64) string { return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 func (s *Server) serverInfo(w http.ResponseWriter, r *http.Request) {
 	name := "MediaHub"
 	writeJSON(w, 200, map[string]any{"name": name, "version": s.Version, "apiVersion": APIVersion, "transcode": s.JF != nil || s.HLS != nil,
-		"tls": map[string]any{"enabled": s.TLSFingerprint != "", "fingerprint": s.TLSFingerprint}})
+		"tls":  map[string]any{"enabled": s.TLSFingerprint != "", "fingerprint": s.TLSFingerprint},
+		"caps": s.capabilities()})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -311,4 +337,27 @@ func isLoopback(remote string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// capabilities 服务端能力(手机端据此决定显示哪些选项):转码能输出的编码、QSV 是否可用、转码码率上限、是否支持测速 / 记住偏好 / 预热 / 重复检测与压缩。
+func (s *Server) capabilities() map[string]any {
+	codecs := []string{}
+	qsv264, qsv265 := false, false
+	probing := false
+	if s.HLS != nil {
+		if s.HLS.Probed() {
+			codecs = s.HLS.Codecs()
+			qsv264, qsv265 = s.HLS.QSV()
+		} else {
+			codecs, probing = []string{"h264"}, true
+		}
+	}
+	max := s.Cfg.Video.MaxTranscodeBitrate
+	if max <= 0 {
+		max = 6_000_000
+	}
+	return map[string]any{
+		"codecs": codecs, "qsvH264": qsv264, "qsvH265": qsv265, "maxTranscodeBitrate": max,
+		"probing": probing, "speedtest": true, "playerPrefs": true, "hlsPrepare": true, "gzip": true, "optimize": true, "thumbWebp": s.Render != nil && s.Cfg.Images.FallbackConvert,
+	}
 }

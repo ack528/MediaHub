@@ -43,6 +43,18 @@ func renderBucket(w int) int {
 	return renderBuckets[len(renderBuckets)-1]
 }
 
+// thumbBuckets 缩略图(WebP)允许的长边尺寸,请求向上取最近的一档:网格 / 聊天流的小图不用下载原图(一张几 MB 的照片只为显示一个小格子)。
+var thumbBuckets = []int{240, 360, 480, 720, 960, 1440}
+
+func thumbBucket(w int) int {
+	for _, b := range thumbBuckets {
+		if w <= b {
+			return b
+		}
+	}
+	return thumbBuckets[len(thumbBuckets)-1]
+}
+
 // Renderer 负责图片格式转换,结果缓存在媒体盘的 .mediahub\render<尺寸> 里(受缓存配额管理)。
 type Renderer struct {
 	db    *sql.DB
@@ -97,6 +109,59 @@ func (rd *Renderer) Render(ctx context.Context, mediaID int64, w int) (string, e
 		}
 	})
 }
+
+// RenderThumb 生成(或取缓存)一张小尺寸 WebP 缩略图(长边 w,不放大),缓存在媒体盘的 .mediahub	humb<尺寸> 里。
+// 只处理手机本来就能直接显示的静态图片(jpg / png / webp / bmp);RAW / HEIC / JPEG XL 等仍走 /render 的 JPEG 转换。
+// WebP 比同画质的 JPEG 小约 25% ~ 35%,原图 5MB 的照片缩略图只有十几 KB。
+func (rd *Renderer) RenderThumb(ctx context.Context, mediaID int64, w int) (string, error) {
+	var rootID int64
+	var ext string
+	var typ int
+	if err := rd.db.QueryRow(`SELECT root_id, ext, type FROM media WHERE id=?`, mediaID).Scan(&rootID, &ext, &typ); err != nil {
+		return "", err
+	}
+	ext = strings.ToLower(ext)
+	if typ != 0 || !nativeThumbExts[ext] {
+		return "", errors.New("这种文件不生成缩略图")
+	}
+	w = thumbBucket(w)
+	kind := "thumb" + strconv.Itoa(w)
+	if p, ok := rd.cache.Exists(rootID, kind, mediaID, "webp"); ok {
+		return p, nil
+	}
+	select {
+	case rd.sem <- struct{}{}:
+		defer func() { <-rd.sem }()
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	if p, ok := rd.cache.Exists(rootID, kind, mediaID, "webp"); ok {
+		return p, nil
+	}
+	src, err := MediaPath(rd.db, mediaID)
+	if err != nil {
+		return "", err
+	}
+	return rd.cache.Put(rootID, kind, mediaID, "webp", func(tmp string) error {
+		cctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		vf := fmt.Sprintf("scale='if(gt(iw,ih),min(%d,iw),-2)':'if(gt(iw,ih),-2,min(%d,ih))',format=yuv420p", w, w)
+		cmd := exec.CommandContext(cctx, rd.cfg.Tools.FFmpeg, "-hide_banner", "-v", "error", "-y", "-i", src,
+			"-frames:v", "1", "-vf", vf, "-c:v", "libwebp", "-quality", "76", "-compression_level", "4", "-f", "webp", tmp)
+		proc.Hide(cmd)
+		var errb bytes.Buffer
+		cmd.Stderr = &errb
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("ffmpeg 生成缩略图失败: %v: %s", err, strings.TrimSpace(errb.String()))
+		}
+		if st, err := os.Stat(tmp); err != nil || st.Size() == 0 {
+			return errors.New("ffmpeg 没有输出缩略图")
+		}
+		return nil
+	})
+}
+
+var nativeThumbExts = map[string]bool{"jpg": true, "jpeg": true, "jpe": true, "jfif": true, "png": true, "webp": true, "bmp": true}
 
 // ffmpegJPEG 解码第一帧、缩放到长边 w(不放大)、输出 JPEG。pre 是额外的滤镜前缀(如旋转)。
 func (rd *Renderer) ffmpegJPEG(ctx context.Context, src, dst string, w int, pre string) error {
@@ -185,7 +250,14 @@ func (s *Server) mediaRender(w http.ResponseWriter, r *http.Request) {
 	if width <= 0 {
 		width = 1920
 	}
-	path, err := s.Render.Render(r.Context(), id, width)
+	webp := r.URL.Query().Get("fmt") == "webp"
+	var path string
+	var err error
+	if webp {
+		path, err = s.Render.RenderThumb(r.Context(), id, width)
+	} else {
+		path, err = s.Render.Render(r.Context(), id, width)
+	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		writeErr(w, 404, "notfound", "媒体不存在")
@@ -204,9 +276,13 @@ func (s *Server) mediaRender(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	st, _ := f.Stat()
-	w.Header().Set("Content-Type", "image/jpeg")
+	ctype, fname := "image/jpeg", "render.jpg"
+	if webp {
+		ctype, fname = "image/webp", "thumb.webp"
+	}
+	w.Header().Set("Content-Type", ctype)
 	if r.URL.Query().Get("v") != "" {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	}
-	http.ServeContent(w, r, "render.jpg", st.ModTime().Truncate(time.Second), f)
+	http.ServeContent(w, r, fname, st.ModTime().Truncate(time.Second), f)
 }

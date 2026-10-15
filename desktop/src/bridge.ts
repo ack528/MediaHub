@@ -28,6 +28,8 @@ export interface Bridge {
   openPath(path: string): Promise<void>;
   updateStatus(): Promise<UpdateStatus>;
   updateAction(kind: "check" | "apply"): Promise<void>;
+  /** 通用的管理接口调用(只能访问 /api/v1/admin/ 下的路径)。出错时抛出服务端的错误文字。 */
+  admin<T = any>(method: "GET" | "POST", path: string, body?: unknown, timeoutMs?: number): Promise<T>;
 }
 
 const tauri: Bridge = {
@@ -58,6 +60,7 @@ const tauri: Bridge = {
   openPath: (path) => invoke("open_path", { path }),
   updateStatus: () => invoke("update_status"),
   updateAction: (kind) => invoke("update_action", { kind }),
+  admin: (method, path, body, timeoutMs) => invoke("admin_call", { method, path, body: body ?? null, timeoutMs: timeoutMs ?? null }),
 };
 
 // ------------------------------------------------------------------ mock(仅浏览器调试用)
@@ -127,6 +130,7 @@ const mockBridge: Bridge = {
   openPath: async (p) => { window.alert("打开:" + p); },
   updateStatus: async () => ({ current: "1.0.0", state: "uptodate", message: "已是最新版本", progress: 0, checkedAt: new Date().toISOString(), installable: true, auto: true }),
   updateAction: async () => {},
+  admin: async () => { throw "浏览器调试模式没有服务端"; },
 };
 
 export const bridge: Bridge = "__TAURI_INTERNALS__" in window ? tauri : mockBridge;

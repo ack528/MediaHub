@@ -92,6 +92,20 @@ CREATE TABLE user_playback(user_id INTEGER NOT NULL, media_id INTEGER NOT NULL, 
 	`
 CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `,
+	// v9:播放器偏好(每个用户)、重复文件检测用的指纹、存储优化(视频压缩)任务
+	`
+CREATE TABLE user_player(user_id INTEGER PRIMARY KEY, json TEXT NOT NULL, saved_at INTEGER NOT NULL);
+CREATE TABLE media_hash(
+  media_id INTEGER PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+  head TEXT, sha TEXT, phash TEXT, dur_ms INTEGER, updated INTEGER NOT NULL);
+CREATE INDEX ix_mh_size ON media_hash(size);
+CREATE INDEX ix_mh_sha ON media_hash(sha);
+CREATE TABLE opt_job(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, media_id INTEGER NOT NULL, state TEXT NOT NULL, codec TEXT NOT NULL, bitrate_kbps INTEGER NOT NULL,
+  preset TEXT NOT NULL DEFAULT '', out_path TEXT NOT NULL DEFAULT '', orig_size INTEGER NOT NULL DEFAULT 0, new_size INTEGER NOT NULL DEFAULT 0,
+  progress REAL NOT NULL DEFAULT 0, err TEXT NOT NULL DEFAULT '', trash_path TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, updated INTEGER NOT NULL);
+CREATE INDEX ix_oj_state ON opt_job(state);
+`,
 }
 
 // Migrate 把数据库升级到最新模式。

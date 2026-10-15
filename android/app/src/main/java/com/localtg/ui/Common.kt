@@ -115,7 +115,8 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
         } else {
             var failed by androidx.compose.runtime.remember(item.id) { androidx.compose.runtime.mutableStateOf(false) }
             androidx.compose.runtime.LaunchedEffect(loadEnabled) { if (loadEnabled) failed = false } // 快速滑动时被暂停的请求不算失败
-            val url = if (item.isVideo) api.posterUrl(item) else api.imageUrl(item, com.localtg.ui.tg.LocalSettings.current.gridThumbWidth)
+            var useOrig by androidx.compose.runtime.remember(item.id) { androidx.compose.runtime.mutableStateOf(false) } // 服务端缩略图失败时退回原图
+            val url = if (item.isVideo) api.posterUrl(item) else if (useOrig) api.fileUrl(item) else api.imageUrl(item, com.localtg.ui.tg.LocalSettings.current.gridThumbWidth)
             val req = ImageRequest.Builder(LocalContext.current)
                 .data(url)
                 .memoryCacheKey(thumbKey(item))
@@ -124,7 +125,7 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
             AsyncImage(
                 model = req, contentDescription = item.name, contentScale = ContentScale.Crop,
                 placeholder = ColorPainter(Color(0x22888888)), modifier = Modifier.fillMaxSize(),
-                onError = { failed = true }, onSuccess = { failed = false },
+                onError = { if (!useOrig && api.isThumbUrl(url)) useOrig = true else failed = true }, onSuccess = { failed = false },
             )
             if (failed && loadEnabled) BrokenTile("预览不可用", Modifier.fillMaxSize(), compact = true)
         }

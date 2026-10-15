@@ -389,6 +389,46 @@ async fn update_action(kind: String) -> Result<(), String> {
     .await
 }
 
+/// 通用的管理接口调用(存储优化、镜像测速等):method = GET / POST,path 形如 /api/v1/admin/...,body 是 JSON(POST 时)。
+/// 服务端返回 4xx / 5xx 时,把它的 message 作为错误文字返回,界面直接显示。
+#[tauri::command]
+async fn admin_call(method: String, path: String, body: Option<Value>, timeout_ms: Option<u64>) -> Result<Value, String> {
+    blocking(move || {
+        if !path.starts_with("/api/v1/admin/") {
+            return Err("不允许的路径".to_string());
+        }
+        let cfg = read_json(&config_path());
+        let key = admin_key(&cfg).ok_or("找不到管理密钥(服务未运行?)")?;
+        let url = format!("{}{}", base_url(&cfg), path);
+        let acfg = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_millis(timeout_ms.unwrap_or(20000))))
+            .http_status_as_error(false)
+            .build();
+        let agent = ureq::Agent::new_with_config(acfg);
+        let mut resp = if method.eq_ignore_ascii_case("POST") {
+            let b = serde_json::to_string(&body.unwrap_or_else(|| json!({}))).map_err(|e| e.to_string())?;
+            agent.post(&url).header("X-Admin-Key", &key).header("Content-Type", "application/json").send(b)
+        } else {
+            agent.get(&url).header("X-Admin-Key", &key).call()
+        }
+        .map_err(|e| e.to_string())?;
+        let status = resp.status().as_u16();
+        let text = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
+        if status >= 400 {
+            let msg = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(String::from))
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            return Err(msg);
+        }
+        if text.trim().is_empty() {
+            return Ok(Value::Null);
+        }
+        serde_json::from_str(&text).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 // ---------------------------------------------------------------- 命令:账号(调用服务程序的 CLI)
 
 fn run_cli(args: &[&str], stdin: Option<&str>) -> Result<String, String> {
@@ -715,6 +755,7 @@ pub fn run() {
             open_path,
             update_status,
             update_action,
+            admin_call,
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;

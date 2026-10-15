@@ -162,14 +162,12 @@ private fun trackOpts(tracks: Tracks, type: Int): List<TrackOpt> {
 private fun bitrateFor(h: Int): Int = when {
     h <= 480 -> 1_500_000
     h <= 720 -> 3_000_000
-    h <= 1080 -> 6_000_000
-    h <= 1440 -> 12_000_000
-    else -> 20_000_000
+    else -> 6_000_000 // 只提供 6 Mbps 及以下的转码档位;更高分辨率的也按 6M 转(码率再高不如直接播原文件)
 }
 
 /** 转码码率:设置里指定了就用,否则按原视频分辨率自动。 */
 private fun autoBitrate(item: Item, s: com.localtg.data.AppSettings): Int =
-    if (s.maxBitrateMbps > 0) s.maxBitrateMbps * 1_000_000
+    if (s.maxBitrateMbps > 0) minOf(s.maxBitrateMbps, 6) * 1_000_000
     else bitrateFor(minOf(item.w ?: 1920, item.h ?: 1080).let { if (it <= 0) 1080 else it })
 
 private fun fmt(ms: Long): String {
@@ -200,8 +198,11 @@ fun VideoPage(
     var modeOverride by remember(item.id) { mutableStateOf<String?>(null) } // 用户手动指定解码方式
     var forceTry by remember(item.id) { mutableStateOf(false) } // 服务端判定文件损坏时,用户选择"仍然尝试播放"
     val blocked = item.brokenLabel() != null && (item.size == 0L || !forceTry)
-    var transcodeBitrate by remember(item.id) { mutableStateOf<Int?>(null) } // null = 直接播放原文件;否则请服务端按这个码率(bps)转码,分辨率不变
-    val sid = remember(item.id) { java.util.UUID.randomUUID().toString().take(8) }
+    // null = 直接播放原文件;否则请服务端按这个码率(bps)转码,分辨率不变。
+    // 开了「记住画质」:上一个视频选了 1.5M 转码,切到下一个视频就直接用 1.5M(服务端也已经在预热它了),不用再手动选。
+    var transcodeBitrate by remember(item.id) { mutableStateOf<Int?>(rememberedTranscode(c, item)) }
+    val sid = remember(item.id) { c.hlsSid(item.id) } // 每个视频固定一个会话标识:服务端预热的转码,播放时才能接上
+    var tCodec by remember(item.id) { mutableStateOf(com.localtg.data.DeviceCodecs.resolveCodec(c.settings.value.playerCodec, c.api.caps.codecs)) }
     var resumeMs by remember(item.id) { mutableLongStateOf(-1L) }        // -1 = 还没读取保存的进度
     var stats by remember { mutableStateOf("") }
     var enhStats by remember { mutableStateOf("") }
@@ -247,7 +248,7 @@ fun VideoPage(
         }
     }
 
-    DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, transcodeBitrate, blocked, resumeMs >= 0) {
+    DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, transcodeBitrate, tCodec, blocked, resumeMs >= 0) {
         var p: ExoPlayer? = null
         val loudness = arrayOfNulls<android.media.audiofx.LoudnessEnhancer>(1)
         if (isCurrent && resumeMs >= 0 && !blocked) {
@@ -342,8 +343,8 @@ fun VideoPage(
             })
             val br = transcodeBitrate
             if (br != null) {
-                pl.setMediaItem(MediaItem.Builder().setUri(c.api.hlsUrl(item, br, sid)).setMimeType(MimeTypes.APPLICATION_M3U8).build())
-                AppLog.i("player", "服务端转码 ${br / 1000}kbps(分辨率不变)")
+                pl.setMediaItem(MediaItem.Builder().setUri(c.api.hlsUrl(item, br, sid, codec = tCodec)).setMimeType(MimeTypes.APPLICATION_M3U8).build())
+                AppLog.i("player", "服务端转码 ${br / 1000}kbps ${tCodec.uppercase()}(分辨率不变)")
             } else {
                 pl.setMediaItem(MediaItem.fromUri(c.api.fileUrl(item)))
             }
@@ -368,6 +369,7 @@ fun VideoPage(
                 }
                 pl.release()
                 if (transcodeBitrate != null) c.scope.launch { c.api.stopHls(item, sid) } // 通知服务端结束转码
+                c.releaseHlsSid(item.id)
             }
             player = null; firstFrame = false; playing = false
             if (p != null) c.videoPlaying = false
@@ -537,12 +539,14 @@ fun VideoPage(
         }
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = if (com.localtg.render.Lsfg.deviceSupported) cfg.enhFrc else "off", frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, lsfgFp32 = cfg.lsfgFp32, trace = cfg.frcTrace, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH)
+        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = if (com.localtg.render.Lsfg.deviceSupported) cfg.enhFrc else "off", frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, lsfgFp32 = cfg.lsfgFp32, trace = cfg.frcTrace, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH, upscaleAuto = cfg.enhAuto)
         var enhFailed by remember(item.id) { mutableStateOf(false) }
         // HDR 片源本身不处理;转码播放的是 H.264 SDR,可以处理
         val useEnh = enh.active && !enhFailed && item.video?.hdr.isNullOrEmpty() && android.os.Build.VERSION.SDK_INT >= 26
         pl?.let { p ->
           if (useEnh) {
+            // HDR 表面只能在渲染器创建时决定:播放中开 / 关「SDR 转 HDR」要重建画面视图,否则一直显示"表面不支持"
+            androidx.compose.runtime.key(cfg.enhHdr != "off") {
             AndroidView(
                 factory = { com.localtg.render.EnhancedVideoView(it).apply {
                     onFailure = { enhFailed = true; showHud(Hud(TgIcons.Warning, "画质增强不可用,已改回普通播放")) }
@@ -558,6 +562,7 @@ fun VideoPage(
                 onRelease = { v -> v.release() },
                 modifier = Modifier.fillMaxSize(),
             )
+            }
             // 字幕:PlayerView(不带画面表面)只负责画字幕
             AndroidView(
                 factory = { ctx2 -> android.view.LayoutInflater.from(ctx2).inflate(com.localtg.R.layout.player_subtitles, null) as PlayerView },
@@ -969,10 +974,10 @@ fun VideoPage(
                         }
                     }
                     "enhance" -> {
-                        val ups = listOf("off", "fsr", "anime4k_s", "anime4k_m")
+                        val ups = listOf("off", "fsr", "fsrcnnx_s", "fsrcnnx_m", "anime4k_s", "anime4k_m")
                         MenuLabel("超分")
-                        MenuChips(listOf("关闭", "FSR", "动漫·小", "动漫·中"), ups.indexOf(cfg.enhUpscale).coerceAtLeast(0)) { i -> c.settings.update { copy(enhUpscale = ups[i]) } }
-                        MenuNote("FSR 适合真人 / 影视;动漫 = Anime4K。视频高度超过 ${cfg.enhMaxH}p 不处理。")
+                        MenuChips(listOf("关闭", "FSR", "真人·小", "真人·中", "动漫·小", "动漫·中"), ups.indexOf(cfg.enhUpscale).coerceAtLeast(0)) { i -> c.settings.update { copy(enhUpscale = ups[i]) } }
+                        MenuNote("FSR 效果温和;真人 = FSRCNNX(神经网络,真人 / 影视更清楚);动漫 = Anime4K。视频高度超过 ${cfg.enhMaxH}p 不处理。")
                         val frcs = listOf("off", "lsfg_low", "lsfg")
                         MenuLabel("补帧(LSFG)")
                         if (!com.localtg.render.Lsfg.deviceSupported) {
@@ -1001,9 +1006,10 @@ fun VideoPage(
                         MenuRow("关闭全部增强", arrow = false) { c.settings.update { copy(enhUpscale = "off", enhFrc = "off", enhHdr = "off") } }
                     }
                     "quality" -> {
-                        // 转码只改码率,不改分辨率
-                        val rates = listOf<Int?>(null, 1_500_000, 3_000_000, 6_000_000, 12_000_000, 20_000_000)
-                        val names = listOf("原画", "1.5M", "3M", "6M", "12M", "20M")
+                        // 转码只改码率,不改分辨率;只提供 6M 及以下的档位(再高不如直接播原文件),低码率档位给得更密
+                        val srvMax = c.api.caps.maxTranscodeBitrate
+                        val rates = listOf<Int?>(null) + com.localtg.data.QualityTiers.tiers(srvMax)
+                        val names = listOf("原画") + com.localtg.data.QualityTiers.tiers(srvMax).map { com.localtg.data.QualityTiers.label(it) }
                         val cur = rates.indexOf(transcodeBitrate)
                         fun pick(i: Int) {
                             panel = ""
@@ -1012,12 +1018,35 @@ fun VideoPage(
                                 useSoftware = false
                                 transcodeBitrate = rates[i]
                                 AppLog.i("player", "手动切换画质:" + (rates[i]?.let { "转码 ${it / 1000}kbps" } ?: "原画"))
+                                rememberPlaybackChoice(c, rates[i], tCodec)
                             }
                         }
                         MenuLabel("播放画质(转码只调码率,分辨率不变)")
-                        MenuChips(names.take(3), cur) { i -> pick(i) }
-                        Spacer(Modifier.height(4.dp))
-                        MenuChips(names.drop(3), cur - 3) { i -> pick(i + 3) }
+                        rates.chunked(4).forEachIndexed { row, group ->
+                            if (row > 0) Spacer(Modifier.height(4.dp))
+                            MenuChips(names.subList(row * 4, row * 4 + group.size), cur - row * 4) { i -> pick(row * 4 + i) }
+                        }
+                        MenuLabel("转码编码")
+                        val codecs = c.api.caps.codecs
+                        val prefIdx = when (cfg.playerCodec) { "h264" -> 1; "h265" -> 2; else -> 0 }
+                        MenuChips(listOf("自动", "H.264", "H.265"), prefIdx) { i ->
+                            val pref = listOf("auto", "h264", "h265")[i]
+                            val resolved = com.localtg.data.DeviceCodecs.resolveCodec(pref, codecs)
+                            c.settings.update { copy(playerCodec = pref) }
+                            if (resolved != tCodec) {
+                                tCodec = resolved
+                                if (transcodeBitrate != null) { resumeMs = pp?.currentPosition ?: 0L; panel = "" }
+                            }
+                            rememberPlaybackChoice(c, transcodeBitrate, resolved)
+                        }
+                        MenuNote(
+                            when {
+                                "h265" !in codecs -> "服务端没有 H.265 硬件编码(需要 Intel QSV),只能转成 H.264。当前编码:${tCodec.uppercase()}"
+                                !com.localtg.data.DeviceCodecs.hevcHardware -> "手机没有 H.265 硬解,自动会选 H.264。当前编码:${tCodec.uppercase()}"
+                                else -> "H.265 在相同码率下画质更好、相同画质更省流量。自动 = 手机能硬解就用 H.265。当前编码:${tCodec.uppercase()}"
+                            },
+                        )
+                        if (cfg.rememberPlayback) MenuNote("已开启「记住播放设置」:这里选的画质和编码会用于后面的视频,并同步到服务器(可在 设置 → 视频播放 里关闭)。")
                         MenuLabel("解码方式")
                         MenuChips(listOf("硬件解码", "软件解码"), if (decoderName[0].isEmpty()) -1 else if (soft) 1 else 0) { i ->
                             panel = ""
@@ -1078,7 +1107,7 @@ fun VideoPage(
                         MenuRow(
                             "画质增强",
                             listOfNotNull(
-                                when (cfg.enhUpscale) { "fsr" -> "FSR"; "anime4k_s", "anime4k_m" -> "动漫"; else -> null },
+                                when (cfg.enhUpscale) { "fsr" -> "FSR"; "fsrcnnx_s", "fsrcnnx_m" -> "FSRCNNX"; "anime4k_s", "anime4k_m" -> "动漫"; else -> null },
                                 when (cfg.enhFrc) { "lsfg" -> "补帧"; "lsfg_low" -> "补帧·低功耗"; else -> null },
                                 if (cfg.enhHdr != "off") "HDR" else null,
                             ).joinToString(" · ").ifEmpty { "关闭" },
@@ -1329,4 +1358,29 @@ private fun JumpDialog(durationMs: Long, onDismiss: () -> Unit, onJump: (Long) -
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+/**
+ * 「记住画质」:新打开的视频初始用哪个转码码率。没记住 / 记的是原画 / 本地媒体 / 视频本身码率已经比目标低(转码只会白白耗服务端)→ null(直接播放)。
+ */
+internal fun rememberedTranscode(c: com.localtg.AppContainer, item: Item): Int? {
+    val s = c.settings.value
+    if (!s.rememberPlayback || s.playerQuality <= 0 || c.isLocal || item.brokenLabel() != null) return null
+    val cap = com.localtg.data.QualityTiers.cap(c.api.caps.maxTranscodeBitrate)
+    val target = minOf(s.playerQuality, cap)
+    val origBps = (item.video?.bitrateKbps ?: 0L) * 1000
+    if (origBps > 0 && origBps <= target * 115L / 100) return null // 原本就不比目标高,不转
+    return target
+}
+
+/** 用户在播放器里选了画质 / 编码:记在本机并同步到服务器(服务端据此给后续请求做默认值、预热下一个视频)。 */
+internal fun rememberPlaybackChoice(c: com.localtg.AppContainer, bitrate: Int?, codec: String) {
+    val s = c.settings.value
+    if (!s.rememberPlayback || c.isLocal) return
+    val now = System.currentTimeMillis()
+    val q = bitrate ?: 0
+    c.settings.update { copy(playerQuality = q, playerPrefAt = now) }
+    if (c.api.caps.playerPrefs) c.scope.launch {
+        runCatching { c.api.putPlayerPref(com.localtg.data.PlayerPref(bitrate = q, codec = codec, direct = q == 0, savedAt = now)) }
+    }
 }
