@@ -100,6 +100,8 @@ import kotlin.math.roundToInt
 
 /** 查看器级别的界面状态,所有页共享(控制条显示、锁定、方向、睡眠定时)。 */
 class ViewerUi {
+    /** 当前这一页的视频正在用的转码码率(bps);null = 没在转码。查看器底部的信息条据此显示转码后的预估体积。 */
+    var transcodeBps by mutableStateOf<Int?>(null)
     var chrome by mutableStateOf(true)
     var locked by mutableStateOf(false)
     /** 0 = 跟随系统,1 = 横屏,2 = 竖屏 */
@@ -375,6 +377,10 @@ fun VideoPage(
             if (p != null) c.videoPlaying = false
         }
     }
+
+    // 把本页的转码码率告诉查看器(底部信息条显示转码后的预估体积);翻走时清掉
+    LaunchedEffect(isCurrent, transcodeBitrate) { if (isCurrent) ui.transcodeBps = transcodeBitrate }
+    DisposableEffect(isCurrent) { onDispose { if (isCurrent) ui.transcodeBps = null } }
 
     // 不完整的视频:提醒一下,播放到被截断处会停止
     LaunchedEffect(isCurrent, item.id) {
@@ -795,7 +801,7 @@ fun VideoPage(
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(item.name, color = Color.White, fontSize = 16.sp, maxLines = 1, fontWeight = FontWeight.Medium)
                     Text(
-                        listOfNotNull(item.w?.let { "${item.w}×${item.h}" }, formatSize(item.size), transcodeBitrate?.let { "转码 ${"%.1f".format(it / 1_000_000f)}M" }, decoderName[0].takeIf { it.isNotEmpty() }?.let { if (it.startsWith("c2.android") || it.startsWith("OMX.google")) "软解" else "硬解" }).joinToString(" · "),
+                        listOfNotNull(item.w?.let { "${item.w}×${item.h}" }, sizeLabel(item, transcodeBitrate, player?.duration?.takeIf { it > 0 } ?: 0L, short = true), transcodeBitrate?.let { "转码 ${"%.1f".format(it / 1_000_000f)}M" }, decoderName[0].takeIf { it.isNotEmpty() }?.let { if (it.startsWith("c2.android") || it.startsWith("OMX.google")) "软解" else "硬解" }).joinToString(" · "),
                         color = Color(0xB3FFFFFF), fontSize = 12.sp, maxLines = 1,
                     )
                 }
@@ -1067,7 +1073,8 @@ fun VideoPage(
                     "info" -> {
                         val v = pp?.videoFormat
                         MenuInfo("文件", item.name)
-                        MenuInfo("大小", formatSize(item.size))
+                        MenuInfo("大小", sizeLabel(item, transcodeBitrate, pp?.duration ?: 0L))
+                        if (transcodeBitrate != null) MenuInfo("原文件", formatSize(item.size))
                         MenuInfo("时长", fmt(pp?.duration ?: 0L))
                         MenuInfo("时间", formatDateTime(item.takenAt))
                         MenuInfo("解码器", decoderName[0].ifEmpty { "—" })
@@ -1383,4 +1390,20 @@ internal fun rememberPlaybackChoice(c: com.localtg.AppContainer, bitrate: Int?, 
     if (c.api.caps.playerPrefs) c.scope.launch {
         runCatching { c.api.putPlayerPref(com.localtg.data.PlayerPref(bitrate = q, codec = codec, direct = q == 0, savedAt = now)) }
     }
+}
+
+/**
+ * 转码后的预估体积:时长 × (视频码率 + 约 128 kbps 的音频)/ 8。码率是上限(服务端 maxrate),实际可能更小;
+ * 不会超过原文件(原码率本来就比目标低时转码不会变大)。拿不到时长(索引里没有、播放器也还没读到)返回 null。
+ */
+internal fun transcodeEstimate(item: Item, bps: Int?, playerDurMs: Long): Long? {
+    if (bps == null || bps <= 0) return null
+    val dur = (item.durationMs ?: 0L).takeIf { it > 0 } ?: playerDurMs.takeIf { it > 0 } ?: return null
+    return minOf(item.size.takeIf { it > 0 } ?: Long.MAX_VALUE, dur * (bps + 128_000L) / 8000)
+}
+
+/** 体积显示:没转码是文件大小;转码中是「≈预估体积」(完整写法带上原文件大小)。 */
+internal fun sizeLabel(item: Item, bps: Int?, playerDurMs: Long, short: Boolean = false): String {
+    val est = transcodeEstimate(item, bps, playerDurMs) ?: return formatSize(item.size)
+    return if (short) "≈${formatSize(est)}(原 ${formatSize(item.size)})" else "≈${formatSize(est)}(转码后预估,原 ${formatSize(item.size)})"
 }

@@ -651,6 +651,73 @@ func (s *Server) adminCompressRemove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+// adminCompressClear POST /api/v1/admin/compress/clear {includeDone:false} —— 一键清除压缩队列:
+// 取消正在压缩的、删除排队中 / 失败 / 已取消的任务及它们残留的输出文件。includeDone=true 时连「已完成、待替换」的任务一起清除
+// (它们的压缩版输出文件会被删掉,原视频不受影响);已经替换过的(applied)任务只是历史记录,永远不动。
+func (s *Server) adminCompressClear(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		IncludeDone bool `json:"includeDone"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in)
+	c := &s.opt.cp
+	c.mu.Lock()
+	cur := c.cur
+	if c.cancel != nil {
+		c.cancel() // 正在压缩的立刻停掉(compressOne 会把它标成 cancelled 并删掉半成品输出)
+	}
+	c.mu.Unlock()
+	states := []string{"queued", "failed", "cancelled"}
+	if in.IncludeDone {
+		states = append(states, "done")
+	}
+	removed := 0
+	for _, st := range states {
+		rows, err := s.DB.Query(`SELECT id FROM opt_job WHERE state=?`, st)
+		if err != nil {
+			continue
+		}
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			if rows.Scan(&id) == nil {
+				ids = append(ids, id)
+			}
+		}
+		rows.Close()
+		for _, id := range ids {
+			j, err := s.loadJob(id)
+			if err != nil {
+				continue
+			}
+			if j.OutPath != "" {
+				_ = os.Remove(winfs.Path(j.OutPath)) // 压缩版输出在 .mediahub\optimize 里
+			}
+			if _, err := s.DB.Exec(`DELETE FROM opt_job WHERE id=?`, id); err == nil {
+				removed++
+			}
+		}
+	}
+	// 正在压缩的那个:等它被取消后(状态变 cancelled)再清一次
+	if cur != 0 {
+		go func() {
+			for i := 0; i < 20; i++ {
+				time.Sleep(500 * time.Millisecond)
+				j, err := s.loadJob(cur)
+				if err != nil {
+					return
+				}
+				if j.State == "cancelled" || j.State == "failed" {
+					_ = os.Remove(winfs.Path(j.OutPath))
+					_, _ = s.DB.Exec(`DELETE FROM opt_job WHERE id=?`, cur)
+					return
+				}
+			}
+		}()
+	}
+	s.Log.Info("压缩队列已清除", "removed", removed, "includeDone", in.IncludeDone, "cancelledRunning", cur != 0)
+	writeJSON(w, 200, map[string]any{"removed": removed, "cancelledRunning": cur != 0})
+}
+
 func (s *Server) adminCompressPause(pause bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c := &s.opt.cp

@@ -224,6 +224,18 @@ function Compress() {
     if (r) toast(`已替换 ${r.applied} 个,省下 ${fmtBytes(r.saved)}${r.failed?.length ? `;${r.failed.length} 个失败:${r.failed[0]}` : ""}`, r.failed?.length ? "err" : "ok");
     setPick(new Set()); setBusy(false); load();
   };
+  // 一键清除队列:取消正在压缩的、删掉排队 / 失败 / 已取消的任务;「已完成待替换」的单独再问一次(清掉会删除它们的压缩版,原视频不受影响)
+  const clearQueue = async () => {
+    const waiting = (counts.queued ?? 0) + (counts.running ?? 0) + (counts.failed ?? 0) + (counts.cancelled ?? 0);
+    const doneN = counts.done ?? 0;
+    if (!window.confirm(`清除压缩队列?\n\n将取消正在压缩的任务,并删除 ${waiting} 个排队 / 失败 / 已取消的任务。原视频不受任何影响。`)) return;
+    let includeDone = false;
+    if (doneN > 0) includeDone = window.confirm(`还有 ${doneN} 个「已完成、待替换」的压缩版。\n\n要连它们一起清除吗?(会删除这些压缩版文件,以后需要重新压缩;原视频不受影响)\n\n确定 = 一起清除,取消 = 保留它们。`);
+    setBusy(true);
+    const r = await act("clear", [], { includeDone });
+    if (r) { toast(`已清除 ${r.removed} 个任务${r.cancelledRunning ? ",并停止了正在压缩的" : ""}`); setPick(new Set()); }
+    setBusy(false); load();
+  };
   const qsv = codec === "h265" ? caps?.qsvH265 : caps?.qsvH264;
   const togglePick = (id: number) => setPick((o) => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   return (
@@ -266,6 +278,7 @@ function Compress() {
             extra={<div className="btn-group">
               {caps?.paused ? <Btn icon="play" onClick={async () => { await act("resume", []); load(); }}>继续</Btn> : <Btn icon="stop" onClick={async () => { await act("pause", []); load(); }}>暂停</Btn>}
               <Btn icon="trash" onClick={async () => { const ids = jobs.filter((j) => ["failed", "cancelled"].includes(j.state)).map((j) => j.id); if (ids.length) { await act("remove", ids); load(); } }}>清除失败 / 取消的</Btn>
+              <Btn kind="danger" icon="trash" disabled={busy || jobs.length === 0} onClick={clearQueue}>一键清除队列</Btn>
             </div>}>
         <Row icon="info" title={`排队 ${counts.queued ?? 0} · 压缩中 ${counts.running ?? 0} · 待替换 ${counts.done ?? 0} · 已替换 ${counts.applied ?? 0} · 失败 ${counts.failed ?? 0}`}
              desc={`累计已省下 ${fmtBytes(saved)}(含待替换的)。同一时间只压缩一个;有人正在看转码视频时会自动让一让。`}>

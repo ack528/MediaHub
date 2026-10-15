@@ -188,7 +188,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
                     Column(Modifier.weight(1f)) {
                         Text(formatDateTime(cur.takenAt), color = Color.White, fontSize = 14.sp)
                         Text(
-                            listOfNotNull(cur.w?.let { "${cur.w}×${cur.h}" }, formatSize(cur.size), cur.ext.uppercase().takeIf { it.isNotEmpty() }).joinToString(" · "),
+                            listOfNotNull(cur.w?.let { "${cur.w}×${cur.h}" }, if (cur.isVideo) sizeLabel(cur, ui.transcodeBps, 0L, short = true) else formatSize(cur.size), cur.ext.uppercase().takeIf { it.isNotEmpty() }).joinToString(" · "),
                             color = Color(0xB3FFFFFF), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
                         )
                     }

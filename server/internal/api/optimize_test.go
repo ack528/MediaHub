@@ -348,3 +348,63 @@ func TestCompressPipeline(t *testing.T) {
 		t.Fatalf("optimize 目录应该已空: %v", ents)
 	}
 }
+
+// 一键清除队列:排队 / 失败 / 已取消的全部删除;「已完成待替换」默认保留,includeDone 时连压缩版文件一起清掉;已替换(applied)的历史记录永远不动。
+func TestCompressClear(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	hdr := adminHdr(e)
+	dir := filepath.Join(e.lib, "队列")
+	os.MkdirAll(dir, 0o755)
+	big := filepath.Join(dir, "q.mp4")
+	if out, err := exec.Command(e.srv.Cfg.Tools.FFmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30", "-t", "4", "-c:v", "libx264", "-b:v", "6M", "-minrate", "6M", "-maxrate", "6M", "-bufsize", "6M", big).CombinedOutput(); err != nil {
+		t.Skipf("无法生成样本: %v %s", err, out)
+	}
+	rescanAll(t, e)
+	id := idByName(t, e, "q.mp4")
+	// 没启动 worker:入队的任务一直是 queued
+	if resp, _ := e.do("POST", "/api/v1/admin/compress/enqueue", map[string]any{"ids": []int64{id}, "codec": "h265", "mode": "abs", "value": 800}, hdr); resp.StatusCode != 200 {
+		t.Fatalf("enqueue = %d", resp.StatusCode)
+	}
+	out := filepath.Join(e.lib, ".mediahub", "optimize", "x.mkv")
+	os.MkdirAll(filepath.Dir(out), 0o755)
+	os.WriteFile(out, []byte("fake"), 0o644)
+	now := time.Now().Unix()
+	for _, st := range []string{"failed", "cancelled", "done", "applied"} {
+		e.srv.DB.Exec(`INSERT INTO opt_job(media_id, state, codec, bitrate_kbps, preset, out_path, created, updated) VALUES(?,?,?,?,?,?,?,?)`, id+1000, st, "h265", 800, "medium", map[bool]string{true: out, false: ""}[st == "done"], now, now)
+	}
+	count := func(st string) int {
+		var n int
+		_ = e.srv.DB.QueryRow(`SELECT COUNT(*) FROM opt_job WHERE state=?`, st).Scan(&n)
+		return n
+	}
+	if count("queued") != 1 || count("done") != 1 {
+		t.Fatalf("准备数据有误: queued=%d done=%d", count("queued"), count("done"))
+	}
+	// 默认:清掉排队 / 失败 / 已取消,保留已完成待替换和已替换
+	_, b := e.do("POST", "/api/v1/admin/compress/clear", map[string]any{}, hdr)
+	if !strings.Contains(string(b), `"removed":3`) {
+		t.Fatalf("clear: %s", b)
+	}
+	if count("queued")+count("failed")+count("cancelled") != 0 || count("done") != 1 || count("applied") != 1 {
+		t.Fatal("默认只清排队 / 失败 / 已取消")
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatal("已完成待替换的压缩版文件默认要保留")
+	}
+	// includeDone:连已完成的一起清,并删掉压缩版文件;applied 仍然保留
+	_, b = e.do("POST", "/api/v1/admin/compress/clear", map[string]any{"includeDone": true}, hdr)
+	if !strings.Contains(string(b), `"removed":1`) {
+		t.Fatalf("clear includeDone: %s", b)
+	}
+	if count("done") != 0 || count("applied") != 1 {
+		t.Fatal("includeDone 清掉 done,但 applied 历史不动")
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Fatal("includeDone 时压缩版输出文件应该被删除")
+	}
+	// 原视频始终不受影响
+	if _, err := os.Stat(big); err != nil {
+		t.Fatal("原视频不能被动")
+	}
+}
