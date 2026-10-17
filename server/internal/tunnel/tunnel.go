@@ -4,7 +4,7 @@
 // 为什么放在服务端里:穿透客户端的配置(服务器地址、令牌、协议、连接池……)和 MediaHub 的端口、证书是一体的,
 // 放进同一份配置、同一个管理界面,不用再单独维护一个 frpc 的窗口 / 开机自启;日志和状态也能在管理程序里一起看。
 //
-// 本包不内置 frpc:需要自己把 frpc.exe 放到 tools\frp\(或在配置里填路径)。frp 版本要求 0.52 及以上(用 TOML 配置)。
+// frpc 随服务端一起打包(见 embedded.go);开发构建里没有,就用 tools\frp\frpc.exe 或配置里填的路径。frp 版本要求 0.52 及以上(用 TOML 配置)。
 package tunnel
 
 import (
@@ -203,7 +203,17 @@ func (m *Manager) resolveExe() (exe string, args []string, workDir string, err e
 	default:
 		exe = m.cfg.Binary
 		if exe == "" {
-			exe = frpcDefault()
+			if p := frpcOnDisk(); p != "" {
+				exe = p
+			} else if EmbeddedAvailable() { // 内置的 frpc:第一次用时释放到数据目录
+				p, e := extractEmbedded(embeddedFS, embeddedName, filepath.Join(m.dataDir, "tunnel", "bin"))
+				if e != nil {
+					return "", nil, "", fmt.Errorf("释放内置的 frpc 失败(可能被杀毒软件拦截,请把 %s 加入排除项):%w", filepath.Join(m.dataDir, "tunnel", "bin"), e)
+				}
+				exe = p
+			} else {
+				exe = filepath.Join("tools", "frp", "frpc.exe")
+			}
 		}
 		if m.cfg.ServerAddr == "" {
 			return "", nil, "", errors.New("没有填写穿透服务器地址")
@@ -229,8 +239,8 @@ func (m *Manager) resolveExe() (exe string, args []string, workDir string, err e
 	return exe, args, workDir, nil
 }
 
-// frpcDefault 默认位置:程序所在目录往上找 tools\frp\frpc.exe(开发时)或 runtime\frp\frpc.exe / 同目录(便携版)。
-func frpcDefault() string {
+// frpcOnDisk 在程序所在目录往上找 tools\frp\frpc.exe(开发时 / 自己放的)或 frp\frpc.exe / 同目录;找不到返回空。
+func frpcOnDisk() string {
 	exePath, _ := os.Executable()
 	d := filepath.Dir(exePath)
 	for i := 0; i < 5; i++ {
@@ -242,7 +252,7 @@ func frpcDefault() string {
 		}
 		d = filepath.Dir(d)
 	}
-	return filepath.Join("tools", "frp", "frpc.exe")
+	return ""
 }
 
 // ---------------------------------------------------------------- 运行
@@ -591,5 +601,11 @@ func (m *Manager) peekExe() (string, []string, string, error) {
 	if m.cfg.Binary != "" {
 		return m.cfg.Binary, nil, "", nil
 	}
-	return frpcDefault(), nil, "", nil
+	if p := frpcOnDisk(); p != "" {
+		return p, nil, "", nil
+	}
+	if EmbeddedAvailable() {
+		return filepath.Join(m.dataDir, "tunnel", "bin", "frpc.exe"), nil, "", nil
+	}
+	return filepath.Join("tools", "frp", "frpc.exe"), nil, "", nil
 }

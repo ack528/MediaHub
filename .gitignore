@@ -5,6 +5,7 @@ tools/*
 !tools/publish-release.py
 
 # ---- 运行时数据、构建产物、打包输出 ----
+server/internal/tunnel/embed/frpc.exe.gz
 runtime/
 dist/
 server/**/*.exe

@@ -118,7 +118,7 @@ type Tunnel struct {
 	RestartOnFail bool   `json:"restartOnFail"` // 连续探测失败时自动重启穿透进程
 
 	// ---- frp
-	Binary string `json:"binary"` // frpc.exe 的路径;留空 = toolsrprpc.exe
+	Binary string `json:"binary"` // frpc.exe 的路径;留空 = 服务端内置的 frpc(或 tools\frp\frpc.exe)
 	ServerAddr     string `json:"serverAddr"`
 	ServerPort     int    `json:"serverPort"`
 	Token          string `json:"token"`

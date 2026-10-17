@@ -36,6 +36,19 @@ function Copy-Tree($from, $to) {
 
 # ---------------------------------------------------------------- 服务端 + 工具(暂存)
 Step '编译服务端 mediahub.exe'
+# 内置 frpc(内网穿透用):tools\frp\frpc.exe 压成 gzip 放进 embed 目录,编译进 mediahub.exe(frp 是 Apache-2.0,许可证随包附带)
+$frpc = Join-Path $Root 'tools\frp\frpc.exe'
+$frpGz = Join-Path $Root 'server\internal\tunnel\embed\frpc.exe.gz'
+if (Test-Path -LiteralPath $frpc) {
+  Step '内置 frpc(压缩后编译进服务端)'
+  $in = [IO.File]::OpenRead($frpc); $out = [IO.File]::Create($frpGz)
+  $gz = New-Object IO.Compression.GZipStream($out, [IO.Compression.CompressionLevel]::Optimal)
+  $in.CopyTo($gz); $gz.Dispose(); $out.Dispose(); $in.Dispose()
+  Write-Host ("  frpc.exe {0:N1} MB -> {1:N1} MB" -f ((Get-Item $frpc).Length / 1MB), ((Get-Item $frpGz).Length / 1MB))
+} else {
+  Remove-Item -LiteralPath $frpGz -Force -ErrorAction SilentlyContinue
+  Write-Host '  没有 tools\frp\frpc.exe:本次服务端不内置 frpc(先运行 tools\setup.ps1 -Only frp)' -ForegroundColor Yellow
+}
 Push-Location (Join-Path $Root 'server')
 if (-not $SkipTests) {
   & go test -p $env:BUILD_JOBS ./... 2>&1 | Select-Object -Last 12
@@ -57,9 +70,11 @@ MediaHub 便携包里随附的第三方程序:
 
 - ffmpeg / ffprobe:jellyfin-ffmpeg(GPLv3 构建),源码与许可证见 https://github.com/jellyfin/jellyfin-ffmpeg 。本包只是原样附带其可执行文件,未做修改。
 - ExifTool:Phil Harvey,Perl Artistic License / GPL,见 https://exiftool.org 。
+- frpc:fatedier/frp(Apache-2.0),内置在 mediahub.exe 里,内网穿透功能第一次启动时释放到数据目录下的 tunnel\bin\。许可证见同目录 LICENSE-frp.txt,源码见 https://github.com/fatedier/frp 。
 - 其余部分(MediaHub 服务端 / 管理程序)的源码见 https://github.com/ack528/MediaHub 。
 '@ | Set-Content -LiteralPath (Join-Path $Stage 'tools\THIRD_PARTY_NOTICES.txt') -Encoding UTF8
 Remove-Item (Join-Path $Stage 'tools\exiftool\.installed') -ErrorAction SilentlyContinue
+if (Test-Path (Join-Path $Root 'tools\frp\LICENSE')) { Copy-Item (Join-Path $Root 'tools\frp\LICENSE') (Join-Path $Stage 'tools\LICENSE-frp.txt') }
 
 # ---------------------------------------------------------------- 桌面端
 if (-not $SkipDesktop) {

@@ -245,8 +245,8 @@ export const ITEMS: Item[] = [
     ...at("tunnel.restartOnFail"),
   },
   {
-    id: "frp-binary", page: "network", tab: "内网穿透", icon: "folder", kind: "path", restart: true, placeholder: "留空 = tools\\frp\\frpc.exe",
-    title: "frpc 程序路径", desc: "frp 客户端程序(frpc.exe),版本需要 0.52 及以上。本程序不内置,请从 frp 的 GitHub 发布页下载 Windows 版解压出 frpc.exe。留空时依次找 tools\\frp\\frpc.exe、frp\\frpc.exe、程序同目录。",
+    id: "frp-binary", page: "network", tab: "内网穿透", icon: "folder", kind: "path", restart: true, placeholder: "留空 = 服务端内置的 frpc",
+    title: "frpc 程序路径", desc: "frp 客户端程序(frpc.exe),版本需要 0.52 及以上。留空 = 用服务端内置的 frpc(第一次启动穿透时释放到数据目录下的 tunnel\\bin);如果 tools\\frp\\frpc.exe、frp\\frpc.exe 或程序同目录里有,优先用那个。想用自己的版本就在这里填路径。",
     ...at("tunnel.binary"),
   },
   {

@@ -24,6 +24,8 @@ $items = @(
      sha256=''; dest='vips'; strip=1 },
   @{ name='gradle';   url='https://services.gradle.org/distributions/gradle-9.8.0-bin.zip';
      sha256='bafd5ce9cfaea0fbccfdc8439a1ac42fbd4cd9c89dc9a988228d8a2639a58e6c'; dest='gradle'; strip=1 },
+  @{ name='frp';      url='https://github.com/fatedier/frp/releases/download/v0.71.1/frp_0.71.1_windows_amd64.zip';
+     sha256='b90074b2b6a1d792a7a40f085ac6d276bcab2d1bc60201f8a86ca53ce65ce821'; dest='frp'; strip=1 },
   @{ name='sqlite';   url='https://sqlite.org/2026/sqlite-tools-win-x64-3530400.zip';
      sha256=''; dest='sqlite'; strip=0 }
 )

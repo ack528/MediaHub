@@ -54,7 +54,7 @@ export function Tunnel() {
     if (frp && (t.encryption || t.compression)) tips.push({ tone: "orange", text: "隧道内的加密 / 压缩建议关闭:MediaHub 已经是 HTTPS,图片视频也已经压缩,开着只耗 CPU(高码率视频时可能成为瓶颈)。" });
     if (frp && t.proxyType === "http" && config.tls.enabled) tips.push({ tone: "red", text: "代理类型 http 只能转发明文 HTTP,而 MediaHub 的加密传输是开着的 —— 手机会连不上。请改成 tcp 或 https,或者关闭加密传输(不推荐)。" });
     if (frp && t.proxyType === "tcp" && t.remotePort === 0) tips.push({ tone: "orange", text: "远程端口是 0:需要由穿透服务器分配 / 服务商指定,手机里填的端口要和服务商给的一致。" });
-    if (st?.state === "missing") tips.push({ tone: "red", text: "找不到穿透客户端程序。frp:从 frp 的 GitHub 发布页下载 Windows 版,把 frpc.exe 放到 tools\\frp\\ 下(或在下面填路径),放好后几秒内会自动启动,不用重启服务。" });
+    if (st?.state === "missing") tips.push({ tone: "red", text: "找不到穿透客户端程序。服务端自带 frpc,通常是被杀毒软件(Windows Defender 常把 frpc 当成风险工具)拦截或删除了:把服务的数据目录下的 tunnel\\bin 文件夹加入排除项后重启服务即可;也可以自己放一个 frpc.exe 并在下面填路径。" });
     if (probes.length >= 3 && lossPct === 0 && avgTtfb > 0 && avgTtfb <= 400) tips.push({ tone: "green", text: `链路状态良好(首字节平均 ${avgTtfb} ms,无失败)。画面不流畅多半是穿透服务器的带宽不够:在手机「设置 → 网络测速」测一下稳定下载速度,视频码率要低于它的 70%。` });
   }
   return (
