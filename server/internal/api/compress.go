@@ -57,9 +57,74 @@ type compressState struct {
 	cancel context.CancelFunc
 	wake   chan struct{}
 	once   sync.Once
+
+	lastRetry, lastPurge time.Time // compressHousekeeping 的计时(只在 worker 协程里读写)
 }
 
 var compressPresets = map[string]bool{"veryfast": true, "faster": true, "fast": true, "medium": true, "slow": true, "slower": true, "veryslow": true}
+
+// compressHousekeeping 队列空闲时的杂务:重试没成功的自动替换(每 2 分钟)、清理过期的「压缩替换」回收批次(每小时)。
+func (s *Server) compressHousekeeping() {
+	c := &s.opt.cp
+	if s.Gov.PauseCompress() { // 有客户端连着时不做这些磁盘操作
+		return
+	}
+	now := time.Now()
+	if now.Sub(c.lastRetry) > 2*time.Minute {
+		c.lastRetry = now
+		s.retryAutoApply()
+	}
+	if now.Sub(c.lastPurge) > time.Hour {
+		c.lastPurge = now
+		s.purgeOldCompressTrash()
+	}
+}
+
+// purgeOldCompressTrash 永久删除超过 optimize.trashKeepDays 天的「压缩替换」回收批次(batch 名是 compress-年月日-时分秒)。
+// 只动 compress-* 批次,手动删除重复文件产生的批次不会被自动清理。
+func (s *Server) purgeOldCompressTrash() {
+	keep := s.Cfg.Optimize.TrashKeepDays
+	if keep <= 0 {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -keep)
+	rows, err := s.DB.Query(`SELECT path FROM roots`)
+	if err != nil {
+		return
+	}
+	var roots []string
+	for rows.Next() {
+		var p string
+		if rows.Scan(&p) == nil {
+			roots = append(roots, p)
+		}
+	}
+	rows.Close()
+	for _, rp := range roots {
+		ents, err := os.ReadDir(winfs.Path(trashRoot(rp)))
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			name := e.Name()
+			if !e.IsDir() || !strings.HasPrefix(name, "compress-") {
+				continue
+			}
+			t, err := time.ParseInLocation("20060102-150405", strings.TrimPrefix(name, "compress-"), time.Local)
+			if err != nil || t.After(cutoff) {
+				continue
+			}
+			dir := filepath.Join(trashRoot(rp), name)
+			if underTrash(rp, dir) != nil {
+				continue
+			}
+			sz, _ := dirSize(dir)
+			if os.RemoveAll(winfs.Path(dir)) == nil {
+				s.Log.Info("压缩替换的原文件已过保留期,永久删除", "batch", name, "freed", sz, "keepDays", keep)
+			}
+		}
+	}
+}
 
 // StartOptimizeWorker 启动压缩队列的后台协程(main 里调用一次)。启动时把上次没编完的任务重新排队。
 func (s *Server) StartOptimizeWorker(ctx context.Context) {
@@ -76,6 +141,7 @@ func (s *Server) StartOptimizeWorker(ctx context.Context) {
 				case <-time.After(3 * time.Second):
 				}
 				s.compressLoop(ctx)
+				s.compressHousekeeping()
 			}
 		}()
 	})
@@ -210,9 +276,9 @@ func outExtFor(ext string, hasSub bool) string {
 	return ".mkv"
 }
 
-func (s *Server) compressArgs(src, out string, j optJob, enc string, hw bool, si streamInfo, aacAudio bool) []string {
+func (s *Server) compressArgs(src, out string, j optJob, enc string, hw bool, si streamInfo, aacAudio, simple bool) []string {
 	a := []string{"-hide_banner", "-nostdin", "-y", "-v", "error", "-progress", "pipe:1", "-nostats", "-i", src,
-		"-map", "0:v:0", "-map", "0:a?"}
+		"-map", "0:V:0", "-map", "0:a?"} // 0:V = 不含封面图 / 附件图片的视频流(mp4 / mkv 常带封面,0:v:0 可能选到它)
 	isMKV := strings.EqualFold(filepath.Ext(out), ".mkv")
 	if isMKV {
 		a = append(a, "-map", "0:s?", "-c:s", "copy")
@@ -229,7 +295,8 @@ func (s *Server) compressArgs(src, out string, j optJob, enc string, hw bool, si
 	case si.tenBit && enc == "libx265":
 		pix = "yuv420p10le"
 	}
-	a = append(a, "-vf", "format="+pix)
+	// 宽高必须是偶数(奇数宽高的片源硬件编码器会直接报错);已经是偶数时这一步什么都不做
+	a = append(a, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format="+pix)
 	rate := strconv.Itoa(j.Kbps) + "k"
 	maxr := strconv.Itoa(j.Kbps*3/2) + "k"
 	buf := strconv.Itoa(j.Kbps*2) + "k"
@@ -239,9 +306,15 @@ func (s *Server) compressArgs(src, out string, j optJob, enc string, hw bool, si
 		if si.tenBit {
 			prof = "main10"
 		}
-		a = append(a, "-c:v", "hevc_qsv", "-preset", j.Preset, "-profile:v", prof, "-b:v", rate, "-maxrate", maxr, "-bufsize", buf, "-look_ahead", "1")
+		a = append(a, "-c:v", "hevc_qsv", "-preset", j.Preset, "-profile:v", prof, "-b:v", rate, "-maxrate", maxr, "-bufsize", buf)
+		if !simple {
+			a = append(a, "-look_ahead", "1")
+		}
 	case "h264_qsv":
-		a = append(a, "-c:v", "h264_qsv", "-preset", j.Preset, "-profile:v", "high", "-b:v", rate, "-maxrate", maxr, "-bufsize", buf, "-look_ahead", "1")
+		a = append(a, "-c:v", "h264_qsv", "-preset", j.Preset, "-profile:v", "high", "-b:v", rate, "-maxrate", maxr, "-bufsize", buf)
+		if !simple {
+			a = append(a, "-look_ahead", "1")
+		}
 	case "libx265":
 		a = append(a, "-c:v", "libx265", "-preset", j.Preset, "-b:v", rate, "-maxrate", maxr, "-bufsize", buf, "-x265-params", "log-level=error")
 	default:
@@ -259,6 +332,32 @@ func (s *Server) compressArgs(src, out string, j optJob, enc string, hw bool, si
 		}
 	}
 	return append(a, out)
+}
+
+// encAttempt 一种编码方式。硬件编码失败时依次退到:去掉可选参数的硬件编码 → 软件编码,不要因为某个片源 / 驱动的小毛病整个任务失败。
+type encAttempt struct {
+	enc    string
+	hw     bool
+	simple bool
+}
+
+func (s *Server) compressAttempts(codec string) []encAttempt {
+	enc, hw := s.encoderFor(codec)
+	out := []encAttempt{{enc, hw, false}}
+	if hw {
+		sw := "libx264"
+		if codec == "h265" {
+			sw = "libx265"
+		}
+		out = append(out, encAttempt{enc, true, true}, encAttempt{sw, false, false})
+	}
+	return out
+}
+
+// audioCopyError ffmpeg 的报错是不是"音轨放不进这个容器 / 写不了文件头"(改成 AAC 重编音频可能就能解决)。
+func audioCopyError(msg string) bool {
+	l := strings.ToLower(msg)
+	return strings.Contains(l, "audio") || strings.Contains(l, "container") || strings.Contains(l, "write header") || strings.Contains(l, "tag ")
 }
 
 // compressOne 编一个任务。
@@ -299,7 +398,7 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 		return
 	}
 	out := filepath.Join(outDir, fmt.Sprintf("%d-%d%s", m.ID, j.ID, outExtFor(m.Ext, si.hasSub)))
-	enc, hw := s.encoderFor(j.Codec)
+	attempts := s.compressAttempts(j.Codec)
 	jctx, cancel := context.WithCancel(ctx)
 	c.mu.Lock()
 	c.cur, c.cancel = id, cancel
@@ -311,10 +410,10 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 		c.mu.Unlock()
 	}()
 	s.jobSet(id, map[string]any{"state": "running", "progress": 0.0, "out_path": out, "orig_size": m.Size, "err": ""})
-	s.Log.Info("压缩开始", "id", id, "media", m.Name, "codec", enc, "kbps", j.Kbps, "preset", j.Preset)
+	s.Log.Info("压缩开始", "id", id, "media", m.Name, "codec", attempts[0].enc, "kbps", j.Kbps, "preset", j.Preset)
 
-	run := func(aac bool) (string, error) {
-		cmd := proc.Background(exec.CommandContext(jctx, s.Cfg.Tools.FFmpeg, s.compressArgs(src, winfs.Path(out), j, enc, hw, si, aac)...)) // 较低的 CPU 优先级
+	run := func(at encAttempt, aac bool) (string, error) {
+		cmd := proc.Background(exec.CommandContext(jctx, s.Cfg.Tools.FFmpeg, s.compressArgs(src, winfs.Path(out), j, at.enc, at.hw, si, aac, at.simple)...)) // 较低的 CPU 优先级
 		errBuf := &tailBuf{}
 		cmd.Stderr = errBuf
 		stdout, err := cmd.StdoutPipe()
@@ -375,10 +474,26 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 		err = cmd.Wait()
 		return errBuf.String(), err
 	}
-	msg, err := run(false)
-	if err != nil && jctx.Err() == nil && (strings.Contains(msg, "audio") || strings.Contains(msg, "Audio")) { // 音频直接复制失败(mp4 装不下的音轨):改成 AAC 重编一次
+	var msg string
+	used := attempts[0]
+	for ai, at := range attempts {
+		used = at
+		t0 := time.Now()
+		msg, err = run(at, false)
+		if err != nil && jctx.Err() == nil && audioCopyError(msg) { // 音频直接复制失败(mp4 装不下的音轨):改成 AAC 重编一次
+			_ = os.Remove(winfs.Path(out))
+			msg, err = run(at, true)
+		}
+		if err == nil || jctx.Err() != nil {
+			break
+		}
 		_ = os.Remove(winfs.Path(out))
-		msg, err = run(true)
+		s.Log.Warn("压缩编码失败", "id", id, "media", m.Name, "encoder", at.enc, "simple", at.simple, "err", msg)
+		// 跑了很久才失败(磁盘满、驱动中途崩了…)不再重试,免得白白再等几个小时
+		if ai == len(attempts)-1 || time.Since(t0) > 5*time.Minute {
+			break
+		}
+		s.jobSet(id, map[string]any{"err": "这种编码方式失败,换一种重试…", "progress": 0.0})
 	}
 	if jctx.Err() != nil {
 		_ = os.Remove(winfs.Path(out))
@@ -391,12 +506,12 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 	}
 	if err != nil {
 		_ = os.Remove(winfs.Path(out))
-		s.jobSet(id, map[string]any{"state": "failed", "err": "ffmpeg 失败:" + firstLine(msg), "out_path": ""})
-		s.Log.Warn("压缩失败", "id", id, "err", msg)
+		s.jobSet(id, map[string]any{"state": "failed", "err": "ffmpeg 失败:" + ffmpegReason(msg), "out_path": ""})
+		s.Log.Warn("压缩失败", "id", id, "media", m.Name, "err", msg)
 		return
 	}
 	// ---- 校验
-	if why := s.verifyOutput(m, durMs, out, j); why != "" {
+	if why := s.verifyOutput(m, durMs, out, j, used.enc); why != "" {
 		_ = os.Remove(winfs.Path(out))
 		s.jobSet(id, map[string]any{"state": "failed", "err": why, "out_path": ""})
 		s.Log.Warn("压缩结果没通过校验", "id", id, "why", why)
@@ -404,11 +519,35 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 	}
 	ost, _ := os.Stat(winfs.Path(out))
 	s.jobSet(id, map[string]any{"state": "done", "progress": 1.0, "new_size": ost.Size()})
-	s.Log.Info("压缩完成", "id", id, "media", m.Name, "from", m.Size, "to", ost.Size())
+	s.Log.Info("压缩完成", "id", id, "media", m.Name, "from", m.Size, "to", ost.Size(), "encoder", used.enc)
+	// 校验通过(时长对、流齐全、开头 / 中间 / 结尾都能完整解码)= 能正常播放:按设置直接替换原文件(原文件进回收区,默认保留 7 天)
+	if s.Cfg.Optimize.AutoReplace {
+		s.autoApply(id)
+	}
 }
 
-// verifyOutput 返回空串表示通过,否则是原因。
-func (s *Server) verifyOutput(m mediaInfo, srcDurMs int64, out string, j optJob) string {
+// ffmpegReason 把 ffmpeg 的错误输出压成一行人能看懂的原因:跳过常见的无关行,挑第一条真正的错误。
+func ffmpegReason(msg string) string {
+	for _, l := range strings.Split(msg, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || strings.HasPrefix(l, "[out#") || strings.HasPrefix(l, "Conversion failed") {
+			continue
+		}
+		if len(l) > 220 {
+			l = l[:220]
+		}
+		return l
+	}
+	return firstLine(msg)
+}
+
+// verifyOutput 返回空串表示通过,否则是原因。通过 = 能正常播放:
+//
+//	① 有输出且明显变小  ② 时长和原片一致  ③ 视频流编码对、音轨没丢  ④ 开头 / 中间 / 结尾各解码 6 秒没有真正的解码错误
+//
+// 以前"解码时 ffmpeg 有任何输出就判失败",而音频复制过来的片源经常带 "wrong sample count" 这类无害警告,
+// 结果好好的压缩结果被丢掉,任务显示"失败"。现在只看真正的损坏迹象(见 fatalDecodeLine)。
+func (s *Server) verifyOutput(m mediaInfo, srcDurMs int64, out string, j optJob, enc string) string {
 	p := winfs.Path(out)
 	ost, err := os.Stat(p)
 	if err != nil || ost.Size() == 0 {
@@ -425,18 +564,102 @@ func (s *Server) verifyOutput(m mediaInfo, srcDurMs int64, out string, j optJob)
 	if dur <= 0 || dur < srcDurMs-tol || dur > srcDurMs+tol {
 		return fmt.Sprintf("输出时长不对(原 %d 秒,输出 %d 秒)", srcDurMs/1000, dur/1000)
 	}
-	// 结尾能完整解码:截断 / 写坏的输出这里会有错误输出
-	tail := float64(dur)/1000 - 8
-	if tail < 0 {
-		tail = 0
+	// 流:有视频流且编码对;原片有音轨的话输出不能丢
+	wantV := "h264"
+	if strings.Contains(enc, "265") || strings.Contains(enc, "hevc") {
+		wantV = "hevc"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	b, err := proc.Hide(exec.CommandContext(ctx, s.Cfg.Tools.FFmpeg, "-v", "error", "-nostdin", "-ss", strconv.FormatFloat(tail, 'f', 2, 64), "-i", p, "-f", "null", "-")).CombinedOutput()
-	if err != nil || strings.TrimSpace(string(b)) != "" {
-		return "输出的结尾不能完整解码:" + firstLine(string(b))
+	vN, aN, vcodec := countStreams(s.Cfg.Tools.FFprobe, p)
+	if vN == 0 || vcodec != wantV {
+		return fmt.Sprintf("输出里的视频流不对(编码 %q,应为 %s)", vcodec, wantV)
+	}
+	if _, srcA, _ := countStreams(s.Cfg.Tools.FFprobe, m.full()); srcA > 0 && aN == 0 {
+		return "输出丢了音轨"
+	}
+	// 三处解码:开头、中间、结尾
+	secs := float64(dur) / 1000
+	for _, at := range []float64{0, secs/2 - 3, secs - 8} {
+		if at < 0 {
+			at = 0
+		}
+		if why := decodeWindow(s.Cfg.Tools.FFmpeg, p, at, 6); why != "" {
+			return fmt.Sprintf("输出在 %d 秒附近不能完整解码:%s", int(at), why)
+		}
 	}
 	return ""
+}
+
+// countStreams 输出文件里的视频流数、音频流数和第一条视频流的编码名。
+func countStreams(ffprobe, path string) (v, a int, vcodec string) {
+	out, err := proc.Hide(exec.Command(ffprobe, "-v", "error", "-show_entries", "stream=codec_type,codec_name:stream_disposition=attached_pic", "-of", "csv=p=0", path)).Output()
+	if err != nil {
+		return 0, 0, ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Split(strings.TrimSpace(line), ",")
+		if len(f) < 2 {
+			continue
+		}
+		// 输出格式:codec_name,codec_type,attached_pic
+		switch f[1] {
+		case "video":
+			if len(f) >= 3 && f[2] == "1" {
+				continue // 封面图不算
+			}
+			v++
+			if vcodec == "" {
+				vcodec = f[0]
+			}
+		case "audio":
+			a++
+		}
+	}
+	return
+}
+
+// decodeWindow 从 at 秒开始只解码视频 lenSec 秒;返回空串 = 没有真正的错误。
+func decodeWindow(ffmpeg, p string, at float64, lenSec int) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	b, err := proc.Hide(exec.CommandContext(ctx, ffmpeg, "-v", "error", "-nostdin", "-ss", strconv.FormatFloat(at, 'f', 2, 64), "-t", strconv.Itoa(lenSec),
+		"-i", p, "-map", "0:V:0", "-an", "-sn", "-f", "null", "-")).CombinedOutput()
+	for _, l := range strings.Split(string(b), "\n") {
+		if fatalDecodeLine(l) {
+			return strings.TrimSpace(l)
+		}
+	}
+	if err != nil {
+		return "ffmpeg 报错退出:" + ffmpegReason(string(b))
+	}
+	return ""
+}
+
+// 这些只是时间戳 / 采样数之类的无害警告,不代表文件坏了。
+var benignDecode = []string{"wrong sample count", "non-monotonic", "non monotonically", "invalid dts", "invalid pts", "past duration too large",
+	"timestamp discontinuity", "last message repeated", "queue input is backward", "increasing reorder buffer", "application provided invalid",
+	"deprecated pixel format", "changing video frame properties", "no accelerated colorspace conversion", "chapter ", "stream map ", "skipping", "pts has no value"}
+
+// 这些才是真正的损坏迹象。
+var fatalDecode = []string{"error while decoding", "invalid data found", "corrupt", "moov atom not found", "missing reference picture", "invalid nal",
+	"non-existing pps", "non-existing sps", "no frame", "could not find", "failed to", "decode_slice_header error", "concealing", "sps unavailable", "pps unavailable",
+	"truncated", "unexpected end", "end of file"}
+
+func fatalDecodeLine(line string) bool {
+	l := strings.ToLower(strings.TrimSpace(line))
+	if l == "" {
+		return false
+	}
+	for _, b := range benignDecode {
+		if strings.Contains(l, b) {
+			return false
+		}
+	}
+	for _, f := range fatalDecode {
+		if strings.Contains(l, f) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------- 接口
@@ -769,37 +992,39 @@ func (s *Server) adminCompressPause(pause bool) http.HandlerFunc {
 	}
 }
 
-// adminCompressApply POST /api/v1/admin/compress/apply {ids:[任务 id], purge:false} —— 用压缩版替换原文件。
-// 原文件被移进回收区(可还原);purge=true 时替换成功后立刻永久删除原文件(省空间,但没有后悔药,界面里要二次确认)。
-func (s *Server) adminCompressApply(w http.ResponseWriter, r *http.Request) {
-	var in idsReq
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil || len(in.IDs) == 0 {
-		writeErr(w, 400, "bad.request", "请求格式错误")
-		return
-	}
+// applyResult 一批替换的结果。
+type applyResult struct {
+	Applied int      `json:"applied"`
+	Saved   int64    `json:"saved"`
+	Purged  int64    `json:"purgedBytes"`
+	Failed  []string `json:"failed"`
+	Batch   string   `json:"batch"`
+}
+
+// applyJobs 用压缩版替换原文件:原文件【移进回收区】(可还原),压缩版放到原来的位置;purge=true 时替换成功后立刻永久删除原文件。
+func (s *Server) applyJobs(ids []int64, purge bool) applyResult {
 	batch := "compress-" + time.Now().Format("20060102-150405")
-	applied, failed := 0, []string{}
-	var saved int64
+	res := applyResult{Failed: []string{}, Batch: batch}
 	roots := map[int64]bool{}
 	batchRoot := map[int64]string{}
-	for _, id := range in.IDs {
+	for _, id := range ids {
 		j, err := s.loadJob(id)
 		if err != nil || j.State != "done" {
-			failed = append(failed, fmt.Sprintf("任务 %d 不是「已完成」状态", id))
+			res.Failed = append(res.Failed, fmt.Sprintf("任务 %d 不是「已完成」状态", id))
 			continue
 		}
 		m, err := s.mediaInfoByID(j.MediaID)
 		if err != nil {
-			failed = append(failed, fmt.Sprintf("任务 %d:原视频已不在索引里", id))
+			res.Failed = append(res.Failed, fmt.Sprintf("任务 %d:原视频已不在索引里", id))
 			continue
 		}
 		src := m.full()
 		if st, err := os.Stat(src); err != nil || st.Size() != j.Orig {
-			failed = append(failed, m.Name+":原文件已经变化,不能替换")
+			res.Failed = append(res.Failed, m.Name+":原文件已经变化,不能替换")
 			continue
 		}
 		if st, err := os.Stat(winfs.Path(j.OutPath)); err != nil || st.Size() != j.New {
-			failed = append(failed, m.Name+":压缩版文件不见了")
+			res.Failed = append(res.Failed, m.Name+":压缩版文件不见了")
 			continue
 		}
 		// 最终名称:同名同容器就覆盖原位置;容器变了(.avi → .mkv)用新扩展名;重名加个后缀
@@ -808,7 +1033,7 @@ func (s *Server) adminCompressApply(w http.ResponseWriter, r *http.Request) {
 		finalName := stem + ext
 		finalPath := filepath.Join(m.RootPath, m.DirRel, finalName)
 		if err := moveToTrash(m, batch, "压缩替换"); err != nil {
-			failed = append(failed, m.Name+":移入回收区失败:"+err.Error())
+			res.Failed = append(res.Failed, m.Name+":移入回收区失败:"+err.Error())
 			continue
 		}
 		if _, err := os.Stat(winfs.Path(finalPath)); err == nil {
@@ -818,37 +1043,95 @@ func (s *Server) adminCompressApply(w http.ResponseWriter, r *http.Request) {
 			// 放不进去:把原文件从回收区放回去,数据不丢
 			back := filepath.Join(trashRoot(m.RootPath), batch, m.rel())
 			_ = os.Rename(winfs.Path(back), src)
-			failed = append(failed, m.Name+":替换失败,已还原原文件:"+err.Error())
+			res.Failed = append(res.Failed, m.Name+":替换失败,已还原原文件:"+err.Error())
 			continue
 		}
 		s.forgetMedia(m.ID)
-		s.jobSet(id, map[string]any{"state": "applied", "trash_path": batch})
-		applied++
-		saved += j.Orig - j.New
+		s.jobSet(id, map[string]any{"state": "applied", "trash_path": batch, "err": ""})
+		res.Applied++
+		res.Saved += j.Orig - j.New
 		roots[m.RootID] = true
 		batchRoot[m.RootID] = m.RootPath
 	}
-	purged := int64(0)
-	if in.Purge {
+	if purge {
 		for _, rp := range batchRoot {
 			dir := filepath.Join(trashRoot(rp), batch)
 			if underTrash(rp, dir) == nil {
 				sz, _ := dirSize(dir)
 				if os.RemoveAll(winfs.Path(dir)) == nil {
-					purged += sz
+					res.Purged += sz
 				}
 			}
 		}
 	}
 	for rid := range roots {
-		if s.Rescan != nil {
-			s.Rescan(rid)
+		s.rescanSoon(rid)
+	}
+	if res.Applied > 0 {
+		s.Log.Info("压缩版已替换原文件", "n", res.Applied, "saved", res.Saved, "purged", res.Purged, "batch", batch)
+	}
+	return res
+}
+
+// adminCompressApply POST /api/v1/admin/compress/apply {ids:[任务 id], purge:false} —— 用压缩版替换原文件。
+// 原文件被移进回收区(可还原);purge=true 时替换成功后立刻永久删除原文件(省空间,但没有后悔药,界面里要二次确认)。
+func (s *Server) adminCompressApply(w http.ResponseWriter, r *http.Request) {
+	var in idsReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil || len(in.IDs) == 0 {
+		writeErr(w, 400, "bad.request", "请求格式错误")
+		return
+	}
+	writeJSON(w, 200, s.applyJobs(in.IDs, in.Purge))
+}
+
+// autoApply 压缩校验通过后自动替换(设置 optimize.autoReplace)。原视频正被手机播放 / 被别的程序占用时移不动,
+// 任务留在「已完成」并写上原因,压缩队列空闲时会定期再试(retryAutoApply)。
+func (s *Server) autoApply(id int64) {
+	res := s.applyJobs([]int64{id}, s.Cfg.Optimize.PurgeOriginal)
+	if res.Applied == 0 && len(res.Failed) > 0 {
+		s.jobSet(id, map[string]any{"err": "自动替换没成功,稍后重试:" + res.Failed[0]})
+		s.Log.Warn("自动替换没成功", "id", id, "why", res.Failed[0])
+	}
+}
+
+// retryAutoApply 把「已完成、待替换」的任务再试一次自动替换(例如上次原视频正在被播放)。
+func (s *Server) retryAutoApply() {
+	if !s.Cfg.Optimize.AutoReplace {
+		return
+	}
+	rows, err := s.DB.Query(`SELECT id FROM opt_job WHERE state='done' ORDER BY id LIMIT 20`)
+	if err != nil {
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
 		}
 	}
-	if applied > 0 {
-		s.Log.Info("压缩版已替换原文件", "n", applied, "saved", saved, "purged", purged, "batch", batch)
+	rows.Close()
+	for _, id := range ids {
+		s.autoApply(id)
 	}
-	writeJSON(w, 200, map[string]any{"applied": applied, "saved": saved, "purgedBytes": purged, "failed": failed, "batch": batch})
+}
+
+// rescanSoon 替换文件后合并重扫:90 秒内同一个根目录只重扫一次(连续替换很多个文件时不会反复全盘重扫)。
+func (s *Server) rescanSoon(rootID int64) {
+	if s.Rescan == nil {
+		return
+	}
+	s.opt.cp.mu.Lock()
+	if s.opt.rescanAt == nil {
+		s.opt.rescanAt = map[int64]time.Time{}
+	}
+	if t, ok := s.opt.rescanAt[rootID]; ok && time.Since(t) < 90*time.Second {
+		s.opt.cp.mu.Unlock()
+		return
+	}
+	s.opt.rescanAt[rootID] = time.Now()
+	s.opt.cp.mu.Unlock()
+	time.AfterFunc(90*time.Second, func() { s.Rescan(rootID) })
 }
 
 var _ = sql.ErrNoRows

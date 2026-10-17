@@ -31,3 +31,21 @@ func TestSuspendResumeLowPriority(t *testing.T) {
 		t.Fatal("进程不应该已经退出")
 	}
 }
+
+// 同一个文件只能被锁一次;释放后可以再锁。
+func TestLockFile(t *testing.T) {
+	p := t.TempDir() + `\inst.lock`
+	rel, err := LockFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err2 := LockFile(p); err2 == nil {
+		t.Fatal("第二次加锁应该失败")
+	}
+	rel()
+	rel2, err := LockFile(p)
+	if err != nil {
+		t.Fatalf("释放后应该能再加锁: %v", err)
+	}
+	rel2()
+}

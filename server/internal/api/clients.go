@@ -447,7 +447,7 @@ func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"clients": list, "online": online, "rateBps": rate, "bytesOut": bytes,
-		"governor": s.Gov.Snapshot(), "background": s.backgroundTasks(),
+		"governor": s.Gov.Snapshot(), "background": s.backgroundTasks(), "loginLock": s.loginLockInfo(),
 	})
 }
 

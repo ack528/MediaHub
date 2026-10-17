@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../bridge";
 import { Badge, Btn, Card, NumberField, Progress, Row, SelectField, Switch, fmtBytes } from "../components";
+import { ItemRow } from "../components";
+import { itemsOf } from "../schema";
 import { useApp } from "../store";
 
 // 存储优化:重复文件检测、视频批量压缩(Intel QSV)、回收区。
@@ -240,6 +242,9 @@ function Compress() {
   const togglePick = (id: number) => setPick((o) => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   return (
     <>
+      <Card icon="check" title="压缩完成后" count={itemsOf("optimize", "视频压缩").length}>
+        {itemsOf("optimize", "视频压缩").map((i) => <ItemRow key={i.id} item={i} />)}
+      </Card>
       <Card icon="cpu" title="压缩设置">
         <Row icon="zap" title="硬件编码" desc={caps == null ? "读取中…" : caps.probing ? "服务端正在检测 Intel QSV…" : qsv ? `Intel QSV(${codec === "h265" ? "HEVC" : "H.264"})可用:用核显硬件编码,速度快、CPU 占用低` : `没有检测到 Intel QSV ${codec === "h265" ? "HEVC" : "H.264"} 硬件编码:会用 CPU 软件编码(画质更好但慢得多)。需要 Intel 核显 + 驱动,config.json 里 video.hwaccel = "qsv"`}>
           <Badge tone={caps == null || caps.probing ? "gray" : qsv ? "green" : "orange"}>{caps == null || caps.probing ? "检测中" : qsv ? "QSV 可用" : "软件编码"}</Badge>

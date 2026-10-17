@@ -111,6 +111,8 @@ type hlsSess struct {
 	cancel   context.CancelFunc
 	runStart int
 	lastErr  string
+	forceSW  bool // 这个文件硬件编码失败过:这个会话改用软件编码(只影响这个文件,不再像以前那样把整个服务的 QSV 都关掉)
+	noAudio  bool // 连软编也失败过:去掉音频再试(有画面没声音,好过完全打不开)
 
 	last      atomic.Int64 // 最近一次被请求的时间(unix 秒)
 	lastReq   atomic.Int64 // 最近一次请求的段号
@@ -160,6 +162,25 @@ func (h *HLS) hevcHW() bool {
 		h.log.Info("H.265 QSV 硬件编码检测", "available", h.hevcQSV)
 	})
 	return h.hevcQSV
+}
+
+// recheckHW 某个文件的硬件编码失败后,用一帧测试画面核对 QSV 是不是真的坏了(驱动崩了 / 核显被占用…)。
+// 测试能通过 = 只是这个文件有问题(特殊的 profile、损坏的帧),QSV 继续给其它视频用;测试也失败才关掉。
+func (h *HLS) recheckHW(enc string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	err := proc.Hide(exec.CommandContext(ctx, h.cfg.Tools.FFmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=640x360:d=0.2",
+		"-vf", "format=nv12", "-c:v", enc, "-f", "null", "-")).Run()
+	if err == nil {
+		h.log.Info("QSV 自检通过,只是个别文件的问题,继续对其它视频使用硬件编码", "encoder", enc)
+		return
+	}
+	if enc == "hevc_qsv" {
+		h.hevcBad.Store(true)
+	} else {
+		h.qsvBad.Store(true)
+	}
+	h.log.Warn("QSV 自检也失败,关闭硬件编码(重启服务后重新检测)", "encoder", enc, "err", err)
 }
 
 // Codecs 内置转码能提供的输出编码(给 /server/info 的 caps 用)。H.265:有 QSV 硬编,或配置里允许软件编码(1080p 实时软编 x265 很吃 CPU)。
@@ -319,14 +340,20 @@ func (h *HLS) janitor() {
 
 // args 组装 ffmpeg 参数(工作目录是会话目录,输出用相对名)。
 func (s *hlsSess) args(idx int, hw bool) []string {
-	a := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
+	a := []string{"-hide_banner", "-loglevel", "error", "-nostdin",
+		// AVI / RMVB / WMV / 残缺的 TS 常常缺时间戳或带坏包:补时间戳、丢掉损坏的包;探测时间放长一点,晚出现的流(TS)也能识别
+		"-fflags", "+genpts+discardcorrupt", "-analyzeduration", "10000000", "-probesize", "20000000"}
 	if idx > 0 {
 		a = append(a, "-ss", strconv.Itoa(idx*hlsSegSec))
 	}
-	a = append(a, "-i", s.path, "-map", "0:v:0")
-	if s.p.Audio > 0 {
+	// 0:V:0 = 第一条真正的视频流(不含封面图;很多 mp4 / mkv 带一张封面,0:v:0 会选到它,转出来是一张静止图或直接失败)
+	a = append(a, "-i", s.path, "-map", "0:V:0")
+	switch {
+	case s.noAudio:
+		a = append(a, "-an")
+	case s.p.Audio > 0:
 		a = append(a, "-map", "0:"+strconv.Itoa(s.p.Audio))
-	} else {
+	default:
 		a = append(a, "-map", "0:a:0?")
 	}
 	a = append(a, "-sn", "-dn", "-map_metadata", "-1")
@@ -334,7 +361,8 @@ func (s *hlsSess) args(idx int, hw bool) []string {
 	if hw {
 		pix = "nv12"
 	}
-	vf := "format=" + pix // 不缩放:转码只改码率,分辨率保持原样
+	// 分辨率保持原样,只做三件小事:隔行扫描的帧反交错(逐行的帧原样通过)、宽高取偶数(奇数宽高编码器会报错)、转成编码器要的像素格式
+	vf := "yadif=mode=0:parity=-1:deint=1,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=" + pix
 	br := s.p.Bitrate
 	if br <= 0 {
 		br = hlsDefaultBitrate
@@ -356,9 +384,11 @@ func (s *hlsSess) args(idx int, hw bool) []string {
 		a = append(a, "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-level", "4.1",
 			"-b:v", rate, "-maxrate", rate, "-bufsize", strconv.Itoa(br*2), "-sc_threshold", "0")
 	}
+	a = append(a, "-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", hlsSegSec))
+	if !s.noAudio {
+		a = append(a, "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-af", "aresample=async=1")
+	}
 	a = append(a,
-		"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", hlsSegSec),
-		"-c:a", "aac", "-b:a", "160k", "-ac", "2", "-af", "aresample=async=1",
 		"-output_ts_offset", strconv.Itoa(idx*hlsSegSec),
 		"-f", "hls", "-hls_time", strconv.Itoa(hlsSegSec), "-hls_list_size", "0", "-hls_segment_type", "mpegts",
 		"-start_number", strconv.Itoa(idx), "-hls_flags", "independent_segments+temp_file",
@@ -420,20 +450,27 @@ func (s *hlsSess) launchLocked(idx int, hw bool) error {
 		s.mu.Lock()
 		s.lastErr = msg
 		s.mu.Unlock()
-		if hw && !fileExists(s.segFile(idx)) { // 硬件编码没跑起来(驱动 / 核显不可用):以后改用软编,并立即重试
+		if !fileExists(s.segFile(idx)) { // 一段都没转出来:换一种方式重试(只影响这个文件)
 			s.mu.Lock()
-			next := false
-			if s.p.Codec == "h265" { // H.265 硬编失败:以后 h265 请求都退回 h264(能硬编就继续硬编)
-				s.h.log.Warn("H.265 QSV 转码失败,退回 H.264", "err", msg)
-				s.h.hevcBad.Store(true)
+			switch {
+			case hw && s.p.Codec == "h265": // H.265 硬编失败:这个会话退回 H.264(能硬编就继续硬编),并核对一下 hevc_qsv 是不是真的坏了
+				s.h.log.Warn("H.265 QSV 转码失败,这个视频退回 H.264", "id", s.p.MediaID, "err", msg)
 				s.p.Codec = "h264"
-				next = s.h.hwEnabled()
-			} else {
-				s.h.log.Warn("QSV 转码失败,改用软件编码", "err", msg)
-				s.h.qsvBad.Store(true)
+				go s.h.recheckHW("hevc_qsv")
+			case hw:
+				s.h.log.Warn("QSV 转码失败,这个视频改用软件编码", "id", s.p.MediaID, "err", msg)
+				s.forceSW = true
+				go s.h.recheckHW("h264_qsv")
+			case !s.noAudio:
+				s.h.log.Warn("转码失败,去掉音频再试", "id", s.p.MediaID, "err", msg)
+				s.noAudio = true
+			default:
+				s.h.log.Warn("转码失败(已试过硬编、软编、无音频)", "id", s.p.MediaID, "seg", idx, "err", msg)
+				s.mu.Unlock()
+				return
 			}
 			if s.cmd == nil {
-				_ = s.launchLocked(idx, next)
+				_ = s.launchLocked(idx, s.hwFor())
 			}
 			s.mu.Unlock()
 			return
@@ -497,6 +534,9 @@ func (s *hlsSess) ensure(idx int, evict bool) error {
 
 // hwFor 这个会话该不该用 QSV:h265 看 hevc_qsv,h264 看 h264_qsv。
 func (s *hlsSess) hwFor() bool {
+	if s.forceSW {
+		return false
+	}
 	if s.p.Codec == "h265" {
 		return s.h.hevcHW()
 	}
@@ -534,15 +574,34 @@ func (s *hlsSess) waitSeg(ctx context.Context, idx int) bool {
 }
 
 func probeDurationMs(ffprobe, path string) int64 {
-	out, err := proc.Hide(exec.Command(ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path)).Output()
-	if err != nil {
+	out, err := proc.Hide(exec.Command(ffprobe, "-v", "error", "-show_entries", "format=duration:stream=duration:stream_tags=DURATION", "-of", "default=nw=1:nk=1", path)).Output()
+	if err != nil && len(out) == 0 {
 		return 0
 	}
-	f, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-	if err != nil || f <= 0 {
+	var best float64
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "N/A" {
+			continue
+		}
+		var f float64
+		if v, err := strconv.ParseFloat(line, 64); err == nil {
+			f = v
+		} else if strings.Count(line, ":") == 2 { // mkv 的 DURATION 标签:00:12:34.567000000
+			p := strings.Split(line, ":")
+			h, _ := strconv.ParseFloat(p[0], 64)
+			m, _ := strconv.ParseFloat(p[1], 64)
+			sec, _ := strconv.ParseFloat(p[2], 64)
+			f = h*3600 + m*60 + sec
+		}
+		if f > best {
+			best = f
+		}
+	}
+	if best <= 0 {
 		return 0
 	}
-	return int64(f * 1000)
+	return int64(best * 1000)
 }
 
 // builtinHLS 用内置 ffmpeg 响应 /hls/ 下的请求(播放列表与段)。
@@ -620,7 +679,8 @@ func (s *Server) builtinHLS(w http.ResponseWriter, r *http.Request, id, durMs in
 		sess.mu.Lock()
 		msg := sess.lastErr
 		sess.mu.Unlock()
-		writeErr(w, 502, "transcode.failed", "转码失败:"+firstLine(msg))
+		s.Log.Warn("转码失败,返回给手机", "id", id, "seg", idx, "bitrate", p.Bitrate, "codec", p.Codec, "file", full, "err", msg)
+		writeErr(w, 502, "transcode.failed", "转码失败:"+ffmpegReason(msg))
 		return
 	}
 	f, err := os.Open(sess.segFile(idx))

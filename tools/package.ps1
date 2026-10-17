@@ -2,6 +2,8 @@
 #   powershell -File tools\package.ps1                 # 全部
 #   powershell -File tools\package.ps1 -SkipAndroid    # 只打服务端 / 桌面端(便携版)
 #   powershell -File tools\package.ps1 -SkipDesktop    # 只打安卓端
+#   powershell -File tools\package.ps1 -Both -SkipTests   # 一次出两套:自己用的(带 Lossless.dll,放 dist\)和发布用的(放 dist\release\),桌面端只编译一次
+# 桌面端(Rust)、Android、Go 三条编译互不依赖,会同时跑;Android 的第二套(带 DLL)只重新打包,不重新编译 Kotlin。
 # 前提:已运行过 tools\setup.ps1(便携工具链),signing\ 下有 Android 发布密钥(没有则用调试签名)。
 param(
   [string]$Version = '1.3.0',          # 手机端(APK)版本号
@@ -9,9 +11,12 @@ param(
   [switch]$SkipAndroid,
   [switch]$SkipDesktop,
   [switch]$SkipTests,
-  [switch]$Release                    # 发布到 GitHub 用:APK 不内置 Lossless.dll(版权),另出自动更新用的 -update.zip,产物放 dist\release\
+  [switch]$Release,                   # 发布到 GitHub 用:APK 不内置 Lossless.dll(版权),另出自动更新用的 -update.zip,产物放 dist\release\
+  [switch]$Both                       # 自用版和发布版一次打完(桌面端只编译一次)
 )
 $ErrorActionPreference = 'Stop'
+if ($Both) { $Release = $true }
+$Personal = (-not $Release) -or $Both   # 要不要出自用版(带 Lossless.dll,放 dist\)
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 if (-not $ServerVersion) { $ServerVersion = (Get-Content (Join-Path $Root 'desktop\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version }
@@ -32,6 +37,47 @@ function Copy-Tree($from, $to) {
   & robocopy $from $to /E /NFL /NDL /NJH /NJS /NP | Out-Null
   if ($LASTEXITCODE -ge 8) { throw "robocopy 失败: $from" }
   $global:LASTEXITCODE = 0
+}
+
+# ---------------------------------------------------------------- 并行启动桌面端和 Android(和下面的 Go 编译同时跑)
+function Show-Job($name, $job) {
+  $out = Receive-Job $job -Wait -AutoRemoveJob 2>&1 | ForEach-Object { "$_" }
+  $out | Where-Object { $_ -notmatch '^EXIT=' } | Select-Object -Last 40 | ForEach-Object { Write-Host "  [$name] $_" }
+  $code = ($out | Where-Object { $_ -match '^EXIT=' } | Select-Object -Last 1)
+  if ($code -ne 'EXIT=0') { throw "$name 构建失败(见上面的输出)" }
+}
+$jobTauri = $null; $jobAndroid = $null
+if (-not $SkipDesktop) {
+  Step '后台启动:构建桌面管理程序 (Tauri,只编译,不生成安装包)'
+  $jobTauri = Start-Job -Name tauri -ArgumentList (Join-Path $Root 'desktop') -ScriptBlock {
+    param($dir)
+    Set-Location $dir
+    if (-not (Test-Path 'node_modules')) { & npm install --no-audit --no-fund 2>&1 }
+    & npx tauri build --no-bundle 2>&1
+    "EXIT=$LASTEXITCODE"
+  }
+}
+if (-not $SkipAndroid) {
+  Step '后台启动:构建 Android APK'
+  $jobAndroid = Start-Job -Name android -ArgumentList $Root, $Dist, $RelDir, $Version, [bool]$Release, [bool]$Personal -ScriptBlock {
+    param($Root, $Dist, $RelDir, $Version, $Release, $Personal)
+    $ErrorActionPreference = 'Stop'
+    $dll = Join-Path $Root 'android\app\src\main\assets\lsfg\Lossless.dll'
+    $dllHold = Join-Path $Dist 'Lossless.dll.hold'
+    $apk = Join-Path $Root 'android\app\build\outputs\apk\release\app-release.apk'
+    function Build { & powershell -NoProfile -File (Join-Path $Root 'tools\build-android.ps1') ':app:assembleRelease' 2>&1; if ($LASTEXITCODE -ne 0) { throw 'Android 构建失败' } }
+    try {
+      if ($Release) {
+        # 发布到 GitHub(公开仓库)的 APK 不能带 Lossless.dll(版权,只能自己用):构建期间把它临时挪走,构建完(无论成败)放回去
+        $moved = $false
+        if (Test-Path -LiteralPath $dll) { Move-Item -LiteralPath $dll -Destination $dllHold -Force; $moved = $true; '发布版:本次构建不包含 Lossless.dll' }
+        try { Build; Copy-Item $apk (Join-Path $RelDir "LocalBrowse-$Version.apk") -Force }
+        finally { if ($moved) { Move-Item -LiteralPath $dllHold -Destination $dll -Force } }
+      }
+      if ($Personal) { Build; Copy-Item $apk (Join-Path $Dist "LocalBrowse-$Version.apk") -Force }
+      'EXIT=0'
+    } catch { "失败:$_"; 'EXIT=1' }
+  }
 }
 
 # ---------------------------------------------------------------- 服务端 + 工具(暂存)
@@ -78,12 +124,8 @@ if (Test-Path (Join-Path $Root 'tools\frp\LICENSE')) { Copy-Item (Join-Path $Roo
 
 # ---------------------------------------------------------------- 桌面端
 if (-not $SkipDesktop) {
-  Step '构建桌面管理程序 (Tauri,只编译,不生成安装包)'
-  Push-Location (Join-Path $Root 'desktop')
-  if (-not (Test-Path 'node_modules')) { & npm install --no-audit --no-fund }
-  & npx tauri build --no-bundle
-  if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'tauri build 失败' }
-  Pop-Location
+  Step '等待桌面管理程序编译完成'
+  Show-Job 'tauri' $jobTauri
 
   $rel = Join-Path $env:CARGO_TARGET_DIR 'release'
 
@@ -114,21 +156,8 @@ if (-not $SkipDesktop) {
 
 # ---------------------------------------------------------------- 安卓端
 if (-not $SkipAndroid) {
-  Step '构建 Android 发布版 APK'
-  # 发布到 GitHub(公开仓库)的 APK 不能带 Lossless.dll(版权,只能自己用):构建期间把它临时挪走,构建完(无论成败)放回去
-  $dll = Join-Path $Root 'android\app\src\main\assets\lsfg\Lossless.dll'
-  $dllHold = Join-Path $Dist 'Lossless.dll.hold'
-  $moved = $false
-  if ($Release -and (Test-Path -LiteralPath $dll)) { Move-Item -LiteralPath $dll -Destination $dllHold -Force; $moved = $true; Write-Host '  发布版:本次构建不包含 Lossless.dll' }
-  try {
-    & powershell -NoProfile -File (Join-Path $Root 'tools\build-android.ps1') ':app:assembleRelease'
-    if ($LASTEXITCODE -ne 0) { throw 'Android 构建失败' }
-  } finally {
-    if ($moved) { Move-Item -LiteralPath $dllHold -Destination $dll -Force }
-  }
-  $apk = Join-Path $Root 'android\app\build\outputs\apk\release\app-release.apk'
-  if ($Release) { Copy-Item $apk (Join-Path $RelDir "LocalBrowse-$Version.apk") -Force }
-  else { Copy-Item $apk (Join-Path $Dist "LocalBrowse-$Version.apk") -Force }
+  Step '等待 Android 构建完成'
+  Show-Job 'android' $jobAndroid
 }
 
 # ---------------------------------------------------------------- 收尾

@@ -83,7 +83,14 @@ class DialogsViewModel(private val c: AppContainer) : ViewModel() {
                 var cursor: String? = null
                 val all = mutableListOf<Dialog>()
                 do {
-                    val r = c.api.dialogs(cursor = cursor, limit = 100)
+                    val r = c.api.dialogs(cursor = cursor, limit = 100, onCached = { cached ->
+                        // 先显示上次的列表(只对第一页、且网络结果还没来):打开应用 / 切回来时不用等网络
+                        if (cursor == null && all.isEmpty() && dialogs.value.isEmpty()) {
+                            dialogs.value = cached.dialogs
+                            c.dialogCache = c.dialogCache + cached.dialogs.associateBy { it.id }
+                            loading.value = false
+                        }
+                    })
                     all += r.dialogs
                     dialogs.value = all.toList() // 每取到一页就更新,列表渐进出现
                     c.dialogCache = c.dialogCache + r.dialogs.associateBy { it.id } // 缓存也同步更新:加载没完就点进去,标题也要能取到

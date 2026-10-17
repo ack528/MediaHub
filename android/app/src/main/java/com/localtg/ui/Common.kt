@@ -124,7 +124,7 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
                 .build()
             AsyncImage(
                 model = req, contentDescription = item.name, contentScale = ContentScale.Crop,
-                placeholder = ColorPainter(Color(0x22888888)), modifier = Modifier.fillMaxSize(),
+                placeholder = thumbHashPainter(item), modifier = Modifier.fillMaxSize(),
                 onError = { if (!useOrig && api.isThumbUrl(url)) useOrig = true else failed = true }, onSuccess = { failed = false },
             )
             if (failed && loadEnabled) BrokenTile("预览不可用", Modifier.fillMaxSize(), compact = true)

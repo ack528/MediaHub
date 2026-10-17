@@ -21,3 +21,6 @@ func Background(c *exec.Cmd) *exec.Cmd { return c }
 func Suspend(pid int) error                   { return nil }
 func Resume(pid int) error                    { return nil }
 func SetLowPriority(pid int, idle bool) error { return nil }
+
+// LockFile 在非 Windows 平台不做任何事(开发 / 测试用)。
+func LockFile(path string) (release func(), err error) { return func() {}, nil }

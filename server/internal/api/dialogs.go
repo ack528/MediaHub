@@ -234,7 +234,7 @@ func (s *Server) listDialogs(w http.ResponseWriter, r *http.Request) {
 		out = []Dialog{}
 	}
 	resp["dialogs"] = out
-	writeJSON(w, 200, resp)
+	writeJSONETag(w, r, resp)
 }
 
 // rowsWithExtra 把额外的排序键列拼到 Scan 的末尾。
@@ -299,7 +299,7 @@ func (s *Server) listTopics(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, d)
 	}
-	writeJSON(w, 200, map[string]any{"dialogs": out})
+	writeJSONETag(w, r, map[string]any{"dialogs": out})
 }
 
 func (s *Server) putDialogState(w http.ResponseWriter, r *http.Request) {

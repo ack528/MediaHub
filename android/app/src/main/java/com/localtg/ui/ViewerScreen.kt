@@ -82,6 +82,18 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
         androidx.compose.runtime.snapshotFlow { pager.settledPage }.collect { if (first) first = false else hapV.perform(Hap.Tick) }
     }
     // 记住了转码画质:在看当前这一项时,让服务端提前把相邻两个视频的开头转好(切过去几乎秒开)。预热失败 / 服务端不支持都没有影响。
+    // 直接播放的邻近视频:提前把开头几 MB 缓存到手机上(设置 → 视频缓存;只在不计流量的网络下),切过去几乎秒开
+    val prefetchCtx = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(pager.settledPage, cfg.videoCacheMb) {
+        if (cfg.videoCacheMb <= 0 || c.isLocal) return@LaunchedEffect
+        kotlinx.coroutines.delay(1200)
+        val page = pager.settledPage
+        for (d in intArrayOf(1, -1)) {
+            val n = items.getOrNull(page + d) ?: continue
+            if (!n.isVideo || n.brokenLabel() != null || rememberedTranscode(c, n) != null) continue
+            VideoCache.prefetch(prefetchCtx, c, c.api.fileUrl(n))
+        }
+    }
     LaunchedEffect(pager.settledPage, cfg.playerQuality, cfg.rememberPlayback, cfg.playerCodec) {
         if (!cfg.rememberPlayback || cfg.playerQuality <= 0 || c.isLocal || !c.api.caps.hlsPrepare) return@LaunchedEffect
         kotlinx.coroutines.delay(800) // 快速连续翻页时别每一页都预热

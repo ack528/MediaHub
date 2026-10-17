@@ -397,6 +397,9 @@ func (s *Server) random(w http.ResponseWriter, r *http.Request) {
 		items, err = s.itemsByID(r.Context(), ids)
 	}
 	if err != nil {
+		if r.Context().Err() != nil { // 手机取消了请求(翻页太快 / 切走了):不是服务端的错,不记错误、不回 500
+			return
+		}
 		s.Log.Error("random", "err", err)
 		writeErr(w, 500, "internal", "查询失败")
 		return

@@ -48,7 +48,8 @@ class RouteInterceptor(private val canonical: () -> String?) : Interceptor {
         if (route == null || base == null || !url.startsWith(base)) return chain.proceed(req)
         val rewritten = (route.trimEnd('/') + url.substring(base.length)).toHttpUrlOrNull() ?: return chain.proceed(req)
         try {
-            return chain.proceed(req.newBuilder().url(rewritten).build())
+            // 响应里的 request 还原成原地址:ExoPlayer(HLS)按播放列表的地址解析相对的分段地址,不能让它看到内网地址
+            return chain.proceed(req.newBuilder().url(rewritten).build()).let { it.newBuilder().request(req).build() }
         } catch (e: IOException) {
             if (chain.call().isCanceled() || !Route.isConnectFailure(e)) throw e
             // 内网地址连不上:退回原地址,这个请求用原地址再来一次(请求体只能发一次的不重试)

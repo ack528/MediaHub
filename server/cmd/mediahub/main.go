@@ -46,7 +46,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "3.1.1"
+const version = "3.2.0"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -177,6 +177,31 @@ func run(args []string, serve bool) int {
 		fmt.Fprintln(os.Stderr, "配置错误:", err)
 		return 1
 	}
+	// 同一个数据目录只允许一个服务进程:以前重复启动(更新重启的间隙、手动又点了一次)会让两个进程抢管理端口和数据库,
+	// 日志里出现过"管理端口被占用"和"database is locked"。新进程等旧进程退出最多 20 秒,等不到就退出。
+	if serve {
+		var release func()
+		var lerr error
+		for i := 0; i < 40; i++ {
+			if release, lerr = proc.LockFile(filepath.Join(cfg.DataDir, "mediahub.lock")); lerr == nil {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if lerr != nil {
+			log.Error("已经有另一个 MediaHub 服务在使用这个数据目录,本次启动退出(先在管理程序里停止旧的服务)", "dir", cfg.DataDir, "err", lerr)
+			return 3
+		}
+		defer release()
+	}
+	// 管理程序登记了"用某份备份还原":在打开数据库之前换文件(现在的库留底为 hub.sqlite.before-restore)
+	if serve {
+		if name, err := store.ApplyPendingRestore(cfg.DataDir); err != nil {
+			log.Error("数据库还原失败,继续使用现有的库", "err", err)
+		} else if name != "" {
+			log.Warn("数据库已用备份还原", "backup", name)
+		}
+	}
 	db, err := store.OpenMigrated(filepath.Join(cfg.DataDir, "hub.sqlite"))
 	if err != nil {
 		log.Error("打开数据库失败", "err", err)
@@ -269,6 +294,7 @@ func run(args []string, serve bool) int {
 	}
 	// first = 本次启动后的第一轮:被中断的扫描续扫,近期已完整扫描过的根目录直接跳过;之后的定时 / 手动扫描总是执行
 	scanOne := func(r index.Root, first bool) bool {
+		defer ix.LockRoot(r.ID)() // 和增量索引互斥:同一个根目录同一时间只做一件事
 		skipAge := time.Duration(cfg.Scan.SkipWithinHours) * time.Hour
 		skipped := first && (r.Reused || !ix.ScanDue(r, skipAge))
 		if skipped {
@@ -302,12 +328,56 @@ func run(args []string, serve bool) int {
 		if n := poster.Warm(ctx, r.ID); n > 0 {
 			log.Info("封面预热完成", "root", r.Path, "videos", n)
 		}
+		if n := poster.WarmPhotos(ctx, r.ID); n > 0 { // 图片的模糊占位图数据(滑动时先显示色块轮廓)
+			log.Info("图片占位图预热完成", "root", r.Path, "photos", n)
+		}
 		return true
 	}
 	// 升级后 / 启动后先把对话计数整理一遍,手机马上看到正确的列表(不用等扫描)
 	for _, r := range roots {
 		if err := ix.Finalize(r.ID); err != nil {
 			log.Warn("整理对话计数失败", "root", r.Path, "err", err)
+		}
+	}
+	// 实时增量索引:监视每个根目录的文件变化,几秒后把变化反映到索引里(第一轮扫描 / 续扫过去之后才开始)
+	if serve && cfg.Scan.Watch {
+		for _, r := range roots {
+			rr := r
+			logx.Go("目录监视 "+rr.Path, func() {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(90 * time.Second):
+				}
+				err := ix.Watch(ctx, rr, func() func() { return ix.LockRoot(rr.ID) }, index.WatchOptions{
+					Full: func() { // 一下子变化太多 / 通知缓冲区溢出:改做一次整盘扫描
+						select {
+						case triggers[rr.ID] <- struct{}{}:
+						default:
+						}
+					},
+					After: func(changed bool) {
+						if !changed {
+							return
+						}
+						unlock := ix.LockRoot(rr.ID)
+						defer unlock()
+						if err := ix.Enrich(ctx, rr); err != nil && !errors.Is(err, context.Canceled) {
+							log.Warn("增量索引后补全元数据失败", "root", rr.Path, "err", err)
+						}
+						syncJF()
+						if n := poster.Warm(ctx, rr.ID); n > 0 {
+							log.Debug("增量索引后封面预热", "root", rr.Path, "videos", n)
+						}
+						poster.WarmPhotos(ctx, rr.ID)
+					},
+				})
+				if err != nil {
+					log.Info("这个根目录的变更监视不可用(网络盘 / 权限?),只用定时扫描", "root", rr.Path, "err", err)
+				} else {
+					log.Info("目录变更监视已启动", "root", rr.Path)
+				}
+			})
 		}
 	}
 	for _, r := range roots {
@@ -372,7 +442,7 @@ func run(args []string, serve bool) int {
 
 	srv := &api.Server{AdminKey: adminKey, StartedAt: time.Now(),
 		DB: db, Cfg: cfg, Auth: auth.New(db, cfg.Auth.TokenDays), Idx: ix, Cache: cm,
-		Poster: poster, Render: api.NewRenderer(db, cfg, cm), HLS: api.NewHLS(cfg, log), JF: jf, Log: log, Version: version, LoginDelay: time.Second, Gov: gov,
+		Poster: poster, Render: api.NewRenderer(db, cfg, cm), HLS: api.NewHLS(cfg, log), JF: jf, Log: log, Version: version, LoginDelay: 0, LoginLock: time.Duration(cfg.Auth.LoginLockSec) * time.Second, Gov: gov,
 		Rescan: func(id int64) {
 			for rid, ch := range triggers {
 				if id == 0 || id == rid {
@@ -393,8 +463,10 @@ func run(args []string, serve bool) int {
 		logx.Go("自动更新", func() { srv.Update.Run(ctx) })
 	}
 	srv.WarmRandom(ctx)
+	srv.Render.Gov = gov // 播放 / 传输期间图片转换最多 2 路同时
 	srv.StartOptimizeWorker(ctx) // 存储优化:视频压缩队列(没有任务时什么都不做)
 	srv.StartClients(ctx)        // 客户端连接追踪:速度采样、过期清理
+	go dbMaintenance(ctx, db, cfg.DataDir, log) // 数据库:PRAGMA optimize + 每日自动备份
 	// 内网穿透:托管 frpc / 自定义穿透客户端(配置了才启动),掉线自动重连,定期探测外网地址
 	if cfg.Tunnel.Enabled {
 		port := 8480

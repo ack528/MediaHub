@@ -175,6 +175,7 @@ class App : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
         com.localtg.data.ClientInfo.init(this)
+        com.localtg.data.ApiDiskCache.init(this)
         container = AppContainer(this)
         com.localtg.render.Assets.app = applicationContext
         // 网络监听:断网时请求等网络回来;默认网络切换时清掉旧连接、取消卡在旧网络上的接口请求(接口请求会自动重试)

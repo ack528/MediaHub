@@ -6,18 +6,21 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"mediahub/internal/winfs"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"mediahub/internal/cache"
 	"mediahub/internal/config"
+	"mediahub/internal/governor"
 	"mediahub/internal/proc"
+	"mediahub/internal/winfs"
 )
 
 // 手机无法直接显示(或显示不可靠)的图片格式,由服务端转成 JPEG:
@@ -60,11 +63,51 @@ type Renderer struct {
 	db    *sql.DB
 	cfg   *config.Config
 	cache *cache.Manager
-	sem   chan struct{} // 同时转换的张数,避免把 NAS 的 CPU 占满
+	sem   chan struct{} // 同时转换的张数上限(随 CPU 核数,2 ~ 6),避免把 NAS 的 CPU 占满
+	// Gov:有客户端在播放 / 传输(Streaming)时同时转换的张数降到 2,让带宽和 CPU 留给视频流;可为空
+	Gov    *governor.Governor
+	active atomic.Int32
 }
 
 func NewRenderer(db *sql.DB, cfg *config.Config, cm *cache.Manager) *Renderer {
-	return &Renderer{db: db, cfg: cfg, cache: cm, sem: make(chan struct{}, 2)}
+	// 以前固定 2 张:第一次打开一个几千张照片的相册,缩略图一张张排队,滑动时大片灰块。每张图是一个独立的 ffmpeg 进程(单线程解码),核数多就应该并行
+	n := runtime.NumCPU() / 2
+	if n < 2 {
+		n = 2
+	}
+	if n > 6 {
+		n = 6
+	}
+	return &Renderer{db: db, cfg: cfg, cache: cm, sem: make(chan struct{}, n)}
+}
+
+// acquire 拿一个转换名额。播放 / 传输期间(governor 的 Streaming 级别)最多 2 张同时转,其余排队。
+func (rd *Renderer) acquire(ctx context.Context) (release func(), err error) {
+	select {
+	case rd.sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	for rd.Gov != nil && rd.Gov.Level() == governor.Streaming && rd.active.Load() >= 2 {
+		select {
+		case <-ctx.Done():
+			<-rd.sem
+			return nil, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	rd.active.Add(1)
+	return func() { rd.active.Add(-1); <-rd.sem }, nil
+}
+
+// lowresFor JPEG 的"缩小解码":MJPEG 解码器可以在 DCT 阶段直接按 1/2、1/4、1/8 解出小图,解码量降到 1/4 ~ 1/64,
+// 再缩放到目标尺寸(质量和先全尺寸解码再缩小几乎一样)。选最大的 k,使解出来的长边仍然 >= 目标尺寸。0 = 不用。
+func lowresFor(longEdge, target int) int {
+	k := 0
+	for k < 3 && target > 0 && (longEdge>>(k+1)) >= target {
+		k++
+	}
+	return k
 }
 
 // Render 返回转换后的 JPEG 路径(没有则生成)。
@@ -83,12 +126,11 @@ func (rd *Renderer) Render(ctx context.Context, mediaID int64, w int) (string, e
 	if p, ok := rd.cache.Exists(rootID, kind, mediaID, "jpg"); ok {
 		return p, nil
 	}
-	select {
-	case rd.sem <- struct{}{}:
-		defer func() { <-rd.sem }()
-	case <-ctx.Done():
-		return "", ctx.Err()
+	release, aerr := rd.acquire(ctx)
+	if aerr != nil {
+		return "", aerr
 	}
+	defer release()
 	if p, ok := rd.cache.Exists(rootID, kind, mediaID, "jpg"); ok { // 排队期间别的请求可能已经生成了
 		return p, nil
 	}
@@ -116,8 +158,8 @@ func (rd *Renderer) Render(ctx context.Context, mediaID int64, w int) (string, e
 func (rd *Renderer) RenderThumb(ctx context.Context, mediaID int64, w int) (string, error) {
 	var rootID int64
 	var ext string
-	var typ int
-	if err := rd.db.QueryRow(`SELECT root_id, ext, type FROM media WHERE id=?`, mediaID).Scan(&rootID, &ext, &typ); err != nil {
+	var typ, sw, sh int
+	if err := rd.db.QueryRow(`SELECT root_id, ext, type, COALESCE(w,0), COALESCE(h,0) FROM media WHERE id=?`, mediaID).Scan(&rootID, &ext, &typ, &sw, &sh); err != nil {
 		return "", err
 	}
 	ext = strings.ToLower(ext)
@@ -129,12 +171,11 @@ func (rd *Renderer) RenderThumb(ctx context.Context, mediaID int64, w int) (stri
 	if p, ok := rd.cache.Exists(rootID, kind, mediaID, "webp"); ok {
 		return p, nil
 	}
-	select {
-	case rd.sem <- struct{}{}:
-		defer func() { <-rd.sem }()
-	case <-ctx.Done():
-		return "", ctx.Err()
+	release, aerr := rd.acquire(ctx)
+	if aerr != nil {
+		return "", aerr
 	}
+	defer release()
 	if p, ok := rd.cache.Exists(rootID, kind, mediaID, "webp"); ok {
 		return p, nil
 	}
@@ -146,8 +187,13 @@ func (rd *Renderer) RenderThumb(ctx context.Context, mediaID int64, w int) (stri
 		cctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		vf := fmt.Sprintf("scale='if(gt(iw,ih),min(%d,iw),-2)':'if(gt(iw,ih),-2,min(%d,ih))',format=yuv420p", w, w)
-		cmd := exec.CommandContext(cctx, rd.cfg.Tools.FFmpeg, "-hide_banner", "-v", "error", "-y", "-i", src,
-			"-frames:v", "1", "-vf", vf, "-c:v", "libwebp", "-quality", "76", "-compression_level", "4", "-f", "webp", tmp)
+		args := []string{"-hide_banner", "-v", "error", "-y"}
+		if k := lowresFor(max(sw, sh), w); k > 0 && (ext == "jpg" || ext == "jpeg" || ext == "jpe" || ext == "jfif") {
+			args = append(args, "-lowres", strconv.Itoa(k))
+		}
+		// compression_level 2(原来 4):编码更快,体积差不到 2%
+		args = append(args, "-i", src, "-frames:v", "1", "-vf", vf, "-c:v", "libwebp", "-quality", "76", "-compression_level", "2", "-f", "webp", tmp)
+		cmd := exec.CommandContext(cctx, rd.cfg.Tools.FFmpeg, args...)
 		proc.Hide(cmd)
 		var errb bytes.Buffer
 		cmd.Stderr = &errb

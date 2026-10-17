@@ -16,10 +16,12 @@ interface ClientView {
   nowKind?: string; nowName?: string; nowDetail?: string; nowMediaId?: number;
 }
 interface BgView { name: string; state: string; note?: string }
+interface LoginLock { remainingSec: number; failures: number; lockSec: number; recent: { at: number; ip: string; user: string; device: string }[] }
 interface ClientsResp {
   clients: ClientView[]; online: number; rateBps: number; bytesOut: number;
   governor: { enabled: boolean; level: "idle" | "active" | "streaming" | string; activeWindowSec: number; idleForSec: number; streams: number; throttledMs: number; yields: number; pauseCompress: boolean };
   background: BgView[];
+  loginLock?: LoginLock;
 }
 
 type Tone = "gray" | "green" | "blue" | "orange" | "red";
@@ -109,6 +111,20 @@ export function Clients({ tab }: { tab: string }) {
           <Row icon="clock" title="让路统计" desc={`距离上次客户端请求 ${g.idleForSec} 秒${g.level === "idle" ? "" : `;${g.activeWindowSec} 秒内没有新请求就会恢复全速`} · 后台任务累计让出 ${(g.throttledMs / 1000).toFixed(0)} 秒、${g.yields} 次`} />
         )}
       </Card>
+
+      {r.loginLock && (
+        <Card icon="shield" title="登录保护"
+              extra={r.loginLock.remainingSec > 0 ? <Btn icon="refresh" onClick={async () => { try { await bridge.admin("POST", "/api/v1/admin/login-lock/clear"); toast("已解除锁定"); } catch (e) { toast(String(e), "err"); } load(); }}>解除锁定</Btn> : undefined}>
+          <Row icon="key" title="全局锁定" desc={r.loginLock.lockSec > 0
+            ? `任何设备登录失败后,所有设备 ${r.loginLock.lockSec} 秒内都不能再验证密码(已登录的设备不受影响)。累计失败 ${r.loginLock.failures} 次。`
+            : "没有开启(账号安全 → 登录里设置锁定秒数)。"}>
+            <Badge tone={r.loginLock.remainingSec > 0 ? "red" : "green"}>{r.loginLock.remainingSec > 0 ? `锁定中 · 还剩 ${r.loginLock.remainingSec} 秒` : "正常"}</Badge>
+          </Row>
+          {r.loginLock.recent.slice().reverse().slice(0, 8).map((f) => (
+            <Row key={f.at + f.ip + f.user} icon="alert" title={`${fmtTime(f.at)} 登录失败`} desc={`账号「${f.user || "—"}」· 设备「${f.device || "—"}」· 来源 ${f.ip}`} />
+          ))}
+        </Card>
+      )}
 
       <Card icon="link" title="客户端" count={clients.length}>
         {clients.length === 0 && <Row icon="info" title="还没有设备登录过" desc="手机登录后会出现在这里。" />}

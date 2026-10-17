@@ -1,0 +1,20 @@
+# Baseline Profile(手写版):告诉系统安装时就把这些类和方法预编译成机器码,冷启动和第一次滑动不用先解释执行 / 即时编译。
+# 通配符覆盖本应用自己的代码和启动 / 浏览 / 播放路径用到的库。后面可以用 Macrobenchmark 在真机上录一份更精确的替换它。
+HSPLcom/localtg/**->**(**)**
+Lcom/localtg/**;
+HSPLandroidx/compose/runtime/**->**(**)**
+HSPLandroidx/compose/ui/**->**(**)**
+HSPLandroidx/compose/foundation/**->**(**)**
+HSPLandroidx/compose/material3/**->**(**)**
+HSPLandroidx/lifecycle/**->**(**)**
+HSPLandroidx/activity/**->**(**)**
+HSPLandroidx/paging/**->**(**)**
+HSPLandroidx/datastore/**->**(**)**
+HSPLcoil3/**->**(**)**
+HSPLokhttp3/**->**(**)**
+HSPLokio/**->**(**)**
+HSPLkotlinx/coroutines/**->**(**)**
+HSPLkotlinx/serialization/**->**(**)**
+HSPLandroidx/media3/exoplayer/**->**(**)**
+HSPLandroidx/media3/common/**->**(**)**
+HSPLandroidx/media3/datasource/**->**(**)**

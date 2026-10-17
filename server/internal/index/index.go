@@ -112,6 +112,8 @@ type Indexer struct {
 	progress map[int64]*Progress
 	order    map[int64]int // 根目录在配置里的顺序,进度列表按它排,不会乱动
 	exclude  map[string]bool
+	// rootLocks:同一个根目录的整盘扫描和增量扫描互斥(见 LockRoot)
+	rootLocks map[int64]chan struct{}
 }
 
 func New(db *sql.DB, cfg *config.Config, log *slog.Logger) *Indexer {

@@ -81,6 +81,11 @@ export const ITEMS: Item[] = [
     ...at("scan.intervalHours"),
   },
   {
+    id: "scanWatch", page: "library", tab: "扫描与过滤", icon: "refresh", kind: "switch", restart: true,
+    title: "实时增量索引", desc: "监视文件夹的变化:新拷进来、删除、改名的文件几秒后就自动出现在手机上,不用等定时扫描或手动重扫。定时扫描仍然保留作为兜底。网络盘等无法监视的会自动只用定时扫描。",
+    ...at("scan.watch"),
+  },
+  {
     id: "exclude", page: "library", tab: "扫描与过滤", icon: "tag", kind: "tags", restart: true,
     title: "排除的文件夹/文件名", desc: "名称完全匹配(不区分大小写)的文件夹和文件不会被索引。缓存目录 .mediahub 必须保留。",
     ...at("exclude"), placeholder: "输入名称后回车添加",
@@ -173,6 +178,27 @@ export const ITEMS: Item[] = [
     id: "tokenDays", page: "accounts", tab: "登录", icon: "clock", kind: "number", unit: "天", min: 1, max: 3650, restart: true,
     title: "登录有效期", desc: "手机登录后保持登录的天数,使用中会自动顺延。",
     ...at("auth.tokenDays"),
+  },
+  {
+    id: "loginLock", page: "accounts", tab: "登录", icon: "shield", kind: "number", unit: "秒", min: 0, max: 3600, restart: true,
+    title: "登录失败后的全局锁定", desc: "任何一台设备(任何 IP、任何账号)登录失败后,所有设备在这么多秒内都不能再验证密码,锁定期间直接拒绝、不做密码计算。已经登录的设备不受影响。服务能从公网访问时用来防爆破。0 = 不锁定。",
+    ...at("auth.loginLockSec"),
+  },
+  // ---- 存储优化 / 视频压缩
+  {
+    id: "optAuto", page: "optimize", tab: "视频压缩", icon: "check", kind: "switch", restart: true,
+    title: "校验通过后自动替换原文件", desc: "压缩完成后自动检查:时长一致、视频流和音轨齐全、开头 / 中间 / 结尾都能完整解码 —— 全部通过就当作能正常播放,直接用压缩版替换原文件(原文件先移进回收区,可还原)。关闭 = 压缩完成后等你手动点「替换」。",
+    ...at("optimize.autoReplace"),
+  },
+  {
+    id: "optPurge", page: "optimize", tab: "视频压缩", icon: "trash", kind: "switch", restart: true,
+    title: "替换后立刻永久删除原文件", desc: "省空间最彻底,但没有后悔药。关闭时原文件留在回收区,到期自动清理(见下一项)。",
+    ...at("optimize.purgeOriginal"),
+  },
+  {
+    id: "optKeep", page: "optimize", tab: "视频压缩", icon: "clock", kind: "number", unit: "天", min: 0, max: 365, restart: true,
+    title: "回收区里被替换的原文件保留多久", desc: "「压缩替换」产生的原文件在回收区放这么多天后自动永久删除,释放空间。0 = 永不自动删除(手动清空回收区)。手动删除重复文件产生的回收批次不受影响。",
+    ...at("optimize.trashKeepDays"),
   },
 
   // ---- 网络
@@ -370,12 +396,12 @@ const CUSTOM: Record<string, number> = {
   "storage/缓存": 1, // 各盘缓存占用
   "accounts/账号": 1,
   "network/监听与访问": 1,
-  "clients/连接状态": 3, // 概况、客户端列表、后台任务
+  "clients/连接状态": 4, // 概况、客户端列表、后台任务
   "network/内网穿透": 2, // 运行状态、提高流畅度建议
   "network/开机与防火墙": 2, // 开机自启、防火墙
   "logs/服务日志": 1,
-  "logs/日志设置": 2, // 导出日志、崩溃报告
-  "about/关于": 1,
+  "logs/日志设置": 3, // 性能剖析、导出日志、崩溃报告
+  "about/关于": 2, // 关于、数据库备份
 };
 export function countOf(page: PageId, tab: string) {
   return itemsOf(page, tab).length + (CUSTOM[`${page}/${tab}`] ?? 0);

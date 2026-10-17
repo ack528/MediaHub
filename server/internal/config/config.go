@@ -49,8 +49,16 @@ type Config struct {
 		URL    string `json:"url"`
 		APIKey string `json:"apiKey"`
 	} `json:"jellyfin"`
+	// Optimize 存储优化:压缩校验通过后怎么处理
+	Optimize struct {
+		AutoReplace   bool `json:"autoReplace"`   // 压缩结果校验通过(能正常播放)就自动替换原文件,默认 true;原文件进回收区,可还原
+		PurgeOriginal bool `json:"purgeOriginal"` // 替换后立刻永久删除原文件(省空间,没有后悔药),默认 false
+		TrashKeepDays int  `json:"trashKeepDays"` // 「压缩替换」回收区里的原文件保留多少天后自动永久删除;0 = 永不自动删除。默认 7
+	} `json:"optimize"`
 	Auth struct {
 		TokenDays int `json:"tokenDays"`
+		// LoginLockSec:任何设备登录失败后,所有设备在这么多秒内都不能再验证密码(默认 20;0 = 关闭)
+		LoginLockSec int `json:"loginLockSec"`
 	} `json:"auth"`
 	Tools struct {
 		FFmpeg   string `json:"ffmpeg"`
@@ -92,6 +100,8 @@ type Config struct {
 		SkipWithinHours int `json:"skipWithinHours"`
 		// IntervalHours:服务运行期间定时重新扫描的间隔(小时);0 = 不定时扫描
 		IntervalHours int `json:"intervalHours"`
+		// Watch:实时增量索引 —— 监视目录变化,新增 / 删除 / 改名的文件几秒后自动进索引(默认 true)。全量定时扫描仍然保留作为兜底
+		Watch bool `json:"watch"`
 	} `json:"scan"`
 }
 
@@ -160,6 +170,8 @@ func Default() *Config {
 	c.Video.PosterSource = "auto"
 	c.Jellyfin.URL = "http://127.0.0.1:8096"
 	c.Auth.TokenDays = 180
+	c.Optimize.AutoReplace, c.Optimize.TrashKeepDays = true, 7
+	c.Auth.LoginLockSec = 20
 	c.Log.Level = "info"
 	c.TLS.Enabled = true
 	c.Priority.Enabled, c.Priority.ActiveWindowSec, c.Priority.PauseCompress, c.Priority.LowerChild = true, 120, true, true
@@ -173,6 +185,7 @@ func Default() *Config {
 	c.Update.Mirrors = append([]string(nil), DefaultUpdateMirrors...)
 	c.Scan.SkipWithinHours = 12
 	c.Scan.IntervalHours = 24
+	c.Scan.Watch = true
 	return c
 }
 

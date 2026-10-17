@@ -165,6 +165,7 @@ func TestCompressWaitsForNoClients(t *testing.T) {
 	e.srv.Gov = governor.New(governor.Config{Enabled: true, ActiveWindow: 2500 * time.Millisecond, StreamGrace: 100 * time.Millisecond, PauseCompress: true})
 	hdr := adminHdr(e)
 	e.srv.Cfg.Video.HWAccel = "none"
+	e.srv.Cfg.Optimize.AutoReplace = false
 	tok := loginDevice(t, e, "手机")
 	dir := filepath.Join(e.lib, "调度")
 	os.MkdirAll(dir, 0o755)

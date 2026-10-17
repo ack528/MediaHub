@@ -203,6 +203,11 @@ fun VideoPage(
     // null = 直接播放原文件;否则请服务端按这个码率(bps)转码,分辨率不变。
     // 开了「记住画质」:上一个视频选了 1.5M 转码,切到下一个视频就直接用 1.5M(服务端也已经在预热它了),不用再手动选。
     var transcodeBitrate by remember(item.id) { mutableStateOf<Int?>(initialTranscode(c, item)) }
+    // 兼容版本(服务端 3.2.0 起):视频手机能解、只是音轨 / 容器不行的,服务端做一份"视频原样复制 + 音频转 AAC"的 MP4,之后直放。
+    var compatUrl by remember(item.id) { mutableStateOf<String?>(null) }
+    // 需要兼容版本的视频,先查服务端有没有、没查完不创建播放器(免得先试直放,再切)
+    var compatChecked by remember(item.id) { mutableStateOf(!(cfg.useCompat && !c.isLocal && c.api.caps.compat && com.localtg.data.DeviceMedia.needsCompat(item.video))) }
+    var audioBroken by remember(item.id) { mutableStateOf(false) }   // 有音轨但手机一条都解不了:会"有画面没声音",也走兼容版本
     val sid = remember(item.id) { c.hlsSid(item.id) } // 每个视频固定一个会话标识:服务端预热的转码,播放时才能接上
     val stalls = remember(item.id) { com.localtg.data.StallTracker() }      // 自动画质:卡顿统计
     val lastSeek = remember(item.id) { longArrayOf(0L) }                    // 最近一次用户拖动进度的时间:拖动引起的缓冲不算卡顿
@@ -236,6 +241,33 @@ fun VideoPage(
     fun showHud(h: Hud) { hud = h; hudTick++ }
     LaunchedEffect(hudTick) { if (hud != null) { delay(900); hud = null } }
 
+    // 兼容版本:服务端有做好的就直放它(画质无损、可随意拖动);没有就请求制作,这一次先用转码播放,下次直放。
+    suspend fun applyCompat(positionMs: Long?) {
+        val st = c.api.compatStatus(item)
+        if (st.ready) {
+            positionMs?.let { resumeMs = it }
+            compatUrl = c.api.compatUrl(item)
+            AppLog.i("player", "使用兼容版本(视频原样复制,音频 AAC) ${item.name}")
+            showHud(Hud(TgIcons.Speed, "已使用兼容版本(画质无损)"))
+            return
+        }
+        val prep = if (st.state == "preparing") st else c.api.compatPrepare(item)
+        AppLog.i("player", "兼容版本还没有(${prep.state}${if (prep.err.isNotEmpty()) ": " + prep.err else ""}),这次先转码播放")
+        if (transcodeBitrate == null && cfg.autoTranscode && c.api.transcodeOk) {
+            positionMs?.let { resumeMs = it }
+            transcodeBitrate = autoBitrate(item, cfg)
+            showHud(Hud(TgIcons.Speed, if (prep.state == "failed") "手机无法直接播放,已改用服务端转码" else "音轨 / 容器手机不支持,先用转码播放;服务端正在后台生成兼容版本,下次直接播放"))
+        }
+    }
+    LaunchedEffect(isCurrent, item.id, compatChecked) {
+        if (isCurrent && !compatChecked) { runCatching { applyCompat(null) }; compatChecked = true }
+    }
+    LaunchedEffect(audioBroken) {
+        if (audioBroken && isCurrent && transcodeBitrate == null && compatUrl == null && cfg.useCompat && !c.isLocal && c.api.caps.compat) {
+            runCatching { applyCompat(player?.currentPosition) }
+        }
+    }
+
     // 读取上次播放进度(只在成为当前页时读一次)
     LaunchedEffect(isCurrent, item.id) {
         if (isCurrent && resumeMs < 0) {
@@ -252,10 +284,10 @@ fun VideoPage(
         }
     }
 
-    DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, transcodeBitrate, tCodec, blocked, resumeMs >= 0) {
+    DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, transcodeBitrate, tCodec, blocked, resumeMs >= 0, compatChecked, compatUrl) {
         var p: ExoPlayer? = null
         val loudness = arrayOfNulls<android.media.audiofx.LoudnessEnhancer>(1)
-        if (isCurrent && resumeMs >= 0 && !blocked) {
+        if (isCurrent && resumeMs >= 0 && !blocked && compatChecked) {
             meter.reset()
             val pl = createPlayer(ctx, c, c.settings.value, useSoftware, modeOverride, meter)
             p = pl
@@ -290,6 +322,12 @@ fun VideoPage(
                 }
                 override fun onTracksChanged(t: Tracks) {
                     tracks = t
+                    // 有音轨但手机一条都解不了(ExoPlayer 不报错,只是静音播放):改走兼容版本 / 转码
+                    val ag = t.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                    if (ag.isNotEmpty() && ag.none { it.isSupported(false) } && transcodeBitrate == null && compatUrl == null) {
+                        AppLog.w("player", "音轨手机解不了(${trackOpts(t, C.TRACK_TYPE_AUDIO).joinToString { it.label }}),会没有声音")
+                        audioBroken = true
+                    }
                     AppLog.i("player", "轨道 视频=${trackOpts(t, C.TRACK_TYPE_VIDEO).joinToString { it.label }} 音频=${trackOpts(t, C.TRACK_TYPE_AUDIO).joinToString { it.label }} 字幕=${trackOpts(t, C.TRACK_TYPE_TEXT).size}")
                 }
                 override fun onVideoSizeChanged(v: androidx.media3.common.VideoSize) {
@@ -357,7 +395,7 @@ fun VideoPage(
                 pl.setMediaItem(MediaItem.Builder().setUri(c.api.hlsUrl(item, br, sid, codec = tCodec)).setMimeType(MimeTypes.APPLICATION_M3U8).build())
                 AppLog.i("player", "服务端转码 ${br / 1000}kbps ${tCodec.uppercase()}(分辨率不变)")
             } else {
-                pl.setMediaItem(MediaItem.fromUri(c.api.fileUrl(item)))
+                pl.setMediaItem(MediaItem.fromUri(compatUrl ?: c.api.fileUrl(item)))
             }
             if (resumeMs > 0) pl.seekTo((resumeMs - c.settings.value.resumeRewindSec * 1000L).coerceAtLeast(0L))
             pl.prepare()

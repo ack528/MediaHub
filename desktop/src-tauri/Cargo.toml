@@ -1,6 +1,6 @@
 [package]
 name = "mediahub-desktop"
-version = "3.1.1"
+version = "3.2.0"
 description = "MediaHub 桌面管理程序"
 edition = "2021"
 
@@ -21,9 +21,12 @@ serde_json = "1"
 ureq = { version = "3", default-features = false }
 local-ip-address = "0.6"
 
+# 编译速度优先:fat LTO + codegen-units=1 最后一步只能用 1 个核(约 1.5 分钟),换成 thin LTO + 16 个代码生成单元可以并行(约 30 秒),
+# 管理程序只是个小界面,运行速度和体积差别可以忽略。要极致体积时改回 lto = true / codegen-units = 1 / opt-level = "s"。
 [profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
+opt-level = 2
+lto = "thin"
+codegen-units = 16
 strip = true
 panic = "abort"
+incremental = false

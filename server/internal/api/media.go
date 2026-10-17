@@ -70,7 +70,12 @@ func (s *Server) mediaPoster(w http.ResponseWriter, r *http.Request) {
 	case err != nil && r.Context().Err() != nil:
 		return // 客户端已取消
 	case err != nil:
-		s.Log.Warn("poster 失败", "id", id, "err", err)
+		// 同一个坏文件手机会反复请求封面:每个文件每次运行只在日志里警告一次,之后降为调试级别
+		if _, seen := s.posterWarned.LoadOrStore(id, true); seen {
+			s.Log.Debug("poster 失败", "id", id, "err", err)
+		} else {
+			s.Log.Warn("poster 失败", "id", id, "err", err)
+		}
 		writeErr(w, 404, "poster.unavailable", "无法生成封面")
 		return
 	}

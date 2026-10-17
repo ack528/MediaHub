@@ -254,6 +254,7 @@ func TestCompressPipeline(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	hdr := adminHdr(e)
+	e.srv.Cfg.Optimize.AutoReplace = false // 这个测试走手动替换;自动替换见 TestCompressAutoReplace
 	e.srv.Cfg.Video.HWAccel = "none" // 测试机没有 QSV:走软件编码
 	dir := filepath.Join(e.lib, "压缩")
 	os.MkdirAll(dir, 0o755)
@@ -406,5 +407,94 @@ func TestCompressClear(t *testing.T) {
 	// 原视频始终不受影响
 	if _, err := os.Stat(big); err != nil {
 		t.Fatal("原视频不能被动")
+	}
+}
+
+// 校验时 ffmpeg 的无害警告(采样数不对、时间戳不单调…)不再让压缩结果被判失败;真正的损坏迹象才算。
+func TestFatalDecodeLine(t *testing.T) {
+	for _, l := range []string{
+		"[in#0 @ 00000000005d0080] wrong sample count",
+		"[mp4 @ 0x1] Non-monotonic DTS in output stream 0:1; previous: 100, current: 90",
+		"[aac @ 0x2] Application provided invalid, non monotonically increasing dts to muxer",
+		"", "   ",
+	} {
+		if fatalDecodeLine(l) {
+			t.Errorf("无害警告不应判失败: %q", l)
+		}
+	}
+	for _, l := range []string{
+		"[h264 @ 0x1] error while decoding MB 10 20, bytestream -5",
+		"[mov,mp4,m4a,3gp,3g2,mj2 @ 0x1] moov atom not found",
+		"Invalid data found when processing input",
+		"[hevc @ 0x3] Could not find ref with POC 12",
+	} {
+		if !fatalDecodeLine(l) {
+			t.Errorf("真正的损坏迹象应判失败: %q", l)
+		}
+	}
+	if r := ffmpegReason("\n[out#0/mp4 @ 0x1] x\nError opening output file\nConversion failed!"); r != "Error opening output file" {
+		t.Errorf("ffmpegReason = %q", r)
+	}
+}
+
+// 压缩校验通过后自动替换原文件:原文件进回收区、原位置是压缩版,任务变成 applied。
+func TestCompressAutoReplace(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	hdr := adminHdr(e)
+	e.srv.Cfg.Video.HWAccel = "none"
+	e.srv.Cfg.Optimize.AutoReplace = true
+	dir := filepath.Join(e.lib, "自动替换")
+	os.MkdirAll(dir, 0o755)
+	big := filepath.Join(dir, "auto.mp4")
+	if out, err := exec.Command(e.srv.Cfg.Tools.FFmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30", "-f", "lavfi", "-i", "sine=f=440:d=6",
+		"-t", "6", "-c:v", "libx264", "-b:v", "6M", "-minrate", "6M", "-maxrate", "6M", "-bufsize", "6M", "-c:a", "aac", big).CombinedOutput(); err != nil {
+		t.Skipf("无法生成样本: %v %s", err, out)
+	}
+	rescanAll(t, e)
+	id := idByName(t, e, "auto.mp4")
+	var origSize int64
+	_ = e.srv.DB.QueryRow(`SELECT size FROM media WHERE id=?`, id).Scan(&origSize)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e.srv.StartOptimizeWorker(ctx)
+	if resp, _ := e.do("POST", "/api/v1/admin/compress/enqueue", map[string]any{"ids": []int64{id}, "codec": "h265", "mode": "abs", "value": 800, "preset": "veryfast"}, hdr); resp.StatusCode != 200 {
+		t.Fatalf("enqueue = %d", resp.StatusCode)
+	}
+	state := func() (st, errMsg string) {
+		_ = e.srv.DB.QueryRow(`SELECT state, err FROM opt_job ORDER BY id DESC LIMIT 1`).Scan(&st, &errMsg)
+		return
+	}
+	deadline := time.Now().Add(180 * time.Second)
+	for time.Now().Before(deadline) {
+		if st, _ := state(); st == "applied" || st == "failed" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if st, em := state(); st != "applied" {
+		t.Fatalf("校验通过后应该自动替换(applied),实际 %s %s", st, em)
+	}
+	st, err := os.Stat(big)
+	if err != nil || st.Size() >= origSize/2 {
+		t.Fatalf("原位置应该是明显变小的压缩版: %v", err)
+	}
+	out, _ := exec.Command(e.srv.Cfg.Tools.FFprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", big).Output()
+	if f := strings.Fields(string(out)); len(f) == 0 || f[0] != "hevc" {
+		t.Fatalf("压缩版应该是 hevc: %q", out)
+	}
+	// 原文件在回收区(默认不永久删除)
+	var found bool
+	trash := filepath.Join(e.lib, ".mediahub", "trash")
+	_ = filepath.WalkDir(trash, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == "auto.mp4" {
+			if fi, _ := d.Info(); fi != nil && fi.Size() == origSize {
+				found = true
+			}
+		}
+		return nil
+	})
+	if !found {
+		t.Fatal("原文件应该在回收区里")
 	}
 }

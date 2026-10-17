@@ -519,6 +519,9 @@ private fun CodecPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
         desc = "“仅硬件 / 仅软件”不会回退到另一种,遇到不支持的格式会直接报错",
     ) { u { copy(decoderMode = it) } }
     SwitchRow("解码失败自动改软解", "硬件解码器报错时,自动换成软件解码从当前位置重试", s.autoSoftwareFallback) { u { copy(autoSoftwareFallback = it) } }
+    SwitchRow("兼容版本(只转音频)", "视频本身手机能解、只是音轨(DTS / TrueHD 等)或容器(AVI 等)不支持时,让服务端做一份兼容版本:视频流原样复制(画质无损、不占转码路数),只把音频转成 AAC。第一次要等服务端做完,期间先用转码播放,之后直接秒开。需要服务端 3.2.0", s.useCompat) { u { copy(useCompat = it) } }
+    ChoiceRow("视频缓存", s.videoCacheMb, listOf(0 to "关闭", 256 to "256 MB", 512 to "512 MB", 1024 to "1 GB", 2048 to "2 GB", 4096 to "4 GB"),
+        "直接播放的视频缓存在手机上的大小上限:往回拖、重看不用重新下载,下一个视频也会提前缓存开头(只在 Wi-Fi / 内网直连时)") { u { copy(videoCacheMb = it) } }
     SwitchRow("解不了时自动转码", "手机无法播放(封装 / 编码不支持,软解也失败)时,自动改用服务端转码播放(服务端内置 ffmpeg,不需要额外安装)", s.autoTranscode) { u { copy(autoTranscode = it) } }
     SwitchRow("允许备用解码器", "首选解码器初始化失败时依次尝试同格式的其他解码器", s.decoderFallback) { u { copy(decoderFallback = it) } }
     ChoiceRow(

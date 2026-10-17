@@ -107,6 +107,8 @@ data class AppSettings(
     val decoderMode: String = "auto",          // auto / hw_first / sw_first / hw_only / sw_only
     val autoSoftwareFallback: Boolean = true,  // 解码失败时自动改用软解重试
     val decoderFallback: Boolean = true,       // 首选解码器初始化失败时尝试下一个
+    val useCompat: Boolean = true,             // 视频能解、只是音轨 / 容器不行时,让服务端做一份兼容版本(视频原样复制、音频转 AAC),之后直接播放,不整条转码
+    val videoCacheMb: Int = 1024,              // 直接播放的视频缓存到手机上的大小上限(MB):往回拖 / 重看不用重新下载;0 = 不缓存
     val autoTranscode: Boolean = true,         // 手机解不了(格式 / 编码不支持)时,自动改用服务端转码播放
     val asyncQueueing: String = "auto",        // auto / on / off:MediaCodec 异步队列
     val tunneling: Boolean = false,            // 隧道播放(部分电视 / 手机的硬解可降低功耗,不稳定)

@@ -22,6 +22,7 @@ data class ServerCaps(
     val hlsPrepare: Boolean = false,
     val thumbWebp: Boolean = false,
     val optimize: Boolean = false,
+    val compat: Boolean = false,                  // 服务端 3.2.0 起:兼容版本(只转音频 / 换容器)
 )
 
 /** 播放器记住的转码偏好(服务端按用户保存)。bitrate = 0 或 direct = true 表示原画直接播放。 */

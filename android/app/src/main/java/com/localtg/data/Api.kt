@@ -31,11 +31,14 @@ class AuthInterceptor(
     override fun intercept(chain: Interceptor.Chain): Response {
         val s = current()
         var req = chain.request()
-        if (s != null && req.url.toString().startsWith(s.baseUrl) && req.header("Authorization") == null) {
+        val route = Route.current.value?.trimEnd('/')
+        val u = req.url.toString()
+        // 发往服务器原地址,或当前选中的内网直连地址(同一台服务器,证书指纹已校验)的请求才带令牌
+        if (s != null && (u.startsWith(s.baseUrl) || (route != null && u.startsWith(route))) && req.header("Authorization") == null) {
             req = req.newBuilder().header("Authorization", "Bearer ${s.token}").build()
         }
         val resp = chain.proceed(req)
-        if (resp.code == 401 && s != null && req.url.toString().startsWith(s.baseUrl) && !req.url.encodedPath.endsWith("/auth/login")) onUnauthorized(s)
+        if (resp.code == 401 && s != null && (u.startsWith(s.baseUrl) || (route != null && u.startsWith(route))) && !req.url.encodedPath.endsWith("/auth/login")) onUnauthorized(s)
         return resp
     }
 }
@@ -127,6 +130,47 @@ private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont 
     })
 }
 
+/**
+ * 列表接口(群组列表 / 历史)的磁盘缓存:服务端给了 ETag,下次请求带 If-None-Match,没变就 304(没有正文);
+ * 同时能先把缓存的上次内容拿出来马上显示(进入群组 / 打开应用时不用等网络)。缓存总量超过 24MB 时删掉最旧的四分之一。
+ */
+object ApiDiskCache {
+    @Volatile private var dir: java.io.File? = null
+    private var writes = 0
+    class Saved(val etag: String, val body: String)
+
+    fun init(ctx: android.content.Context) { dir = java.io.File(ctx.cacheDir, "api").apply { mkdirs() } }
+
+    private fun file(key: String): java.io.File? {
+        val d = dir ?: return null
+        val h = java.security.MessageDigest.getInstance("SHA-1").digest(key.toByteArray()).joinToString("") { "%02x".format(it) }
+        return java.io.File(d, h)
+    }
+
+    fun read(key: String): Saved? = runCatching {
+        val f = file(key)?.takeIf { it.isFile } ?: return null
+        val t = f.readText()
+        val i = t.indexOf('\n')
+        if (i <= 0) null else Saved(t.substring(0, i), t.substring(i + 1)).also { f.setLastModified(System.currentTimeMillis()) }
+    }.getOrNull()
+
+    fun write(key: String, etag: String, body: String) {
+        runCatching {
+            file(key)?.writeText(etag + "\n" + body)
+            if (++writes % 40 == 0) trim()
+        }
+    }
+
+    private fun trim() {
+        val files = dir?.listFiles() ?: return
+        var total = files.sumOf { it.length() }
+        if (total <= 24L * 1024 * 1024) return
+        for (f in files.sortedBy { it.lastModified() }.take(files.size / 4 + 1)) { total -= f.length(); f.delete() }
+    }
+}
+
+class CompatStatus(val ready: Boolean, val state: String = "none", val progress: Double = 0.0, val err: String = "", val why: String = "")
+
 class Api(private val http: OkHttpClient, private val store: SessionStore) {
     private val json = "application/json; charset=utf-8".toMediaType()
 
@@ -135,12 +179,26 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     private suspend inline fun <reified T> call(request: Request): T = AppJson.decodeFromString<T>(callBody(request))
 
     /**
+     * 带磁盘缓存的 GET:缓存里有上次的内容就先交给 onCached(调用方马上显示),再带 If-None-Match 请求;304 = 没变,直接用缓存。
+     * 缓存键 = 服务器 + 令牌 + 完整地址(不同账号 / 服务器互不串)。
+     */
+    private suspend inline fun <reified T> callCached(request: Request, noinline onCached: ((T) -> Unit)? = null): T {
+        val s = store.session.value
+        val key = (s?.baseUrl ?: "") + "|" + (s?.token?.take(12) ?: "") + "|" + request.url.toString()
+        val saved = ApiDiskCache.read(key)
+        if (saved != null && onCached != null) runCatching { onCached(AppJson.decodeFromString<T>(saved.body)) }
+        val req = if (saved != null) request.newBuilder().header("If-None-Match", saved.etag).build() else request
+        val body = callBody(req, saved) { etag, b -> ApiDiskCache.write(key, etag, b) }
+        return AppJson.decodeFromString<T>(body)
+    }
+
+    /**
      * 发一次接口请求并返回响应内容。网络类失败(断网、DNS、连接超时、连接被掐、切换网络时请求被取消)自动重试:
      *  - 离线时先等网络回来(最多 10 秒),不白白失败;
      *  - GET / PUT / DELETE 是幂等的,最多重试 3 次(间隔 0.7 / 1.4 / 2.1 秒);登录等 POST 不重试;
      *  - 服务端返回了错误码(4xx / 5xx)是确定的结果,不重试。
      */
-    private suspend fun callBody(request: Request): String = withContext(Dispatchers.IO) {
+    private suspend fun callBody(request: Request, saved: ApiDiskCache.Saved? = null, onEtag: ((String, String) -> Unit)? = null): String = withContext(Dispatchers.IO) {
         var attempt = 0
         while (true) {
             if (!Net.online) Net.awaitOnline(10_000)
@@ -148,11 +206,13 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
             try {
                 return@withContext http.newCall(request).await().use { resp ->
                     val body = resp.body.string()
+                    if (resp.code == 304 && saved != null) return@use saved.body // 没变:用缓存里的
                     if (!resp.isSuccessful) {
                         val code = Regex("\"code\"\\s*:\\s*\"([^\"]*)\"").find(body)?.groupValues?.get(1) ?: "http.${resp.code}"
                         val msg = Regex("\"message\"\\s*:\\s*\"([^\"]*)\"").find(body)?.groupValues?.get(1) ?: "HTTP ${resp.code}"
                         throw ApiException(resp.code, code, msg)
                     }
+                    resp.header("ETag")?.let { onEtag?.invoke(it, body) }
                     body
                 }
             } catch (e: ApiException) {
@@ -182,11 +242,11 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     /** 单个文件夹(群)的信息:标题、数量、封面。 */
     suspend fun dialog(id: String): Dialog = call(Request.Builder().url("$base/api/v1/dialogs/$id").build())
 
-    suspend fun dialogs(group: String = "all", sort: String = "last", cursor: String? = null, limit: Int = 100): DialogsResp {
+    suspend fun dialogs(group: String = "all", sort: String = "last", cursor: String? = null, limit: Int = 100, onCached: ((DialogsResp) -> Unit)? = null): DialogsResp {
         val url = "$base/api/v1/dialogs".toHttpUrl().newBuilder()
             .addQueryParameter("group", group).addQueryParameter("sort", sort).addQueryParameter("limit", limit.toString())
         cursor?.let { url.addQueryParameter("cursor", it) }
-        return call(Request.Builder().url(url.build()).build())
+        return callCached(Request.Builder().url(url.build()).build(), onCached)
     }
 
     /** around 不为空时以该条目为中心取一页(用于恢复上次浏览位置);cursor 带方向,可向前或向后翻页。 */
@@ -200,7 +260,7 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
         cursor?.let { url.addQueryParameter("cursor", it) }
         around?.let { url.addQueryParameter("around", it) }
         aroundDate?.let { url.addQueryParameter("aroundDate", it) } // yyyy-MM-dd,仅按时间排序时有效
-        return call(Request.Builder().url(url.build()).build())
+        return callCached(Request.Builder().url(url.build()).build()) // 服务端 3.2.0 起带 ETag:没变化的页只回 304(旧服务端照常 200)
     }
 
     /** 全局按文件名搜索(types 如 "photo,video");cursor 是偏移量,可连续翻页。 */
@@ -241,6 +301,32 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     /** 服务端转码(内置 ffmpeg 或 Jellyfin 的 HLS)的播放地址:maxBitrate 视频码率(bps,最高 6 Mbps),sid 本次播放的会话标识,codec 输出编码(h264 / h265)。 */
     fun hlsUrl(item: Item, maxBitrate: Int, sid: String, audioIndex: Int? = null, codec: String? = null): String =
         "$base/api/v1/media/${item.id}/hls/master.m3u8?maxBitrate=$maxBitrate&sid=$sid" + (audioIndex?.let { "&audio=$it" } ?: "") + (codec?.let { "&codec=$it" } ?: "")
+
+    // ---- 兼容版本(服务端 3.2.0 起):视频流原样复制、只把音频转成 AAC 装进 MP4,缓存在服务端;之后直放,不用整条转码 ----
+    fun compatUrl(item: Item): String = "$base/api/v1/media/${item.id}/compat?v=${item.v}"
+
+    /** 兼容版本做好了没有。用 Range 0-0 探测:做好了是 206 / 200(只取 1 字节),没做好是 202 + 状态 JSON。 */
+    suspend fun compatStatus(item: Item): CompatStatus = withContext(Dispatchers.IO) {
+        runCatching {
+            http.newCall(Request.Builder().url(compatUrl(item)).header("Range", "bytes=0-0").build()).await().use { resp ->
+                if (resp.code == 200 || resp.code == 206) CompatStatus(true, "ready", 1.0)
+                else parseCompat(resp.body.string())
+            }
+        }.getOrElse { CompatStatus(false, "none") }
+    }
+
+    /** 请求服务端在后台制作兼容版本(已有 / 正在做就返回当前状态)。 */
+    suspend fun compatPrepare(item: Item): CompatStatus = withContext(Dispatchers.IO) {
+        runCatching {
+            http.newCall(Request.Builder().url("$base/api/v1/media/${item.id}/compat/prepare").post("".toRequestBody()).build()).await().use { parseCompat(it.body.string()) }
+        }.getOrElse { CompatStatus(false, "none") }
+    }
+
+    private fun parseCompat(body: String): CompatStatus {
+        fun s(k: String) = Regex("\"$k\"\\s*:\\s*\"([^\"]*)\"").find(body)?.groupValues?.get(1) ?: ""
+        val prog = Regex("\"progress\"\\s*:\\s*([0-9.eE+-]+)").find(body)?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
+        return CompatStatus(s("state") == "ready", s("state").ifEmpty { "none" }, prog, s("err"), s("why"))
+    }
 
     // ---- 服务端能力、播放器偏好同步、转码预热(服务端 3.0.0 起)----
     /** 服务端能力;还没取到(或服务端太旧)时是全默认值。 */

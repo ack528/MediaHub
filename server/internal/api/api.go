@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"runtime/debug"
+	"sync"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,12 @@ type Server struct {
 	Rescan func(rootID int64)
 	// LoginDelay 登录失败后的延迟(测试里置 0)
 	LoginDelay time.Duration
+	// LoginLock 任何设备登录失败后,所有设备在这段时间内都不能再验证密码(0 = 不锁定,见 loginlock.go)
+	LoginLock time.Duration
+	loginG    loginGuard
+	compatOnce sync.Once // 兼容版本(只转需要转的部分),见 compat.go
+	compatJ    *compatJobs
+	posterWarned sync.Map // 封面生成失败已经警告过的媒体 id
 	// AdminKey:桌面管理程序用的本机密钥。仅当请求来自回环地址且带正确的 X-Admin-Key 时放行。
 	AdminKey string
 	// StartedAt:服务启动时间,用于状态页显示运行时长
@@ -106,6 +113,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/state/player", authd(s.getPlayerPref))
 	mux.Handle("PUT /api/v1/state/player", authd(s.putPlayerPref))
 	mux.Handle("POST /api/v1/media/{id}/hls/prepare", authd(s.mediaHLSPrepare))
+	mux.Handle("GET /api/v1/media/{id}/compat", authd(s.mediaCompat))
+	mux.Handle("POST /api/v1/media/{id}/compat/prepare", authd(s.mediaCompatPrepare))
 	mux.Handle("GET /api/v1/media/{id}/file", authd(s.mediaFile))
 	mux.Handle("HEAD /api/v1/media/{id}/file", authd(s.mediaFile))
 	mux.Handle("GET /api/v1/media/{id}/poster", authd(s.mediaPoster))
@@ -113,6 +122,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/media/{id}/hls/{rest...}", authd(s.mediaHLS))
 	mux.Handle("DELETE /api/v1/media/{id}/hls", authd(s.mediaHLSStop))
 	mux.Handle("GET /api/v1/admin/status", authd(s.adminStatus))
+	mux.Handle("GET /api/v1/admin/backup", s.adminOnly(s.adminBackupList))
+	mux.Handle("POST /api/v1/admin/backup/run", s.adminOnly(s.adminBackupRun))
+	mux.Handle("POST /api/v1/admin/backup/restore", s.adminOnly(s.adminBackupRestore))
+	mux.Handle("POST /api/v1/admin/pprof/cpu", s.adminOnly(s.adminPprofCPU))
+	mux.Handle("POST /api/v1/admin/login-lock/clear", s.adminOnly(func(w http.ResponseWriter, r *http.Request) { s.loginG.clear(); w.WriteHeader(204) }))
 	mux.Handle("POST /api/v1/admin/rescan", authd(s.adminRescan))
 	mux.Handle("GET /api/v1/admin/update", s.adminOnly(s.adminUpdateStatus))
 	mux.Handle("POST /api/v1/admin/update/check", s.adminOnly(s.adminUpdateCheck))
@@ -161,15 +175,25 @@ func (s *Server) logging(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 		ms := time.Since(t0).Milliseconds()
 		attrs := []any{"m", r.Method, "path", r.URL.Path, "code", sw.code, "ms", ms, "ip", clientIP(r)}
-		stream := strings.Contains(r.URL.Path, "/file") || strings.Contains(r.URL.Path, "/hls/") // 播放 / 下载本来就耗时,不算慢
+		p := r.URL.Path
+		stream := strings.Contains(p, "/file") || strings.Contains(p, "/hls/") || strings.Contains(p, "/speedtest/") // 播放 / 下载 / 测速本来就耗时,不算慢
+		// 本来就可能慢的:封面首次生成、格式转换、随机序列(扫描时重算)、管理接口;门槛放宽,不然日志里全是"请求较慢"
+		slowLimit := int64(5000)
+		if strings.HasSuffix(p, "/poster") || strings.HasSuffix(p, "/render") || strings.HasPrefix(p, "/api/v1/random") {
+			slowLimit = 30000
+		} else if strings.Contains(p, "/admin/") {
+			slowLimit = 15000
+		}
 		switch {
 		case sw.code >= 500:
 			s.Log.Error("HTTP 5xx", attrs...)
-		case sw.code == 404 && strings.HasSuffix(r.URL.Path, "/poster"), sw.code == 401 && strings.HasSuffix(r.URL.Path, "/dialogs"):
-			s.Log.Debug("http", attrs...) // 封面不存在、令牌过期这类是常态,不刷屏
+		case sw.code == 404 && (strings.HasSuffix(p, "/poster") || strings.HasSuffix(p, "/playback") || strings.HasSuffix(p, "/view")),
+			sw.code == 416 && strings.HasSuffix(p, "/file"),
+			sw.code == 401 && strings.HasSuffix(p, "/dialogs"):
+			s.Log.Debug("http", attrs...) // 封面 / 播放进度 / 浏览位置"还没有记录"、令牌过期、拖到文件末尾之外这类是常态,不刷屏(以前一天几百条)
 		case sw.code >= 400:
 			s.Log.Warn("HTTP 4xx", append(attrs, "q", r.URL.RawQuery)...)
-		case !stream && ms > 5000:
+		case !stream && ms > slowLimit:
 			s.Log.Warn("请求较慢", attrs...)
 		default:
 			s.Log.Debug("http", attrs...)
@@ -270,8 +294,16 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad.request", "请求格式错误")
 		return
 	}
+	// 刚刚有设备登录失败:锁定期间不验证任何密码(不做 pbkdf2,直接 429)
+	if wait := s.loginG.wait(); wait > 0 {
+		s.Log.Warn("登录被拒绝:全局锁定中", "wait", wait.Round(time.Second), "ip", clientIP(r), "user", in.Username)
+		lockedResponse(w, wait)
+		return
+	}
 	tok, exp, uid, err := s.Auth.Login(in.Username, in.Password, in.DeviceName)
 	if err != nil {
+		s.loginG.fail(s.LoginLock, clientIP(r), in.Username, in.DeviceName)
+		s.Log.Warn("登录失败", "ip", clientIP(r), "user", in.Username, "device", in.DeviceName, "lockSec", int(s.LoginLock.Seconds()))
 		time.Sleep(s.LoginDelay)
 		writeErr(w, 401, "auth.invalid", "用户名或密码错误")
 		return
@@ -374,6 +406,6 @@ func (s *Server) capabilities() map[string]any {
 	}
 	return map[string]any{
 		"codecs": codecs, "qsvH264": qsv264, "qsvH265": qsv265, "maxTranscodeBitrate": max,
-		"probing": probing, "speedtest": true, "playerPrefs": true, "hlsPrepare": true, "gzip": true, "optimize": true, "thumbWebp": s.Render != nil && s.Cfg.Images.FallbackConvert,
+		"probing": probing, "speedtest": true, "playerPrefs": true, "hlsPrepare": true, "compat": s.Cfg.Tools.FFmpeg != "", "gzip": true, "optimize": true, "thumbWebp": s.Render != nil && s.Cfg.Images.FallbackConvert,
 	}
 }

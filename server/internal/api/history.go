@@ -334,7 +334,7 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 	if prevC != "" {
 		resp["prevCursor"] = prevC
 	}
-	writeJSON(w, 200, resp)
+	writeJSONETag(w, r, resp)
 }
 
 type Bucket struct {
@@ -413,9 +413,31 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := limitParam(r, 50, 200)
-	offset, _ := strconv.Atoi(q.Get("cursor"))
+	// 游标:k:<taken_eff>:<id> = 接着这一项往后(键集分页,翻到多深都一样快,翻页期间有新文件入库也不会重复 / 漏项);纯数字是旧版本手机端的偏移量(继续兼容)
+	offset := 0
+	var keyT, keyID int64
+	keyed := false
+	if c := q.Get("cursor"); strings.HasPrefix(c, "k:") {
+		p := strings.Split(c, ":")
+		var e1, e2 error
+		if len(p) == 3 {
+			keyT, e1 = strconv.ParseInt(p[1], 10, 64)
+			keyID, e2 = strconv.ParseInt(p[2], 10, 64)
+		}
+		if len(p) != 3 || e1 != nil || e2 != nil {
+			writeErr(w, 400, "bad.cursor", "cursor 无效")
+			return
+		}
+		keyed = true
+	} else {
+		offset, _ = strconv.Atoi(c)
+	}
 	args := []any{}
 	cond := "m.type IN " + inList(types) + " AND m.root_id IN (SELECT id FROM roots WHERE enabled=1)"
+	if keyed {
+		cond += " AND (m.taken_eff, m.id) < (?, ?)"
+		args = append(args, keyT, keyID)
+	}
 	if d := q.Get("dialog"); d != "" {
 		did, err := strconv.ParseInt(d, 10, 64)
 		if err != nil {
@@ -456,8 +478,17 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{}
 	if len(items) > limit {
 		items = items[:limit]
-		resp["nextCursor"] = strconv.Itoa(offset + limit)
+		if last := items[len(items)-1]; keyed || offset == 0 {
+			var t int64
+			lid, _ := strconv.ParseInt(last.ID, 10, 64)
+			if s.DB.QueryRow(`SELECT taken_eff FROM media WHERE id=?`, lid).Scan(&t) == nil {
+				resp["nextCursor"] = "k:" + strconv.FormatInt(t, 10) + ":" + strconv.FormatInt(lid, 10)
+			}
+		}
+		if _, ok := resp["nextCursor"]; !ok { // 旧版本手机端用偏移量翻页的,继续给偏移量
+			resp["nextCursor"] = strconv.Itoa(offset + limit)
+		}
 	}
 	resp["items"] = items
-	writeJSON(w, 200, resp)
+	writeJSONETag(w, r, resp)
 }

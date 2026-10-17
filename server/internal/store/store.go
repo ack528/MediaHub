@@ -10,7 +10,8 @@ import (
 
 // Open 打开(必要时创建)索引库,启用 WAL 与外键。
 func Open(path string) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(60000)&_txlock=immediate", path)
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(60000)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)&_pragma=cache_size(-16384)&_txlock=immediate", path)
+	// mmap_size 256MB:热点页直接走系统文件缓存,少一次拷贝;cache_size 每个连接 16MB(32 个连接最坏 512MB,平时只有几个在用);temp_store 排序 / 临时索引放内存
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err

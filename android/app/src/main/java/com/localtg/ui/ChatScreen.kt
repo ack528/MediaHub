@@ -694,6 +694,7 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
                 model = ImageRequest.Builder(LocalContext.current).data(url).memoryCacheKey(thumbKey(item))
                     .networkCachePolicy(if (loadEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED).build(),
                 contentDescription = item.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
+                placeholder = thumbHashPainter(item),
                 onError = { if (!useOrig && api.isThumbUrl(url)) useOrig = true else failed = true }, onSuccess = { failed = false },
             )
             if (failed && loadEnabled) BrokenTile("预览不可用\n(点开仍可尝试播放)", Modifier.fillMaxSize())

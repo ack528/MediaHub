@@ -89,3 +89,17 @@ func SetLowPriority(pid int, idle bool) error {
 		return nil
 	})
 }
+
+// LockFile 对 path 加一把独占锁(进程退出自动释放,即使崩溃也不会残留):同一个数据目录只允许一个服务进程运行。
+// 做法:用共享模式 0 打开文件 —— 别的进程再打开同一个文件会因为"共享冲突"失败。拿不到锁返回 error。
+func LockFile(path string) (release func(), err error) {
+	p, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	h, err := syscall.CreateFile(p, syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_ALWAYS, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = syscall.CloseHandle(h) }, nil
+}

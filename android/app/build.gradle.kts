@@ -14,8 +14,8 @@ android {
         applicationId = "com.localtg"
         minSdk = 26
         targetSdk = 37
-        versionCode = 65
-        versionName = "3.1.1"
+        versionCode = 66
+        versionName = "3.2.0"
         // 发布版只带 arm64(真机,LSFG 原生库),调试版再加 x86_64(模拟器)
         ndk { abiFilters += listOf("arm64-v8a") }
     }
@@ -39,9 +39,10 @@ android {
             ndk { abiFilters += listOf("x86_64") }
         }
         release {
-            // 个人自用,不做代码混淆 / 压缩:崩溃日志里的堆栈直接可读
-            isMinifyEnabled = false
+            // R8 压缩 / 优化(去掉库里没用的代码,启动更快、包更小);不混淆名字,崩溃日志里的堆栈直接可读(见 proguard-rules.pro)
+            isMinifyEnabled = true
             isShrinkResources = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
@@ -101,6 +102,9 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.11.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.11.1")
+
+    // Baseline Profile 的安装器:安装后首次启动时把 baseline-prof.txt 里的代码预编译
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 
     testImplementation("junit:junit:4.13.2")
 }

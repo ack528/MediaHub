@@ -24,8 +24,9 @@ import (
 
 // optState 挂在 Server 上的存储优化状态。
 type optState struct {
-	dd dedupeState
-	cp compressState
+	dd       dedupeState
+	cp       compressState
+	rescanAt map[int64]time.Time // rescanSoon 用,受 cp.mu 保护
 }
 
 // mediaInfo 一个媒体文件的路径与基本属性。

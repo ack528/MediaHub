@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { bridge } from "../bridge";
 import { Badge, Btn, Card, Row } from "../components";
+import { Backup } from "./Backup";
 import { useApp } from "../store";
 import type { UpdateStatus } from "../types";
 import changelogText from "../changelog.md?raw";
@@ -111,6 +112,7 @@ export function About() {
     <>
     <Update />
     <Mirrors />
+    <Backup />
     <Changelog />
     <Card icon="info" title="关于 MediaHub">
       <Row icon="server" title="MediaHub 管理程序" desc={`v${env?.appVersion ?? "?"} · 服务端 ${svc?.info?.version ?? "未运行"} · Tauri 2`} />

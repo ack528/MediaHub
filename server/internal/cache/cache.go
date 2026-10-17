@@ -43,6 +43,7 @@ type Manager struct {
 
 	mu    sync.Mutex
 	roots map[int64]*RootCache
+	fbLog map[int64]string // 已经提示过"回退到项目目录"的根目录 → 原因(同样的原因每次扫描都 Init 一遍,只提示一次)
 }
 
 func New(db *sql.DB, log *slog.Logger, quotaGB, marginGB int, fallbackDir string) *Manager {
@@ -52,6 +53,7 @@ func New(db *sql.DB, log *slog.Logger, quotaGB, marginGB int, fallbackDir string
 		marginBytes: int64(marginGB) << 30,
 		fallbackDir: fallbackDir,
 		roots:       map[int64]*RootCache{},
+		fbLog:       map[int64]string{},
 	}
 }
 
@@ -84,7 +86,15 @@ func (m *Manager) Init(rootID int64, rootPath, label string) (*RootCache, error)
 			return nil, err
 		}
 		rc.Dir, rc.Mode = fb, ModeFallback
-		m.log.Warn("缓存回退到项目目录", "root", rootPath, "dir", fb, "reason", rc.Reason)
+		m.mu.Lock()
+		same := m.fbLog[rootID] == rc.Reason
+		m.fbLog[rootID] = rc.Reason
+		m.mu.Unlock()
+		if same {
+			m.log.Debug("缓存回退到项目目录", "root", rootPath, "dir", fb, "reason", rc.Reason)
+		} else {
+			m.log.Warn("缓存回退到项目目录", "root", rootPath, "dir", fb, "reason", rc.Reason)
+		}
 	}
 	m.cleanTmp(rc.Dir)
 	m.mu.Lock()

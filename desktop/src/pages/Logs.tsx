@@ -88,7 +88,7 @@ function fmtTime(sec: number) {
 }
 
 function LogSettings() {
-  const { config, toast } = useApp();
+  const { config, toast, svc } = useApp();
   const openDir = (p: string) => openDirWith(toast, p);
   const [crashes, setCrashes] = useState<CrashFile[]>([]);
   const [busy, setBusy] = useState(false);
@@ -112,6 +112,16 @@ function LogSettings() {
     <>
       <Card icon="filetext" title="日志设置" count={items.length}>
         {items.map((i) => <ItemRow key={i.id} item={i} />)}
+      </Card>
+      <Card icon="gauge" title="性能剖析">
+        <Row icon="zap" title="录制 CPU 剖析(30 秒)" desc="觉得服务某个操作很慢 / 很占 CPU 时,点一下,然后在 30 秒内重复那个操作。结果保存在日志文件夹里的 cpu-时间.pprof(随日志包导出),发给开发者就能看到时间花在哪个函数上。">
+          <Btn icon="play" disabled={busy || !svc?.running} onClick={async () => {
+            setBusy(true);
+            try { const r = await bridge.admin<{ path: string }>("POST", "/api/v1/admin/pprof/cpu?seconds=30", undefined, 60000); toast("已保存:" + r.path); }
+            catch (e) { toast(String(e), "err"); }
+            setBusy(false);
+          }}>{busy ? "录制中…" : "开始录制"}</Btn>
+        </Row>
       </Card>
       <Card icon="shield" title="导出与崩溃报告">
         <Row icon="copy" title="导出日志包" desc="把全部日志、崩溃报告和运行环境打成一个 zip(不含密码、登录令牌和 API 密钥),出问题时发给开发者。服务没有运行也能导出。">
