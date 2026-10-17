@@ -16,7 +16,11 @@ import com.localtg.data.buildHttpClients
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -47,12 +51,15 @@ class AppContainer(app: Application) {
     val api = Api(apiHttp, session).also { it.serverRenderHeic = settings.value.heicMode == "server" }
     init {
         // 设置改变后立即生效的项
+        scope.launch { settings.state.map { it.lanFirst }.distinctUntilChanged().drop(1).collect { runCatching { probeRoute() } } } // 开关变了马上生效
         scope.launch { settings.state.collect { api.serverRenderHeic = it.heicMode == "server"; com.localtg.data.AppUpdater.preferred = it.updateSource } }
         // 登录 / 切换服务器后:取服务端能力、预热连接、同步播放器偏好
         scope.launch {
             session.loaded.first { it }
             session.session.map { s -> s?.takeIf { !session.local.value }?.baseUrl }.distinctUntilChanged().collect { base ->
                 api.resetCaps()
+                com.localtg.data.Route.current.value = null
+                com.localtg.data.NetEstimate.reset()
                 if (base != null) onServerReady()
             }
         }
@@ -75,9 +82,48 @@ class AppContainer(app: Application) {
      * 登录 / 切换服务器后:取服务端能力(同时预热连接),并同步播放器记住的转码偏好(谁最后改的听谁的)。
      * 本地媒体模式没有服务端,什么都不做。
      */
+    private val routeMutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * 内网直连优先:取服务器的内网 / IPv6 地址,并发探测(TLS 指纹校验通过才算通),比原地址明显更快就切过去;都不通就用原地址。
+     * 服务器必须是 HTTPS(内网地址同样要过证书指纹校验,令牌才不会发给冒充这个 IP 的设备)。离开 / 换网络时由 [Net] 回调重新探测。
+     */
+    suspend fun probeRoute() = routeMutex.withLock {
+        val s = session.session.value
+        val entry = session.active
+        if (isLocal || s == null || entry == null || !settings.value.lanFirst || !s.baseUrl.startsWith("https://")) { com.localtg.data.Route.current.value = null; return@withLock }
+        com.localtg.data.Route.current.value = null // 先回到原地址:下面要量原地址的延迟
+        var cands = entry.lan
+        runCatching { api.addresses() }.onSuccess { a -> cands = a.lan + a.ipv6; session.setLan(entry.id, cands) }
+        val base = s.baseUrl.trimEnd('/')
+        val urls = cands.map { "https://$it" }.filter { !it.equals(base, ignoreCase = true) }
+        if (urls.isEmpty()) return@withLock
+        val client = apiHttp.newBuilder().callTimeout(2500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .connectTimeout(1200, java.util.concurrent.TimeUnit.MILLISECONDS).readTimeout(1500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(false).build()
+        suspend fun rtt(u: String): Long? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val t0 = System.nanoTime()
+                client.newCall(okhttp3.Request.Builder().url("$u/api/v1/server/info").build()).execute().use { r -> if (r.isSuccessful) (System.nanoTime() - t0) / 1_000_000 else null }
+            }.getOrNull()
+        }
+        val (canon, best) = kotlinx.coroutines.coroutineScope {
+            val c0 = async { rtt(base) }
+            val rs = urls.map { u -> async { u to rtt(u) } }.awaitAll().filter { it.second != null }.minByOrNull { it.second!! }
+            c0.await() to rs
+        }
+        if (best != null && (canon == null || best.second!! + 3 < canon * 0.85)) {
+            com.localtg.data.Route.current.value = best.first
+            AppLog.i("route", "内网直连:${best.first.substringAfter("://")} ${best.second}ms(原地址 ${canon?.let { "${it}ms" } ?: "不通"})")
+        } else {
+            AppLog.i("route", "没有更快的内网线路(候选 ${urls.size} 个,原地址 ${canon?.let { "${it}ms" } ?: "不通"})")
+        }
+    }
+
     suspend fun onServerReady() {
         runCatching { api.refreshCaps(true) }.onFailure { AppLog.w("net", "取服务端能力失败(服务端太旧或网络问题)", it); return }
         syncPlayerPrefs()
+        runCatching { probeRoute() }
     }
 
     suspend fun syncPlayerPrefs() {
@@ -128,6 +174,7 @@ class App : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
+        com.localtg.data.ClientInfo.init(this)
         container = AppContainer(this)
         com.localtg.render.Assets.app = applicationContext
         // 网络监听:断网时请求等网络回来;默认网络切换时清掉旧连接、取消卡在旧网络上的接口请求(接口请求会自动重试)
@@ -137,7 +184,14 @@ class App : Application(), SingletonImageLoader.Factory {
             container.apiHttp.connectionPool.evictAll()
             container.apiHttp.dispatcher.cancelAll()
             // 新网络上马上建好到服务器的连接(同时刷新能力),之后第一次浏览不用再等握手
-            if (!container.isLocal && container.session.session.value != null) container.scope.launch { runCatching { container.api.refreshCaps(true) } }
+            // 换了网络:内网直连的线路和网速估计都作废,稍后重新探测(刚连上 Wi-Fi 时路由器要一会儿才通)
+            com.localtg.data.Route.current.value = null
+            com.localtg.data.NetEstimate.reset()
+            if (!container.isLocal && container.session.session.value != null) container.scope.launch {
+                runCatching { container.api.refreshCaps(true) }
+                kotlinx.coroutines.delay(800)
+                runCatching { container.probeRoute() }
+            }
         }
         // 内置了 Lossless.dll 的话,启动时就在后台提取着色器(只有第一次要几秒;之后读缓存),播放补帧时不用再等
         // 带 DLL 的安装包:把 Lossless.dll 保存一份到应用私有目录(之后通过检查更新装发布版,私有数据保留,DLL 还在)

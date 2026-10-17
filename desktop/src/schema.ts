@@ -2,7 +2,7 @@
 // 界面、"搜索配置项"、"N 项设置"计数都由这份定义生成。
 import type { Config } from "./types";
 
-export type PageId = "overview" | "library" | "storage" | "video" | "optimize" | "accounts" | "network" | "logs" | "about";
+export type PageId = "overview" | "library" | "storage" | "video" | "optimize" | "accounts" | "network" | "clients" | "logs" | "about";
 
 export interface Option { value: string; label: string }
 
@@ -39,7 +39,8 @@ export const PAGES: PageDef[] = [
   { id: "video", label: "视频转码", icon: "film", tabs: ["转码", "Jellyfin", "工具路径"] },
   { id: "optimize", label: "存储优化", icon: "zap", tabs: ["重复文件", "视频压缩", "回收区"] },
   { id: "accounts", label: "账号安全", icon: "users", tabs: ["账号", "登录"] },
-  { id: "network", label: "网络", icon: "globe", tabs: ["监听与访问", "开机与防火墙"] },
+  { id: "network", label: "网络", icon: "globe", tabs: ["监听与访问", "内网穿透", "开机与防火墙"] },
+  { id: "clients", label: "客户端连接", icon: "link", tabs: ["连接状态", "调度设置"] },
   { id: "logs", label: "日志", icon: "filetext", tabs: ["服务日志", "日志设置"] },
   { id: "about", label: "关于", icon: "info", tabs: ["关于"] },
 ];
@@ -194,6 +195,157 @@ export const ITEMS: Item[] = [
     write: (c, v) => ({ ...c, listen: `${hostOf(c.listen)}:${v}` }),
   },
 
+  // ---- 客户端优先调度
+  {
+    id: "pri-enabled", page: "clients", tab: "调度设置", icon: "zap", kind: "switch", restart: true,
+    title: "有客户端连接时让路", desc: "有手机在浏览 / 播放 / 传输时,后台任务(扫描、重复检测、封面预生成、视频压缩)自动降速或暂停,优先保证传输和播放流畅;没有客户端后自动恢复全速。关闭 = 后台任务一直全速。",
+    ...at("priority.enabled"),
+  },
+  {
+    id: "pri-window", page: "clients", tab: "调度设置", icon: "clock", kind: "number", restart: true, unit: "秒", min: 10, max: 3600,
+    title: "多久没有请求才算「没有客户端」", desc: "最近这么多秒内有手机发过请求,就当作还有客户端连着(手机放着不动时不会一直发请求,所以不要设太短)。默认 120 秒。",
+    ...at("priority.activeWindowSec"),
+  },
+  {
+    id: "pri-pause", page: "clients", tab: "调度设置", icon: "film", kind: "switch", restart: true,
+    title: "有客户端时暂停视频压缩", desc: "压缩用的 ffmpeg 整个进程会被挂起(进度保留,不占 CPU / 磁盘 / 核显),没有客户端后自动继续。关闭后压缩只降低优先级,仍会和播放抢资源。",
+    ...at("priority.pauseCompress"),
+  },
+  {
+    id: "pri-lower", page: "clients", tab: "调度设置", icon: "cpu", kind: "switch", restart: true,
+    title: "后台任务用较低的 CPU 优先级", desc: "压缩 / 重复检测里的 ffmpeg、ffprobe 等子进程用低于正常的优先级运行,即使在没有客户端时也不会拖慢电脑上的其它程序。",
+    ...at("priority.lowerChild"),
+  },
+
+  // ---- 内网穿透
+  {
+    id: "tun-enabled", page: "network", tab: "内网穿透", icon: "link", kind: "switch", restart: true,
+    title: "启用内网穿透", desc: "服务启动时自动拉起穿透客户端(frpc 或你自己的命令),掉线自动重连。手机不在家里的网络时,通过穿透服务器访问这台电脑。",
+    ...at("tunnel.enabled"),
+  },
+  {
+    id: "tun-type", page: "network", tab: "内网穿透", icon: "wrench", kind: "select", restart: true,
+    title: "穿透方式", desc: "frp:服务端托管 frpc(按下面的 frp 配置自动生成配置文件);自定义命令:运行你自己的穿透客户端(cpolar、natapp、cloudflared 等)。",
+    ...at("tunnel.type"),
+    options: [{ value: "frp", label: "frp(托管 frpc)" }, { value: "custom", label: "自定义命令" }],
+  },
+  {
+    id: "tun-public", page: "network", tab: "内网穿透", icon: "globe", kind: "text", restart: true, placeholder: "例如 abc.example.com:12345",
+    title: "外网地址(手机里填这个)", desc: "穿透服务器分配给你的访问地址,格式 域名:端口。填了以后:管理程序会通过它探测整条链路的延迟;手机在「设置 → 服务器管理」里能同时记下内网地址和外网地址,在家自动走内网直连。",
+    ...at("tunnel.publicAddr"),
+  },
+  {
+    id: "tun-health", page: "network", tab: "内网穿透", icon: "gauge", kind: "switch", restart: true,
+    title: "定期探测链路", desc: "每 30 秒通过外网地址访问一次服务端自己,量 TCP 连接和 HTTP 首字节的耗时,在状态里显示最近 20 次。需要先填外网地址。",
+    ...at("tunnel.healthCheck"),
+  },
+  {
+    id: "tun-restart", page: "network", tab: "内网穿透", icon: "refresh", kind: "switch", restart: true,
+    title: "探测连续失败时自动重启穿透", desc: "穿透进程还活着但链路已经不通(穿透服务器那边把连接掐了、NAT 映射过期)是最常见的\"手机突然连不上\"。连续 3 次探测失败就重启穿透进程(至少运行 2 分钟后才会触发,避免反复重启)。",
+    ...at("tunnel.restartOnFail"),
+  },
+  {
+    id: "frp-binary", page: "network", tab: "内网穿透", icon: "folder", kind: "path", restart: true, placeholder: "留空 = tools\\frp\\frpc.exe",
+    title: "frpc 程序路径", desc: "frp 客户端程序(frpc.exe),版本需要 0.52 及以上。本程序不内置,请从 frp 的 GitHub 发布页下载 Windows 版解压出 frpc.exe。留空时依次找 tools\\frp\\frpc.exe、frp\\frpc.exe、程序同目录。",
+    ...at("tunnel.binary"),
+  },
+  {
+    id: "frp-addr", page: "network", tab: "内网穿透", icon: "server", kind: "text", restart: true, placeholder: "例如 frp.example.com",
+    title: "穿透服务器地址", desc: "frps 所在服务器的域名或 IP(穿透服务商会给你)。",
+    ...at("tunnel.serverAddr"),
+  },
+  {
+    id: "frp-port", page: "network", tab: "内网穿透", icon: "link", kind: "number", min: 1, max: 65535, restart: true,
+    title: "穿透服务器端口", desc: "frps 的绑定端口,默认 7000。",
+    ...at("tunnel.serverPort"),
+  },
+  {
+    id: "frp-token", page: "network", tab: "内网穿透", icon: "key", kind: "secret", restart: true,
+    title: "令牌(token)", desc: "和穿透服务器约定的认证令牌。只写在 config.json 和生成的 frpc.toml(仅当前用户可读)里,日志里会自动隐藏。",
+    ...at("tunnel.token"),
+  },
+  {
+    id: "frp-user", page: "network", tab: "内网穿透", icon: "users", kind: "text", restart: true,
+    title: "用户名(可选)", desc: "有些穿透服务商要求填用户名 / 账号标识,没有就留空。",
+    ...at("tunnel.user"),
+  },
+  {
+    id: "frp-proto", page: "network", tab: "内网穿透", icon: "zap", kind: "select", restart: true,
+    title: "传输协议", desc: "客户端到穿透服务器之间用什么协议。tcp:最通用;quic:基于 UDP,多个请求互不阻塞、丢包时比 tcp 更流畅(服务器必须也开了 quic);kcp:UDP,延迟更低但更耗带宽,适合丢包多的网络;websocket / wss:被只放行 80 / 443 的网络拦截时用。",
+    ...at("tunnel.protocol"),
+    options: [{ value: "tcp", label: "tcp(通用)" }, { value: "quic", label: "quic(丢包多 / 延迟高时更流畅)" }, { value: "kcp", label: "kcp(低延迟,更耗带宽)" }, { value: "websocket", label: "websocket" }, { value: "wss", label: "wss(加密的 websocket)" }],
+  },
+  {
+    id: "frp-ptype", page: "network", tab: "内网穿透", icon: "tag", kind: "select", restart: true,
+    title: "代理类型", desc: "tcp:穿透服务器上开一个远程端口,手机连这个端口(MediaHub 的 HTTPS 原样透传,证书指纹照常校验,推荐);https:按域名转发(TLS 透传),需要自定义域名或子域名;http:按域名转发明文 HTTP,只在关闭了 MediaHub 的加密传输时才能用。",
+    ...at("tunnel.proxyType"),
+    options: [{ value: "tcp", label: "tcp(远程端口,推荐)" }, { value: "https", label: "https(域名,TLS 透传)" }, { value: "http", label: "http(域名,明文)" }],
+  },
+  {
+    id: "frp-rport", page: "network", tab: "内网穿透", icon: "link", kind: "number", min: 0, max: 65535, restart: true,
+    title: "远程端口(tcp)", desc: "穿透服务器上对外开放的端口,手机访问 \"服务器地址:这个端口\"。0 = 让服务器分配 / 由服务商指定。",
+    ...at("tunnel.remotePort"),
+  },
+  {
+    id: "frp-domain", page: "network", tab: "内网穿透", icon: "globe", kind: "text", restart: true, placeholder: "例如 nas.example.com",
+    title: "自定义域名(http / https)", desc: "代理类型是 http / https 时填,域名要解析到穿透服务器。",
+    ...at("tunnel.customDomain"),
+  },
+  {
+    id: "frp-subdomain", page: "network", tab: "内网穿透", icon: "globe", kind: "text", restart: true,
+    title: "子域名(http / https)", desc: "服务器配置了 subdomainHost 时,只填前缀(例如 nas)就能得到 nas.主域名。和自定义域名二选一。",
+    ...at("tunnel.subdomain"),
+  },
+  {
+    id: "frp-mux", page: "network", tab: "内网穿透", icon: "zap", kind: "switch", restart: true,
+    title: "连接多路复用(tcpMux)", desc: "多个请求共用一条到穿透服务器的 TCP 连接:建立新请求更快,图片缩略图这种大量小请求受益明显。代价:一条连接丢包重传时,同一连接里的其它请求也要等(队头阻塞)。以视频为主、链路丢包多时可以关掉,配合更大的连接池,让更多条 TCP 并行跑满带宽。",
+    ...at("tunnel.tcpMux"),
+  },
+  {
+    id: "frp-pool", page: "network", tab: "内网穿透", icon: "database", kind: "number", min: 0, max: 50, restart: true,
+    title: "连接池大小(poolCount)", desc: "预先建好的工作连接数。没有预建连接时,每个新请求都要经过 \"穿透服务器通知客户端 → 客户端新建连接\" 一个来回(经云中继一般几十到几百毫秒);预建几条就省掉这一步。默认 5,并发请求多(滑动网格)时可以调到 10 ~ 20。",
+    ...at("tunnel.poolCount"),
+  },
+  {
+    id: "frp-hb", page: "network", tab: "内网穿透", icon: "clock", kind: "number", unit: "秒", min: 3, max: 60, restart: true,
+    title: "心跳间隔", desc: "每隔多少秒向穿透服务器发一次心跳,超时是 3 倍。越小越快发现断线并重连,但太小会增加空闲流量;不少 NAT / 运营商会掐掉空闲 30 秒以上的连接,默认 10 秒比较稳。",
+    ...at("tunnel.heartbeatSec"),
+  },
+  {
+    id: "frp-tls", page: "network", tab: "内网穿透", icon: "shield", kind: "switch", restart: true,
+    title: "到穿透服务器的连接加 TLS", desc: "frp 0.50 起默认开启。只加密 frpc 和 frps 之间的连接(你的流量本身在 MediaHub 里已经是 HTTPS)。关掉可以少一点握手耗时和 CPU,但穿透服务商可能要求开着。",
+    ...at("tunnel.tls"),
+  },
+  {
+    id: "frp-enc", page: "network", tab: "内网穿透", icon: "shield", kind: "switch", restart: true,
+    title: "隧道内加密(useEncryption)", desc: "在隧道里再加一层加密。MediaHub 的 HTTPS 已经端到端加密,再加一层只耗 CPU(视频码率高时会成为瓶颈),建议关闭。",
+    ...at("tunnel.encryption"),
+  },
+  {
+    id: "frp-comp", page: "network", tab: "内网穿透", icon: "database", kind: "switch", restart: true,
+    title: "隧道内压缩(useCompression)", desc: "图片 / 视频已经是压缩格式,再压缩基本压不小,只耗 CPU;JSON 接口 MediaHub 自己已经 gzip。建议关闭。",
+    ...at("tunnel.compression"),
+  },
+  {
+    id: "frp-bw", page: "network", tab: "内网穿透", icon: "gauge", kind: "text", restart: true, placeholder: "例如 2MB(留空不限)",
+    title: "带宽限制", desc: "限制这条隧道的速度(单位 KB 或 MB,例如 2MB 表示每秒 2 兆字节)。穿透服务按流量或带宽计费、或者不想让视频把穿透服务器的带宽占满时用;留空不限。",
+    ...at("tunnel.bandwidthLimit"),
+  },
+  {
+    id: "tc-cmd", page: "network", tab: "内网穿透", icon: "wrench", kind: "path", restart: true,
+    title: "自定义命令:程序", desc: "穿透方式选「自定义命令」时运行的程序(例如 cpolar.exe、natapp.exe、cloudflared.exe 的完整路径)。",
+    ...at("tunnel.command"),
+  },
+  {
+    id: "tc-args", page: "network", tab: "内网穿透", icon: "filetext", kind: "text", restart: true, placeholder: "例如 tcp {port}",
+    title: "自定义命令:参数", desc: "命令行参数,含空格的参数用双引号括起来。{port} 会替换成 MediaHub 的监听端口。",
+    ...at("tunnel.args"),
+  },
+  {
+    id: "tc-wd", page: "network", tab: "内网穿透", icon: "folder", kind: "path", restart: true,
+    title: "自定义命令:工作目录", desc: "留空 = 程序所在目录。",
+    ...at("tunnel.workDir"),
+  },
   {
     id: "autoStartService", page: "network", tab: "开机与防火墙", icon: "play", kind: "switch",
     title: "打开管理程序时自动启动服务", desc: "管理程序启动(包括开机自启)时,如果服务没在运行就自动把它拉起来。服务本身与管理程序是两个进程,关闭管理界面不会停止服务。",
@@ -218,6 +370,8 @@ const CUSTOM: Record<string, number> = {
   "storage/缓存": 1, // 各盘缓存占用
   "accounts/账号": 1,
   "network/监听与访问": 1,
+  "clients/连接状态": 3, // 概况、客户端列表、后台任务
+  "network/内网穿透": 2, // 运行状态、提高流畅度建议
   "network/开机与防火墙": 2, // 开机自启、防火墙
   "logs/服务日志": 1,
   "logs/日志设置": 2, // 导出日志、崩溃报告

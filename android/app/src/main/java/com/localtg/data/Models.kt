@@ -3,7 +3,11 @@ package com.localtg.data
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class ServerInfo(val name: String, val version: String, val apiVersion: Int, val caps: ServerCaps = ServerCaps())
+data class ServerInfo(val name: String, val version: String, val apiVersion: Int, val transcode: Boolean = false, val caps: ServerCaps = ServerCaps())
+
+/** 服务器在各个网络上的地址(登录后才能取):内网 IPv4、公网 IPv6、内网穿透的外网地址。 */
+@Serializable
+data class ServerAddrs(val lan: List<String> = emptyList(), val ipv6: List<String> = emptyList(), val public: String = "", val tls: Boolean = false)
 
 /** 服务端能力(/server/info 的 caps):老服务端没有这项,全部取默认值(= 不支持)。 */
 @Serializable

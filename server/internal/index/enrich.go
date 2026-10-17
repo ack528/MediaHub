@@ -76,6 +76,7 @@ func (ix *Indexer) Enrich(ctx context.Context, r Root) (retErr error) {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			t0 := time.Now()
 			switch pe.typ {
 			case classify.Photo, classify.GIF:
 				photos = append(photos, pe)
@@ -88,6 +89,9 @@ func (ix *Indexer) Enrich(ctx context.Context, r Root) (retErr error) {
 			default:
 				ix.markDone(pe, 1, "")
 				atomic.AddInt64(&p.Enriched, 1)
+			}
+			if ix.Throttle != nil {
+				ix.Throttle(ctx, time.Since(t0))
 			}
 		}
 		flush()

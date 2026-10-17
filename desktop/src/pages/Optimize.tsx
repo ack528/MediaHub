@@ -297,7 +297,7 @@ function Compress() {
               <span style={{ minWidth: 0 }}>
                 <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.name || `媒体 ${j.mediaId}`}</div>
                 <div style={{ color: "var(--text-2)", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.root} · {j.dir || "(根目录)"} · {j.codec === "h265" ? "H.265" : "H.264"} {j.kbps} kbps</div>
-                {j.err && <div style={{ color: "var(--red)", fontSize: 12 }}>{j.err}</div>}
+                {j.err && <div style={{ color: j.err.startsWith("⏸") ? "var(--gray, #8c8c8c)" : "var(--red)", fontSize: 12 }}>{j.err}</div>}
               </span>
               <span><Badge tone={tone}>{label}</Badge></span>
               <span>

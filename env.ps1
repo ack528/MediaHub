@@ -29,6 +29,14 @@ $env:CGO_ENABLED = '0'          # 纯 Go:SQLite 用 modernc.org/sqlite,无需 C 
 New-Item -ItemType Directory -Force "$T\tmp","$T\android-home","$T\gradle-home","$T\gopath","$T\gocache" | Out-Null
 $env:TEMP = "$T\tmp"; $env:TMP = "$T\tmp"
 
+# 并行度:默认吃满所有核心(全局约定,见 ~/.claude/CLAUDE.md);各构建脚本和 go / cargo / gradle 都读这几个变量
+$env:BUILD_JOBS         = "$([Environment]::ProcessorCount)"
+$env:CARGO_BUILD_JOBS   = $env:BUILD_JOBS
+$env:GOMAXPROCS         = $env:BUILD_JOBS
+$env:CMAKE_BUILD_PARALLEL_LEVEL = $env:BUILD_JOBS
+$env:NINJA_STATUS       = '[%f/%t] '
+$env:GRADLE_OPTS        = "-Dorg.gradle.workers.max=$($env:BUILD_JOBS) -Dfile.encoding=UTF-8"
+
 # 其它
 $env:MEDIAHUB_ROOT = $Root
 $env:PATH = @(

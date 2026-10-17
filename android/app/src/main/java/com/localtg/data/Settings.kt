@@ -77,6 +77,8 @@ data class AppSettings(
     val randomSeed: Long = 0,                  // 随机浏览用服务端预先准备的第几份随机序列(1..12):不点「重新洗牌」就一直用它,序列不变(0 = 还没选)
     val randomType: Int = 0,                   // 随机浏览:0 全部 / 1 图片 / 2 视频(记住上次的选择)
     // ---- 播放器记住的转码偏好(同步到服务器)、网络测速、更新下载源
+    val lanFirst: Boolean = true,              // 内网直连优先:和服务器在同一个局域网时自动改走内网地址(比经过内网穿透快得多),离开再切回
+    val autoQuality: Boolean = true,           // 自动画质:网速不够时自动降一档转码(连续卡顿 / 开播前网速明显低于视频码率)
     val rememberPlayback: Boolean = true,      // 记住播放设置(设置 → 视频播放):播放器里选的转码画质 / 编码,切到下一个视频直接用,并同步到服务器(多台手机共用)
     val playerQuality: Int = -1,               // 记住的画质:-1 = 还没选过;0 = 原画(直接播放);>0 = 转码码率(bps,最高 6 Mbps)
     val playerCodec: String = "auto",          // 转码输出编码:auto(服务端能出 H.265 且手机硬解就用 H.265)/ h264 / h265

@@ -35,15 +35,18 @@ import (
 	"mediahub/internal/auth"
 	"mediahub/internal/cache"
 	"mediahub/internal/config"
+	"mediahub/internal/governor"
 	"mediahub/internal/index"
 	"mediahub/internal/jellyfin"
 	"mediahub/internal/logx"
+	"mediahub/internal/proc"
 	"mediahub/internal/store"
 	"mediahub/internal/tlsx"
+	"mediahub/internal/tunnel"
 	"mediahub/internal/update"
 )
 
-const version = "3.0.1"
+const version = "3.1.0"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -183,6 +186,12 @@ func run(args []string, serve bool) int {
 
 	restoreRoots(db, cfg, log)
 	ix := index.New(db, cfg, log)
+	// 调度:有客户端连着时给传输和播放让路(后台扫描 / 补全 / 重复检测 / 封面预生成降速,压缩暂停),没有客户端时全速(见 internal/governor)
+	gov := governor.New(governor.Config{
+		Enabled: cfg.Priority.Enabled, ActiveWindow: time.Duration(cfg.Priority.ActiveWindowSec) * time.Second, PauseCompress: cfg.Priority.PauseCompress,
+	})
+	proc.LowPriority.Store(cfg.Priority.Enabled && cfg.Priority.LowerChild)
+	ix.Throttle = gov.Yield
 	roots, err := ix.SyncRoots()
 	if err != nil {
 		log.Error("登记根目录失败", "err", err)
@@ -212,6 +221,7 @@ func run(args []string, serve bool) int {
 		triggers[r.ID] = make(chan struct{}, 1)
 	}
 	poster := api.NewPoster(db, cfg, cm)
+	poster.Throttle = gov.Yield
 	// Jellyfin:配置了密钥才启用。用它已生成的封面(posterSource=auto),并为以后的转码建立路径映射
 	var jf *jellyfin.Client
 	if cfg.Jellyfin.URL != "" && cfg.Jellyfin.APIKey != "" {
@@ -362,7 +372,7 @@ func run(args []string, serve bool) int {
 
 	srv := &api.Server{AdminKey: adminKey, StartedAt: time.Now(),
 		DB: db, Cfg: cfg, Auth: auth.New(db, cfg.Auth.TokenDays), Idx: ix, Cache: cm,
-		Poster: poster, Render: api.NewRenderer(db, cfg, cm), HLS: api.NewHLS(cfg, log), JF: jf, Log: log, Version: version, LoginDelay: time.Second,
+		Poster: poster, Render: api.NewRenderer(db, cfg, cm), HLS: api.NewHLS(cfg, log), JF: jf, Log: log, Version: version, LoginDelay: time.Second, Gov: gov,
 		Rescan: func(id int64) {
 			for rid, ch := range triggers {
 				if id == 0 || id == rid {
@@ -383,7 +393,18 @@ func run(args []string, serve bool) int {
 		logx.Go("自动更新", func() { srv.Update.Run(ctx) })
 	}
 	srv.WarmRandom(ctx)
-	srv.StartOptimizeWorker(ctx) // 存储优化:视频压缩队列(没有任务时什么都不做) // 随机浏览预热:启动时就在后台算好各盘符的 id 范围、把数据库页读进缓存
+	srv.StartOptimizeWorker(ctx) // 存储优化:视频压缩队列(没有任务时什么都不做)
+	srv.StartClients(ctx)        // 客户端连接追踪:速度采样、过期清理
+	// 内网穿透:托管 frpc / 自定义穿透客户端(配置了才启动),掉线自动重连,定期探测外网地址
+	if cfg.Tunnel.Enabled {
+		port := 8480
+		if i := strings.LastIndex(cfg.Listen, ":"); i >= 0 {
+			fmt.Sscanf(cfg.Listen[i+1:], "%d", &port)
+		}
+		srv.Tunnel = tunnel.New(cfg.Tunnel, port, cfg.TLS.Enabled, cfg.DataDir, log)
+		srv.Tunnel.KillStale()
+		srv.Tunnel.Run(ctx)
+	}
 	var certFile, keyFile string
 	if cfg.TLS.Enabled {
 		var fp string

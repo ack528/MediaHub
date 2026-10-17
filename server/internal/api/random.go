@@ -281,10 +281,12 @@ func (s *Server) WarmRandom(ctx context.Context) {
 							if ctx.Err() != nil {
 								return
 							}
+							t0 := time.Now()
 							if _, err := s.sequence(ctx, ty, roots, slot); err != nil {
 								s.Log.Warn("随机序列生成失败", "err", err)
 							}
 							n++
+							s.Gov.Yield(ctx, time.Since(t0))
 						}
 					}
 				}

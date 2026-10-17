@@ -18,9 +18,11 @@ import (
 	"mediahub/internal/auth"
 	"mediahub/internal/cache"
 	"mediahub/internal/config"
+	"mediahub/internal/governor"
 	"mediahub/internal/index"
 	"mediahub/internal/jellyfin"
 	"mediahub/internal/logx"
+	"mediahub/internal/tunnel"
 	"mediahub/internal/update"
 	"mediahub/internal/winfs"
 )
@@ -28,17 +30,22 @@ import (
 const APIVersion = 1
 
 type Server struct {
-	rnd    randomState // 随机浏览用的各根目录 id 范围(见 random.go)
-	opt    optState    // 存储优化:重复文件检测、视频压缩(见 optimize_common.go)
-	DB     *sql.DB
-	Cfg    *config.Config
-	Auth   *auth.Service
-	Idx    *index.Indexer
-	Cache  *cache.Manager
-	Poster *Poster
-	Render *Renderer
-	JF     *jellyfin.Client // 转码引擎(可选)
-	HLS    *HLS             // 内置 ffmpeg 转码(没有 Jellyfin 时使用)
+	rnd randomState // 随机浏览用的各根目录 id 范围(见 random.go)
+	opt optState    // 存储优化:重复文件检测、视频压缩(见 optimize_common.go)
+	// Tunnel:内网穿透管理器(可为空,见 internal/tunnel)
+	Tunnel *tunnel.Manager
+	// Gov:按有无客户端调度后台任务(可为空 = 不让路);Clients:客户端连接追踪
+	Gov     *governor.Governor
+	Clients *Clients
+	DB      *sql.DB
+	Cfg     *config.Config
+	Auth    *auth.Service
+	Idx     *index.Indexer
+	Cache   *cache.Manager
+	Poster  *Poster
+	Render  *Renderer
+	JF      *jellyfin.Client // 转码引擎(可选)
+	HLS     *HLS             // 内置 ffmpeg 转码(没有 Jellyfin 时使用)
 	// TLSFingerprint 非空表示服务通过 HTTPS 提供(自签名证书的 SHA-256 指纹,手机首次连接时核对)
 	TLSFingerprint string
 	Log            *slog.Logger
@@ -88,6 +95,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/search", authd(s.search))
 	mux.Handle("GET /api/v1/random", authd(s.random))
 	mux.Handle("POST /api/v1/random/reset", authd(s.randomReset))
+	mux.Handle("GET /api/v1/server/addresses", authd(s.serverAddresses))
+	mux.Handle("GET /api/v1/admin/clients", s.adminOnly(s.adminClients))
+	mux.Handle("POST /api/v1/admin/clients/kick", s.adminOnly(s.adminClientKick))
+	mux.Handle("GET /api/v1/admin/tunnel", s.adminOnly(s.adminTunnelStatus))
+	mux.Handle("POST /api/v1/admin/tunnel/{action}", s.adminOnly(s.adminTunnelAction))
 	mux.Handle("GET /api/v1/speedtest/ping", authd(s.speedPing))
 	mux.Handle("GET /api/v1/speedtest/down", authd(s.speedDown))
 	mux.Handle("POST /api/v1/speedtest/up", authd(s.speedUp))
@@ -127,7 +139,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/admin/logs", s.adminOnly(s.adminLogs))
 	mux.Handle("GET /api/v1/admin/logs/bundle", s.adminOnly(s.adminLogBundle))
 	mux.Handle("POST /api/v1/admin/logs/level", s.adminOnly(s.adminLogLevel))
-	return s.logging(gzipJSON(mux))
+	return s.logging(s.track(gzipJSON(mux)))
 }
 
 func (s *Server) logging(next http.Handler) http.Handler {
@@ -206,10 +218,13 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeErr(w, 401, "auth.required", "需要登录")
 			return
 		}
-		uid, ok := s.Auth.Verify(strings.TrimSpace(tok))
+		uid, tokID, device, ok := s.Auth.VerifyInfo(strings.TrimSpace(tok))
 		if !ok {
 			writeErr(w, 401, "auth.expired", "令牌无效或已过期")
 			return
+		}
+		if ri := riFrom(r.Context()); ri != nil && s.Clients != nil { // 登记这个客户端,并通知 governor
+			s.Clients.begin(ri, r, uid, tokID, device)
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, uid)))
 	})

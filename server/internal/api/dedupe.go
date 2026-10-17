@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"mediahub/internal/governor"
 	"mediahub/internal/proc"
 	"mediahub/internal/winfs"
 )
@@ -126,7 +127,7 @@ func quickHead(path string, size int64) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func fullSHA(ctx context.Context, path string) (string, error) {
+func fullSHA(ctx context.Context, path string, gov *governor.Governor) (string, error) {
 	f, err := winfs.Open(path)
 	if err != nil {
 		return "", err
@@ -138,6 +139,7 @@ func fullSHA(ctx context.Context, path string) (string, error) {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
+		gov.YieldChunk(ctx) // 正在传输 / 播放时,读大文件每块让一下磁盘
 		n, err := f.Read(buf)
 		if n > 0 {
 			h.Write(buf[:n])
@@ -161,7 +163,7 @@ func dHash64(ctx context.Context, ffmpeg, path string, at float64, seek bool) (u
 	args = append(args, "-i", path, "-frames:v", "1", "-vf", "scale=9:8:flags=area,format=gray", "-f", "rawvideo", "-")
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	out, err := proc.Hide(exec.CommandContext(cctx, ffmpeg, args...)).Output()
+	out, err := proc.Background(exec.CommandContext(cctx, ffmpeg, args...)).Output()
 	if err != nil || len(out) < 72 {
 		return 0, false, fmt.Errorf("取帧失败")
 	}
@@ -298,7 +300,7 @@ func (s *Server) dedupeRun(ctx context.Context, roots []int64, thr int) error {
 		if err != nil {
 			return
 		}
-		sha, err := fullSHA(ctx, m.full())
+		sha, err := fullSHA(ctx, m.full(), s.Gov)
 		if err != nil {
 			return
 		}
@@ -422,7 +424,9 @@ func (s *Server) parallel(ctx context.Context, workers, n int, fn func(i int)) e
 				if i >= n {
 					return
 				}
+				t0 := time.Now()
 				fn(i)
+				s.Gov.Yield(ctx, time.Since(t0)) // 有客户端连着:每处理完一个文件让出时间(Active 约一半,Streaming 只用约 1/5)
 			}
 		}()
 	}

@@ -72,6 +72,15 @@ type Config struct {
 		Mirror          string   `json:"mirror"`          // 自己指定的加速前缀(排在内置镜像前面),默认空
 		Mirrors         []string `json:"mirrors"`         // 内置的 GitHub 镜像前缀;直连更慢或失败时自动使用。可在配置里改:[] = 不用镜像
 	} `json:"update"`
+	// Priority:有客户端连接时给传输和播放让路(见 internal/governor)。默认开启。
+	Priority struct {
+		Enabled         bool `json:"enabled"`         // 关闭 = 后台任务不看有没有客户端,一直全速
+		ActiveWindowSec int  `json:"activeWindowSec"` // 最近多少秒内有客户端请求就算"有客户端连着",默认 120
+		PauseCompress   bool `json:"pauseCompress"`   // 有客户端时暂停后台压缩(整个转码进程被挂起),没有客户端时自动继续,默认 true
+		LowerChild      bool `json:"lowerChild"`      // 后台任务的 ffmpeg / ffprobe / exiftool 用较低的 CPU 优先级,默认 true
+	} `json:"priority"`
+	// Tunnel:内网穿透(服务端托管 frpc 或自定义的穿透客户端,见 internal/tunnel)。默认关闭。
+	Tunnel Tunnel `json:"tunnel"`
 	// AdminListen:仅本机的管理端口(明文 HTTP,只监听回环地址,桌面管理程序用它)。留空 = 监听端口 + 1。TLS 关闭时不使用。
 	AdminListen string `json:"adminListen"`
 	// Log.Level:服务端日志级别 debug / info / warn / error,默认 info
@@ -99,6 +108,41 @@ var DefaultUpdateMirrors = []string{
 	"https://wget.la/",
 }
 
+// Tunnel 是内网穿透的配置。type = frp(托管 frpc,按下面 frp 字段生成配置)| custom(运行你自己的命令,例如 cpolar / natapp / cloudflared)。
+type Tunnel struct {
+	Enabled bool   `json:"enabled"`
+	Type    string `json:"type"`
+	// PublicAddr:手机里填的外网地址(例如 abc.example.com:12345);用于健康探测和显示
+	PublicAddr    string `json:"publicAddr"`
+	HealthCheck   bool   `json:"healthCheck"`   // 定期通过外网地址探测整条链路
+	RestartOnFail bool   `json:"restartOnFail"` // 连续探测失败时自动重启穿透进程
+
+	// ---- frp
+	Binary string `json:"binary"` // frpc.exe 的路径;留空 = toolsrprpc.exe
+	ServerAddr     string `json:"serverAddr"`
+	ServerPort     int    `json:"serverPort"`
+	Token          string `json:"token"`
+	User           string `json:"user"`
+	Protocol       string `json:"protocol"`  // tcp | kcp | quic | websocket | wss:客户端到穿透服务器之间的传输协议
+	ProxyType      string `json:"proxyType"` // tcp(远程端口)| https(域名,TLS 透传)| http(域名,只在关闭 HTTPS 时用)
+	ProxyName      string `json:"proxyName"`
+	RemotePort     int    `json:"remotePort"`
+	CustomDomain   string `json:"customDomain"`
+	Subdomain      string `json:"subdomain"`
+	TCPMux         bool   `json:"tcpMux"`         // 多个请求复用一条到服务器的连接
+	PoolCount      int    `json:"poolCount"`      // 预先建好的工作连接数
+	HeartbeatSec   int    `json:"heartbeatSec"`   // 心跳间隔(秒),超时是它的 3 倍:断线越快发现越快重连
+	TLS            bool   `json:"tls"`            // 客户端到穿透服务器的连接是否加 TLS
+	Encryption     bool   `json:"encryption"`     // 隧道内再加密(MediaHub 已经是 HTTPS,默认关)
+	Compression    bool   `json:"compression"`    // 隧道内压缩(图片 / 视频已经是压缩格式,默认关)
+	BandwidthLimit string `json:"bandwidthLimit"` // 限速,例如 "2MB"(穿透服务器按带宽计费 / 限速时用);留空不限
+
+	// ---- 自定义命令
+	Command string `json:"command"`
+	Args    string `json:"args"` // 命令行参数;{port} 会替换成 MediaHub 的监听端口
+	WorkDir string `json:"workDir"`
+}
+
 func Default() *Config {
 	c := &Config{}
 	c.Listen = "0.0.0.0:8480"
@@ -118,6 +162,11 @@ func Default() *Config {
 	c.Auth.TokenDays = 180
 	c.Log.Level = "info"
 	c.TLS.Enabled = true
+	c.Priority.Enabled, c.Priority.ActiveWindowSec, c.Priority.PauseCompress, c.Priority.LowerChild = true, 120, true, true
+	c.Tunnel = Tunnel{
+		Type: "frp", ServerPort: 7000, Protocol: "tcp", ProxyType: "tcp", ProxyName: "mediahub",
+		TCPMux: true, PoolCount: 5, HeartbeatSec: 10, TLS: true, HealthCheck: true, RestartOnFail: true,
+	}
 	c.Update.Enabled = true
 	c.Update.Repo = "ack528/MediaHub"
 	c.Update.IntervalMinutes = 10

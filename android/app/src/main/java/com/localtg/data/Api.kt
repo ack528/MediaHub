@@ -40,6 +40,22 @@ class AuthInterceptor(
     }
 }
 
+/** 客户端标识:服务端的"客户端连接"页面靠它显示 App 版本和机型。形如 LocalBrowse/3.1.0 (Android 17; OPPO OPD2515)。 */
+object ClientInfo {
+    @Volatile var userAgent: String = "LocalBrowse"
+    fun init(ctx: android.content.Context) {
+        val ver = runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull().orEmpty()
+        val model = (android.os.Build.MANUFACTURER.orEmpty().replaceFirstChar { it.uppercase() } + " " + android.os.Build.MODEL.orEmpty()).trim()
+        // 请求头只能是可见 ASCII
+        userAgent = "LocalBrowse/$ver (Android ${android.os.Build.VERSION.RELEASE}; $model)".filter { it.code in 32..126 }
+    }
+}
+
+class UserAgentInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response =
+        chain.proceed(chain.request().newBuilder().header("User-Agent", ClientInfo.userAgent).build())
+}
+
 /** 记录网络请求:失败 / 慢请求记为警告,其余只在"调试"级别记录。不记录请求头和请求体(含令牌和密码)。 */
 class LogInterceptor : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -97,6 +113,8 @@ private fun buildHttpClient(store: SessionStore, local: LocalMedia, connectSec: 
         .readTimeout(readSec.toLong(), TimeUnit.SECONDS)
         .addInterceptor(LocalInterceptor(local)) // 本地媒体模式:发往 local.mediahub 的请求在进程内应答,不走网络
         .addInterceptor(AuthInterceptor({ store.session.value }, onUnauthorized))
+        .addInterceptor(RouteInterceptor { store.session.value?.baseUrl }) // 在 Auth 之后:令牌按"原地址"判断是否附加,再把主机换成内网直连的
+        .addInterceptor(UserAgentInterceptor())
         .addInterceptor(LogInterceptor())
         .build()
 }
@@ -239,13 +257,21 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
         if (!force && capsAt != 0L && now - capsAt < 10 * 60_000L) return caps
         val info = call<ServerInfo>(Request.Builder().url("$base/api/v1/server/info").build())
         caps = info.caps
+        transcodeOk = info.transcode || info.caps.codecs.isNotEmpty()
         capsAt = if (info.caps.probing) now - 9 * 60_000L else now
         com.localtg.AppLog.i("net", "服务端能力:转码编码 ${info.caps.codecs},QSV h264=${info.caps.qsvH264} h265=${info.caps.qsvH265},码率上限 ${info.caps.maxTranscodeBitrate / 1000}kbps,缩略图 WebP=${info.caps.thumbWebp}")
         return caps
     }
 
     /** 切换服务器 / 退出登录:能力作废。 */
-    fun resetCaps() { caps = ServerCaps(); capsAt = 0L }
+    fun resetCaps() { caps = ServerCaps(); capsAt = 0L; transcodeOk = false }
+
+    /** 服务端能不能转码(没有 ffmpeg / Jellyfin 的服务端不能):自动画质据此决定能不能降档。 */
+    @Volatile var transcodeOk: Boolean = false
+        private set
+
+    /** 服务器在各个网络上的地址(服务端 3.1.0 起)。 */
+    suspend fun addresses(): ServerAddrs = call(Request.Builder().url("$base/api/v1/server/addresses").build())
 
     @kotlinx.serialization.Serializable
     private class PlayerPrefResp(val json: PlayerPref, val savedAt: Long = 0)

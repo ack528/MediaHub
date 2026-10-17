@@ -133,22 +133,83 @@ func (s *Service) Login(name, pw, device string) (token string, expires time.Tim
 
 // Verify 校验令牌;使用中的令牌自动顺延有效期(滑动过期)。
 func (s *Service) Verify(token string) (userID int64, ok bool) {
+	userID, _, _, ok = s.VerifyInfo(token)
+	return
+}
+
+// VerifyInfo 同 Verify,另外返回令牌的标识(哈希前 12 位十六进制,不可逆,用来区分是哪台设备登录的)和登录时填的设备名。
+func (s *Service) VerifyInfo(token string) (userID int64, id string, device string, ok bool) {
 	if token == "" {
-		return 0, false
+		return 0, "", "", false
 	}
 	h := tokenHash(token)
 	var exp, seen int64
-	if err := s.DB.QueryRow(`SELECT user_id, expires, last_seen FROM tokens WHERE hash=?`, h).Scan(&userID, &exp, &seen); err != nil {
-		return 0, false
+	var dev sql.NullString
+	if err := s.DB.QueryRow(`SELECT user_id, expires, last_seen, device FROM tokens WHERE hash=?`, h).Scan(&userID, &exp, &seen, &dev); err != nil {
+		return 0, "", "", false
 	}
 	now := time.Now()
 	if exp < now.Unix() {
-		return 0, false
+		return 0, "", "", false
 	}
 	if now.Unix()-seen > 3600 {
 		_, _ = s.DB.Exec(`UPDATE tokens SET last_seen=?, expires=? WHERE hash=?`, now.Unix(), now.AddDate(0, 0, s.TokenDays).Unix(), h)
 	}
-	return userID, true
+	return userID, h[:12], dev.String, true
+}
+
+// UserName 用户名(不存在返回空)。
+func (s *Service) UserName(id int64) string {
+	var n string
+	_ = s.DB.QueryRow(`SELECT name FROM users WHERE id=?`, id).Scan(&n)
+	return n
+}
+
+// TokenRow 是令牌表里的一条(给管理程序列出"登录过的设备")。
+type TokenRow struct {
+	ID       string `json:"id"` // 哈希前 12 位
+	UserID   int64  `json:"userId"`
+	User     string `json:"user"`
+	Device   string `json:"device"`
+	LastSeen int64  `json:"lastSeen"`
+}
+
+// RecentTokens 最近 days 天内用过的令牌(有效期内)。
+func (s *Service) RecentTokens(days int) []TokenRow {
+	rows, err := s.DB.Query(`SELECT t.hash, t.user_id, COALESCE(u.name,''), COALESCE(t.device,''), t.last_seen FROM tokens t LEFT JOIN users u ON u.id=t.user_id
+		WHERE t.last_seen>? AND t.expires>? ORDER BY t.last_seen DESC`, time.Now().AddDate(0, 0, -days).Unix(), time.Now().Unix())
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []TokenRow
+	for rows.Next() {
+		var r TokenRow
+		var h string
+		if rows.Scan(&h, &r.UserID, &r.User, &r.Device, &r.LastSeen) == nil && len(h) >= 12 {
+			r.ID = h[:12]
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// RevokeByID 按令牌标识(哈希前缀)撤销登录:这台设备下次请求会收到 401,回到登录页。返回撤销的条数。
+func (s *Service) RevokeByID(id string) int64 {
+	if len(id) < 8 || len(id) > 64 {
+		return 0
+	}
+	for _, c := range id {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return 0
+		}
+	}
+	res, err := s.DB.Exec(`DELETE FROM tokens WHERE hash LIKE ?`, id+"%")
+	if err != nil {
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return n
 }
 
 func (s *Service) Logout(token string) {

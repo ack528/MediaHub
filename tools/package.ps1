@@ -38,12 +38,12 @@ function Copy-Tree($from, $to) {
 Step '编译服务端 mediahub.exe'
 Push-Location (Join-Path $Root 'server')
 if (-not $SkipTests) {
-  & go test ./... 2>&1 | Select-Object -Last 12
+  & go test -p $env:BUILD_JOBS ./... 2>&1 | Select-Object -Last 12
   if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'Go 测试未通过,已中止打包' }
 }
 if (Test-Path $Stage) { Remove-Item -LiteralPath $Stage -Recurse -Force }
 New-Item -ItemType Directory -Force (Join-Path $Stage 'runtime\bin') | Out-Null
-& go build -trimpath -ldflags '-s -w' -o (Join-Path $Stage 'runtime\bin\mediahub.exe') .\cmd\mediahub
+& go build -p $env:BUILD_JOBS -trimpath -ldflags '-s -w' -o (Join-Path $Stage 'runtime\bin\mediahub.exe') .\cmd\mediahub
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'go build 失败' }
 Pop-Location
 

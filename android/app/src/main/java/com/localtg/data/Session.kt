@@ -83,6 +83,7 @@ data class ServerEntry(
     val pin: String = "",
     val address: String = "",      // 用户当初输入的地址,登录页回填用
     val user: String = "",
+    val lan: List<String> = emptyList(), // 服务器告诉我们的内网 / IPv6 地址(host:port),没连上外网地址时也能直接试内网
 ) {
     val isLocal: Boolean get() = kind == "local"
     val loggedIn: Boolean get() = isLocal || token.isNotEmpty()
@@ -190,6 +191,13 @@ class SessionStore(private val ctx: Context) {
         pin?.let { fp -> extraPins = extraPins - fp.uppercase() }
         ctx.dataStore.edit { it[kLastAddress] = addressAsTyped }
         activate(e)
+        persist()
+    }
+
+    /** 记下服务器的内网候选地址(变了才写)。 */
+    suspend fun setLan(id: String, lan: List<String>) {
+        if (servers.value.firstOrNull { it.id == id }?.lan == lan) return
+        servers.value = servers.value.map { if (it.id == id) it.copy(lan = lan) else it }
         persist()
     }
 

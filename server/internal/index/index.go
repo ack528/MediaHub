@@ -105,6 +105,9 @@ type Indexer struct {
 	Cfg *config.Config
 	Log *slog.Logger
 
+	// Throttle 后台扫描 / 补全每处理完一个目录 / 一批文件后调用(worked = 这一块花的时间),由 main 接到 governor.Yield:有客户端连着时让路
+	Throttle func(ctx context.Context, worked time.Duration)
+
 	mu       sync.Mutex
 	progress map[int64]*Progress
 	order    map[int64]int // 根目录在配置里的顺序,进度列表按它排,不会乱动
@@ -483,6 +486,10 @@ func (ix *Indexer) ScanRoot(ctx context.Context, r Root) (retErr error) {
 		ix.mu.Lock()
 		p.Current = f.path
 		ix.mu.Unlock()
+		if ix.Throttle != nil {
+			t0 := time.Now()
+			defer func() { ix.Throttle(ctx, time.Since(t0)) }()
+		}
 		entries, err := listDirTimeout(f.path, dirReadTimeout)
 		if err != nil {
 			ix.recordDirFailure(p, f.path, err)

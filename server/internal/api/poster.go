@@ -34,6 +34,8 @@ type Poster struct {
 	cache *cache.Manager
 	// JF 为 nil 表示没有配置 Jellyfin,只能自己生成
 	JF *jellyfin.Client
+	// Throttle 封面预生成(Warm)每做完一个调用一次(worked = 这个花的时间),main 里接到 governor.Yield:有客户端连着时让路
+	Throttle func(ctx context.Context, worked time.Duration)
 
 	global chan struct{}
 	mu     sync.Mutex
@@ -249,6 +251,12 @@ func (p *Poster) generate(mediaID, rootID, durationMs int64) (string, error) {
 
 // Warm 后台预热:为某个根下尚无 ThumbHash 的视频生成封面。失败的置空串,不再重试。
 func (p *Poster) Warm(ctx context.Context, rootID int64) int {
+	// Throttle 在 main 里接到 governor.Yield:封面预生成每做完一个就让出时间给有客户端的传输
+	throttle := func(t0 time.Time) {
+		if p.Throttle != nil {
+			p.Throttle(ctx, time.Since(t0))
+		}
+	}
 	done := 0
 	for {
 		rows, err := p.db.Query(`SELECT id FROM media WHERE root_id=? AND type=1 AND state=1 AND thumbhash IS NULL ORDER BY id LIMIT 100`, rootID)
@@ -270,10 +278,13 @@ func (p *Poster) Warm(ctx context.Context, rootID int64) int {
 			if ctx.Err() != nil {
 				return done
 			}
+			t0 := time.Now()
 			if _, err := p.Resolve(ctx, id); err != nil {
 				_, _ = p.db.Exec(`UPDATE media SET thumbhash=x'' WHERE id=? AND thumbhash IS NULL`, id)
+				throttle(t0)
 				continue
 			}
+			throttle(t0)
 			// 封面早已缓存但库里没有 ThumbHash 的情况:避免死循环
 			_, _ = p.db.Exec(`UPDATE media SET thumbhash=x'' WHERE id=? AND thumbhash IS NULL`, id)
 			done++

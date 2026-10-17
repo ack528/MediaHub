@@ -112,7 +112,7 @@ fun SettingsScreen(c: AppContainer, section: String?, onBack: () -> Unit, onOpen
                     "enhance" -> EnhancePage(s, update, onOpen)
                     "enhance-hw" -> HardwarePage(s, update)
                     "lsfg" -> LsfgPage(s)
-                    "network" -> NetworkPage(s, update)
+                    "network" -> NetworkPage(c, s, update)
                     "speedtest" -> SpeedTestPage(c, s, update)
                     "storage" -> StoragePage(c)
                     "account" -> AccountPage(c)
@@ -536,6 +536,11 @@ private fun CodecPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
         "转码码率", s.maxBitrateMbps.coerceAtMost(6), listOf(0 to "自动(按原分辨率)", 6 to "6 Mbps", 5 to "5 Mbps", 4 to "4 Mbps", 3 to "3 Mbps", 2 to "2 Mbps", 1 to "1 Mbps"),
         desc = "转码只调整码率,不改变分辨率(原来多少像素还是多少),只提供 6 Mbps 及以下的档位。自动 = 按视频原分辨率:480p 1.5M / 720p 3M / 1080p 及以上 6M;网络不好时调低。更细的档位(0.5M / 0.8M / 1.5M 等)在播放器右上角菜单的「画质与解码」里选",
     ) { u { copy(maxBitrateMbps = it) } }
+    SwitchRow(
+        "自动画质", "网速不够时自动降一档转码:开播前网速估计明显低于视频码率就直接转码到扛得住的档位;播放中连续卡顿(45 秒内两次,或一次超过 8 秒)就自动降一档并从当前位置继续,画面上会提示,可在播放器菜单里改回。" +
+            "降档只针对当前这个视频,不改「记住的播放设置」。经内网穿透 / 云中继、带宽小的时候最有用。需要服务端支持转码。",
+        s.autoQuality,
+    ) { u { copy(autoQuality = it) } }
     ChoiceRow(
         "转码编码", s.playerCodec, listOf("auto" to "自动(推荐)", "h264" to "H.264", "h265" to "H.265"),
         desc = "H.265 在相同码率下画质更好、相同画质更省流量。自动 = 服务端能输出 H.265(需要服务器有 Intel QSV 显卡硬编)且手机能硬解 H.265 就用 H.265,否则 H.264",
@@ -548,8 +553,23 @@ private fun CodecPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
 }
 
 @Composable
-private fun NetworkPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
+private fun NetworkPage(c: AppContainer, s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
     val ctx = LocalContext.current
+    val route by com.localtg.data.Route.current.collectAsState()
+    val sess by c.session.session.collectAsState()
+    Header("连接线路")
+    InfoRow("当前线路", when {
+        c.isLocal -> "本地媒体(不连服务器)"
+        route != null -> "内网直连:${route!!.substringAfter("://")}"
+        else -> "服务器地址:${sess?.baseUrl?.substringAfter("://") ?: "未连接"}"
+    })
+    SwitchRow(
+        "内网直连优先",
+        "和服务器在同一个局域网时自动改走服务器的内网地址(比经过内网穿透 / 云中继快得多,也不占穿透服务器的带宽);离开家里的网络、内网地址连不上时自动切回服务器地址。" +
+            "需要服务端 3.1.0,服务器是 HTTPS(内网地址同样要通过证书指纹校验)。",
+        s.lanFirst,
+    ) { u { copy(lanFirst = it) } }
+    ActionRow("重新检测线路", "马上重新探测服务器的内网 / IPv6 地址,并显示选中的线路") { c.probeRoute() }
     RestartNote()
     Header("超时")
     ChoiceRow("连接超时", s.connectTimeoutSec, listOf(3, 5, 10, 20).map { it to "$it 秒" }, desc = "连不上服务器时多久放弃") { u { copy(connectTimeoutSec = it) } }

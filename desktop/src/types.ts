@@ -18,6 +18,16 @@ export interface Config {
   log: { level: "debug" | "info" | "warn" | "error" };
   /** 局域网加密传输(HTTPS,自签名证书) */
   tls: { enabled: boolean };
+  /** 内网穿透(服务端托管 frpc 或自定义的穿透客户端) */
+  tunnel: {
+    enabled: boolean; type: "frp" | "custom"; publicAddr: string; healthCheck: boolean; restartOnFail: boolean;
+    binary: string; serverAddr: string; serverPort: number; token: string; user: string;
+    protocol: string; proxyType: string; proxyName: string; remotePort: number; customDomain: string; subdomain: string;
+    tcpMux: boolean; poolCount: number; heartbeatSec: number; tls: boolean; encryption: boolean; compression: boolean; bandwidthLimit: string;
+    command: string; args: string; workDir: string;
+  };
+  /** 有客户端连接时给传输和播放让路 */
+  priority: { enabled: boolean; activeWindowSec: number; pauseCompress: boolean; lowerChild: boolean };
   /** 管理程序自己的设置(服务端忽略) */
   desktop: { autoStartService: boolean };
 }
@@ -38,6 +48,14 @@ export const DEFAULT_CONFIG: Config = {
   scan: { skipWithinHours: 12, intervalHours: 24 },
   log: { level: "info" },
   tls: { enabled: true },
+  tunnel: {
+    enabled: false, type: "frp", publicAddr: "", healthCheck: true, restartOnFail: true,
+    binary: "", serverAddr: "", serverPort: 7000, token: "", user: "",
+    protocol: "tcp", proxyType: "tcp", proxyName: "mediahub", remotePort: 0, customDomain: "", subdomain: "",
+    tcpMux: true, poolCount: 5, heartbeatSec: 10, tls: true, encryption: false, compression: false, bandwidthLimit: "",
+    command: "", args: "", workDir: "",
+  },
+  priority: { enabled: true, activeWindowSec: 120, pauseCompress: true, lowerChild: true },
   desktop: { autoStartService: false },
 };
 

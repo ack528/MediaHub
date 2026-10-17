@@ -105,6 +105,11 @@ func (s *Server) compressLoop(ctx context.Context) {
 			time.Sleep(5 * time.Second)
 			continue
 		}
+		// 有客户端连着(governor 不是 Idle)时不开始新的压缩;没有客户端后自动继续
+		if s.Gov.PauseCompress() {
+			time.Sleep(3 * time.Second)
+			return
+		}
 		var id int64
 		if err := s.DB.QueryRow(`SELECT id FROM opt_job WHERE state='queued' ORDER BY id LIMIT 1`).Scan(&id); err != nil {
 			return
@@ -309,7 +314,7 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 	s.Log.Info("压缩开始", "id", id, "media", m.Name, "codec", enc, "kbps", j.Kbps, "preset", j.Preset)
 
 	run := func(aac bool) (string, error) {
-		cmd := proc.Hide(exec.CommandContext(jctx, s.Cfg.Tools.FFmpeg, s.compressArgs(src, winfs.Path(out), j, enc, hw, si, aac)...))
+		cmd := proc.Background(exec.CommandContext(jctx, s.Cfg.Tools.FFmpeg, s.compressArgs(src, winfs.Path(out), j, enc, hw, si, aac)...)) // 较低的 CPU 优先级
 		errBuf := &tailBuf{}
 		cmd.Stderr = errBuf
 		stdout, err := cmd.StdoutPipe()
@@ -319,6 +324,39 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 		if err := cmd.Start(); err != nil {
 			return "", err
 		}
+		// 监视调度级别:有客户端连着就把 ffmpeg 整个进程挂起(进度保留、不占 CPU / 磁盘 / QSV),没有客户端后恢复
+		pid := cmd.Process.Pid
+		stopMon := make(chan struct{})
+		defer close(stopMon)
+		go func() {
+			t := time.NewTicker(2 * time.Second)
+			defer t.Stop()
+			suspended := false
+			for {
+				select {
+				case <-stopMon:
+					if suspended {
+						_ = proc.Resume(pid)
+					}
+					return
+				case <-t.C:
+					want := s.Gov.PauseCompress()
+					if want && !suspended {
+						if proc.Suspend(pid) == nil {
+							suspended = true
+							s.Log.Info("有客户端连接,压缩已暂停", "id", id)
+							s.jobSet(id, map[string]any{"err": "⏸ 有客户端连接,已暂停;没有客户端后自动继续"})
+						}
+					} else if !want && suspended {
+						if proc.Resume(pid) == nil {
+							suspended = false
+							s.Log.Info("没有客户端连接,压缩已继续", "id", id)
+							s.jobSet(id, map[string]any{"err": ""})
+						}
+					}
+				}
+			}
+		}()
 		sc := bufio.NewScanner(stdout)
 		last := time.Now()
 		for sc.Scan() {

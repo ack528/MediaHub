@@ -131,6 +131,7 @@ class SpeedTest(private val c: AppContainer) {
         val (at2, peak, bytes) = res ?: Triple(-1L, 0.0, total.get())
         val stable = if (at2 >= 0 && ms > 2500) mbps(bytes - at2, ms - 2000) else mbps(bytes, ms)
         AppLog.i("speedtest", "下载 ${threads} 连接 ${ms}ms ${bytes / 1024}KB 平均 ${"%.1f".format(mbps(bytes, ms))} 稳定 ${"%.1f".format(stable)} 峰值 ${"%.1f".format(peak)} Mbps")
+        NetEstimate.set((stable * 1_000_000).toLong()) // 测速量到的稳定下载速度 = 最可靠的网速估计,自动画质据此判断
         Flow(bytes, ms, mbps(bytes, ms), stable, peak)
     }
 

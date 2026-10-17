@@ -4,6 +4,7 @@ import { Badge, Btn, Card, ItemRow, Row, Switch } from "../components";
 import { itemsOf } from "../schema";
 import { useApp } from "../store";
 import { CopyBtn } from "./Overview";
+import { Tunnel } from "./Tunnel";
 
 function Listen() {
   const { ips, config, svc } = useApp();
@@ -85,5 +86,7 @@ function Startup() {
 }
 
 export function Network({ tab }: { tab: string }) {
-  return tab === "开机与防火墙" ? <Startup /> : <Listen />;
+  if (tab === "开机与防火墙") return <Startup />;
+  if (tab === "内网穿透") return <Tunnel />;
+  return <Listen />;
 }

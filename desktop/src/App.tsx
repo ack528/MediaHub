@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Btn, Card, ItemRow, Progress, Tabs, fmtBytes } from "./components";
 import { Icon } from "./icons";
 import { Accounts } from "./pages/Accounts";
+import { Clients } from "./pages/Clients";
 import { About } from "./pages/About";
 import { Library } from "./pages/Library";
 import { Logs } from "./pages/Logs";
@@ -55,6 +56,7 @@ function PageBody({ page, tab }: { page: PageId; tab: string }) {
     case "optimize": return <Optimize tab={tab} />;
     case "accounts": return <Accounts tab={tab} />;
     case "network": return <Network tab={tab} />;
+    case "clients": return <Clients tab={tab} />;
     case "logs": return <Logs tab={tab} />;
     case "about": return <About />;
   }

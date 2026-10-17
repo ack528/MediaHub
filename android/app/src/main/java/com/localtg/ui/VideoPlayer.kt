@@ -202,8 +202,10 @@ fun VideoPage(
     val blocked = item.brokenLabel() != null && (item.size == 0L || !forceTry)
     // null = 直接播放原文件;否则请服务端按这个码率(bps)转码,分辨率不变。
     // 开了「记住画质」:上一个视频选了 1.5M 转码,切到下一个视频就直接用 1.5M(服务端也已经在预热它了),不用再手动选。
-    var transcodeBitrate by remember(item.id) { mutableStateOf<Int?>(rememberedTranscode(c, item)) }
+    var transcodeBitrate by remember(item.id) { mutableStateOf<Int?>(initialTranscode(c, item)) }
     val sid = remember(item.id) { c.hlsSid(item.id) } // 每个视频固定一个会话标识:服务端预热的转码,播放时才能接上
+    val stalls = remember(item.id) { com.localtg.data.StallTracker() }      // 自动画质:卡顿统计
+    val lastSeek = remember(item.id) { longArrayOf(0L) }                    // 最近一次用户拖动进度的时间:拖动引起的缓冲不算卡顿
     var tCodec by remember(item.id) { mutableStateOf(com.localtg.data.DeviceCodecs.resolveCodec(c.settings.value.playerCodec, c.api.caps.codecs)) }
     var resumeMs by remember(item.id) { mutableLongStateOf(-1L) }        // -1 = 还没读取保存的进度
     var stats by remember { mutableStateOf("") }
@@ -274,8 +276,15 @@ fun VideoPage(
             pl.addListener(object : Player.Listener {
                 override fun onRenderedFirstFrame() { firstFrame = true; error = null; netRetries = 0; AppLog.i("player", "首帧 ${item.name}") }
                 override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying; c.videoPlaying = isPlaying }
+                override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) lastSeek[0] = android.os.SystemClock.elapsedRealtime()
+                }
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     state = playbackState
+                    // 自动画质:出过首帧之后又进入缓冲(不是用户拖动进度)= 一次卡顿
+                    val nowMs = android.os.SystemClock.elapsedRealtime()
+                    if (playbackState == Player.STATE_BUFFERING && firstFrame && nowMs - lastSeek[0] > 4000) stalls.onStallStart(nowMs)
+                    else if (playbackState == Player.STATE_READY) stalls.onStallEnd(nowMs)
                     AppLog.d("player", "状态=${when (playbackState) { 1 -> "IDLE"; 2 -> "BUFFERING"; 3 -> "READY"; 4 -> "ENDED"; else -> "?" }}")
                     if (playbackState == Player.STATE_ENDED) onEnded()
                 }
@@ -378,6 +387,42 @@ fun VideoPage(
         }
     }
 
+    // 自动画质:网速不够时自动降一档转码。卡顿中每秒检查一次:45 秒内第二次卡顿,或者一次卡了超过 8 秒 → 降档。
+    // 降档只是这个视频的临时调整,不改「记住的播放设置」;一个视频最多降 3 次,降完 25 秒内不再动。
+    fun stepDown() {
+        val pl = player ?: return
+        val est = com.localtg.data.NetEstimate.fresh
+        val cur = (transcodeBitrate?.toLong() ?: com.localtg.data.originalBps(item)).takeIf { it > 0 }
+        val limit = when {
+            cur != null -> minOf(if (est > 0) est * 7 / 10 else Long.MAX_VALUE, cur * 3 / 4)
+            est > 0 -> est * 7 / 10
+            else -> return
+        }
+        val tier = com.localtg.data.tierAtMost(limit, c.api.caps.maxTranscodeBitrate)
+        val now = android.os.SystemClock.elapsedRealtime()
+        val curT = transcodeBitrate
+        if (tier == null || (curT != null && tier >= curT)) {
+            if (stalls.stepsDone < 3) showHud(Hud(TgIcons.Warning, "网络太慢,已经是最低的转码档位了"))
+            stalls.switched(now)
+            return
+        }
+        AppLog.i("player", "自动降档:卡顿 → 转码 ${tier / 1000}kbps(网速估计 ${est / 1000}kbps,当前 ${(cur ?: 0L) / 1000}kbps)")
+        resumeMs = pl.currentPosition
+        useSoftware = false
+        transcodeBitrate = tier
+        stalls.switched(now)
+        showHud(Hud(TgIcons.Speed, "网络较慢,已自动降到 ${com.localtg.data.QualityTiers.label(tier)} 转码(可在画质菜单里改回)"))
+    }
+    LaunchedEffect(player, state, firstFrame) {
+        if (player == null || !isCurrent || !firstFrame || state != Player.STATE_BUFFERING) return@LaunchedEffect
+        if (!c.settings.value.autoQuality || c.isLocal || !c.api.transcodeOk) return@LaunchedEffect
+        while (true) {
+            delay(1000)
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (stalls.shouldStepDown(now, stalls.ongoingMs(now))) { stepDown(); break }
+        }
+    }
+
     // 把本页的转码码率告诉查看器(底部信息条显示转码后的预估体积);翻走时清掉
     LaunchedEffect(isCurrent, transcodeBitrate) { if (isCurrent) ui.transcodeBps = transcodeBitrate }
     DisposableEffect(isCurrent) { onDispose { if (isCurrent) ui.transcodeBps = null } }
@@ -406,6 +451,7 @@ fun VideoPage(
             val inst = (b - lastBytes) * 1000.0 / (now - lastT).coerceAtLeast(1)
             speed = if (speed == 0.0) inst else speed * 0.6 + inst * 0.4
             lastBytes = b; lastT = now
+            if (b > 0 && speed > 0 && now - t0 > 1000) com.localtg.data.NetEstimate.update((speed * 8).toLong()) // 缓冲不够、全速下载期间的速度 = 当前网速的估计
             val bufMs = pl.totalBufferedDuration
             val durMs = pl.duration.takeIf { it > 0 } ?: item.durationMs ?: 0L
             val bytesPerMs = when {
@@ -1406,4 +1452,20 @@ internal fun transcodeEstimate(item: Item, bps: Int?, playerDurMs: Long): Long? 
 internal fun sizeLabel(item: Item, bps: Int?, playerDurMs: Long, short: Boolean = false): String {
     val est = transcodeEstimate(item, bps, playerDurMs) ?: return formatSize(item.size)
     return if (short) "≈${formatSize(est)}(原 ${formatSize(item.size)})" else "≈${formatSize(est)}(转码后预估,原 ${formatSize(item.size)})"
+}
+
+/**
+ * 新打开视频时的初始转码码率:先看「记住的播放设置」;没有明确选过(没选过 / 没开记住)时,「自动画质」按网速估计决定 ——
+ * 视频码率明显高于网速的 70%(经内网穿透 / 云中继时常见)就直接转码到网速扛得住的最高档,不用先卡一次再降。
+ * 用户明确选过原画(记住的是 0)时尊重他的选择,只靠播放中的卡顿检测兜底。
+ */
+internal fun initialTranscode(c: com.localtg.AppContainer, item: Item): Int? {
+    rememberedTranscode(c, item)?.let { return it }
+    val s = c.settings.value
+    if (!s.autoQuality || c.isLocal || !c.api.transcodeOk || item.brokenLabel() != null) return null
+    if (s.rememberPlayback && s.playerQuality >= 0) return null
+    val est = com.localtg.data.NetEstimate.fresh
+    val orig = com.localtg.data.originalBps(item)
+    if (est <= 0 || orig <= 0 || orig <= est * 7 / 10) return null
+    return com.localtg.data.tierAtMost(est * 7 / 10, c.api.caps.maxTranscodeBitrate)
 }
