@@ -137,9 +137,10 @@ fun SearchScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
                         horizontalArrangement = Arrangement.spacedBy(1.dp), verticalArrangement = Arrangement.spacedBy(1.dp),
                     ) {
                         items(results, key = { it.id }) { item ->
+                            val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                             MediaThumb(
                                 item, c.api,
-                                modifier = Modifier.aspectRatio(1f).mediaShared(item.id, RectangleShape).hapticClickable {
+                                modifier = Modifier.aspectRatio(1f).pressScale(src, 0.05f).mediaShared(item.id, RectangleShape).hapticClickable(src) {
                                     fm.clearFocus()
                                     val snapshot = results
                                     val q = query.trim()

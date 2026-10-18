@@ -232,7 +232,12 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
 /** 顶栏上的圆形图标按钮(和视频页的控制按钮同尺寸)。 */
 @Composable
 private fun ViewerIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, onClick: () -> Unit) {
-    Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    Box(
+        Modifier.size(44.dp).pressScale(src, 0.14f).clip(CircleShape)
+            .clickable(interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
         Icon(icon, desc, tint = Color.White, modifier = Modifier.size(24.dp))
     }
 }

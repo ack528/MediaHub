@@ -193,9 +193,10 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: () -> 
                     horizontalArrangement = Arrangement.spacedBy(1.dp), verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
                     items(vm.items, key = { it.id }) { item ->
+                        val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                         MediaThumb(
                             item, c.api,
-                            modifier = Modifier.aspectRatio(1f).mediaShared(item.id, RectangleShape).hapticClickable {
+                            modifier = Modifier.aspectRatio(1f).pressScale(src, 0.05f).mediaShared(item.id, RectangleShape).hapticClickable(src) {
                                 val snap = vm.items
                                 // 查看器翻到末尾接着取固定序列的下一批;游标只表示"还有",内容去重由 ViewerFeed 处理
                                 vm.viewerNext = vm.batches

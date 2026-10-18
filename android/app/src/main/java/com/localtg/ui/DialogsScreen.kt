@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -36,6 +37,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.unit.Constraints
+import kotlin.math.roundToInt
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -138,6 +144,9 @@ fun DialogsScreen(
     val pageCount = if (labels.size > 1) labels.size + 1 else 1
     val pager = androidx.compose.foundation.pager.rememberPagerState { pageCount }
     LaunchedEffect(activeId) { pager.scrollToPage(0) } // 换服务器回到"全部"
+    // 第一屏的行依次弹出(springEnter):只在列表第一次出现的前 0.9 秒内组合的行才入场,之后滚动进来的行不再动
+    var intro by remember { mutableStateOf(true) }
+    LaunchedEffect(all.isNotEmpty()) { if (all.isNotEmpty()) { kotlinx.coroutines.delay(900); intro = false } }
     fun listFor(t: Int): List<Dialog> {
         val inTab = if (t == 0 || t > labels.size) all else all.filter { it.rootLabel == labels[t - 1] }
         val f = if (st.dialogMinCount > 0) inTab.filter { it.mediaCount >= st.dialogMinCount } else inTab
@@ -171,12 +180,7 @@ fun DialogsScreen(
                     Text("本地浏览", Modifier.weight(1f).padding(start = 8.dp), color = tg.barText, fontSize = 20.sp, fontWeight = FontWeight.Medium)
                     BarIcon(TgIcons.Search, "搜索", onSearch)
                 }
-                if (labels.size > 1) {
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-                        FolderTab("全部", pager.currentPage == 0) { scope.launch { pager.animateScrollToPage(0) } }
-                        labels.forEachIndexed { i, l -> FolderTab(l, pager.currentPage == i + 1) { scope.launch { pager.animateScrollToPage(i + 1) } } }
-                    }
-                }
+                if (labels.size > 1) FolderTabs(labels, pager) { scope.launch { pager.animateScrollToPage(it) } }
             }
 
             // 下拉刷新
@@ -204,7 +208,9 @@ fun DialogsScreen(
                                 val lb = if (page == 0 || page > labels.size) null else labels[page - 1]
                                 RandomRow(lb) { onRandom(lb, lb?.let { l -> all.filter { it.rootLabel == l }.map { it.rootId }.distinct().joinToString(",") }) }
                             }
-                            items(shown, key = { it.id }) { d -> Box(Modifier.animateItem()) { DialogRow(d, c, onClick = { c.chatSiblings = shown.map { it.id }; onOpen(d) }) } }
+                            itemsIndexed(shown, key = { _, d -> d.id }) { i, d ->
+                                Box(Modifier.animateItem().springEnter(i + 1, intro)) { DialogRow(d, c, onClick = { c.chatSiblings = shown.map { it.id }; onOpen(d) }) }
+                            }
                         }
                     }
                 }
@@ -303,19 +309,61 @@ private fun DrawerItem(icon: androidx.compose.ui.graphics.vector.ImageVector, la
     }
 }
 
+/**
+ * 盘符标签栏。细节动效开着时,下划线是**同一条**在标签之间滑动(onetake 的"有东西活下来"):位置由分页器的连续位置插值,
+ * 手指横滑页面时它跟着走,点标签时随分页器的动画滑过去;关着时每个标签自己画一条(原来的样子)。
+ */
 @Composable
-private fun FolderTab(text: String, selected: Boolean, onClick: () -> Unit) {
+private fun FolderTabs(labels: List<String>, pager: androidx.compose.foundation.pager.PagerState, onPick: (Int) -> Unit) {
     val tg = LocalTg.current
-    Column(Modifier.height(44.dp).hapticClickable(Hap.Tick, onClick).padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    val fine = fineMotionOn()
+    val pos = remember { androidx.compose.runtime.mutableStateMapOf<Int, Pair<Float, Float>>() }
+    val count = labels.size + 1
+    Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        Row {
+            (listOf("全部") + labels).forEachIndexed { i, l ->
+                FolderTab(
+                    l, pager.currentPage == i, underline = !fine,
+                    Modifier.reportPlacement { x, w -> pos[i] = x to w },
+                ) { onPick(i) }
+            }
+        }
+        if (fine) {
+            Box(
+                Modifier.align(Alignment.BottomStart)
+                    .layout { m, _ ->
+                        val ind = tabIndicator(pager.currentPage + pager.currentPageOffsetFraction, pos, count)
+                        val x = ind?.first?.roundToInt() ?: 0
+                        val w = ind?.second?.roundToInt() ?: 0
+                        val p = m.measure(Constraints.fixed(w, 3.dp.roundToPx()))
+                        layout(x + w, p.height) { p.place(x, 0) }
+                    }
+                    .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)).background(tg.barText),
+            )
+        }
+    }
+}
+
+@Composable
+private fun FolderTab(text: String, selected: Boolean, underline: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val tg = LocalTg.current
+    val color by androidx.compose.animation.animateColorAsState(
+        if (selected) tg.barText else tg.barTabIdle, androidx.compose.animation.core.tween(if (fineMotionOn()) 160 else 0), label = "tabColor",
+    )
+    Column(modifier.height(44.dp).hapticClickable(Hap.Tick, onClick).padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-            Text(text, color = if (selected) tg.barText else tg.barTabIdle, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            Text(text, color = color, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
         }
         Box(
             Modifier.height(3.dp).fillMaxWidth().clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
-                .background(if (selected) tg.barText else Color.Transparent),
+                .background(if (underline && selected) tg.barText else Color.Transparent),
         )
     }
 }
+
+/** 量出标签在行里的位置(左边, 宽度),给 [FolderTabs] 的指示条用。 */
+private fun Modifier.reportPlacement(report: (Float, Float) -> Unit): Modifier =
+    this.onGloballyPositioned { report(it.positionInParent().x, it.size.width.toFloat()) }
 
 /** 置顶的特殊群组「随机浏览」:不是文件夹,点开后从整个库里随机取图片 / 视频。样式和普通群的行一致。 */
 @Composable

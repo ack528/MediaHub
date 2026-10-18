@@ -153,6 +153,11 @@ private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) ->
         listOf("slide" to "系统风格(默认)", "parallax" to "整屏滑动 + 视差(Telegram 式)", "axis" to "Material 共享轴", "fade" to "仅淡入淡出", "off" to "关闭动画"),
         desc = "系统风格 = 和 Android 系统应用同一套转场(短距离滑动 + 淡入淡出,450ms,系统缓动),返回手势时页面缩小并带圆角;打开图片时缩略图会直接放大成全屏(共享元素)",
     ) { u { copy(motion = it) } }
+    SwitchRow(
+        "细节动效", "点按缩略图 / 按钮时轻轻缩小再弹回、文件夹列表第一屏依次弹出、盘符标签的下划线跟着手指滑动、登录页入场。" +
+            "只影响这些小动画,页面之间的转场看上面的「界面动画」;界面动画选关闭时这里也不生效",
+        s.fineMotion,
+    ) { u { copy(fineMotion = it) } }
     Header("聊天流")
     ChoiceRow("聊天背景", s.chatBackground, listOf("gradient" to "渐变(Telegram 默认)", "plain" to "纯色")) { u { copy(chatBackground = it) } }
     SwitchRow("显示日期胶囊", "在聊天流里按天分隔,显示“今天 / 昨天 / 日期”(只在按时间排序时显示,按名称 / 大小 / 类型排序时没有意义,自动隐藏)", s.showDatePills) { u { copy(showDatePills = it) } }

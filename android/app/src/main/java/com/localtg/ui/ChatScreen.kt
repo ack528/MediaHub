@@ -643,13 +643,15 @@ private fun ChatFeed(
 @Composable
 private fun JumpButton(visible: Boolean, up: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val tg = LocalTg.current
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     androidx.compose.animation.AnimatedVisibility(
         visible, modifier.padding(end = 14.dp, bottom = 18.dp).navigationBarsPadding(),
-        enter = androidx.compose.animation.fadeIn(tween(150)) + scaleIn(tween(200), initialScale = 0.6f),
+        // 弹出用弹簧(ζ0.55,带一点过冲,像"弹出来");收起用短的缓动
+        enter = androidx.compose.animation.fadeIn(tween(120)) + scaleIn(if (fineMotionOn()) Springs.pop<Float>() else tween<Float>(200), initialScale = 0.5f),
         exit = fadeOut(tween(120)) + androidx.compose.animation.scaleOut(tween(150), targetScale = 0.6f),
     ) {
         Box(
-            Modifier.size(44.dp).shadow(4.dp, CircleShape).clip(CircleShape).background(tg.bubbleIn).hapticClickable(onClick = onClick),
+            Modifier.size(44.dp).pressScale(src, 0.12f).shadow(4.dp, CircleShape).clip(CircleShape).background(tg.bubbleIn).hapticClickable(src, onClick = onClick),
             contentAlignment = Alignment.Center,
         ) {
             Icon(TgIcons.ChevronRight, if (up) "回到顶部" else "回到最新", tint = tg.message, modifier = Modifier.size(26.dp).rotate(if (up) -90f else 90f))
@@ -682,7 +684,8 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
     var w = maxW
     var h = w / aspect
     if (h > maxH) { h = maxH; w = h * aspect }
-    Box(Modifier.padding(start = 8.dp).width(w).height(h).mediaShared(item.id, shape).clip(shape).background(Color(0x33808080)).hapticClickable(onClick = onClick)) {
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    Box(Modifier.padding(start = 8.dp).width(w).height(h).pressScale(src, 0.03f).mediaShared(item.id, shape).clip(shape).background(Color(0x33808080)).hapticClickable(src, onClick = onClick)) {
         var useOrig by remember(item.id) { mutableStateOf(false) } // 服务端缩略图失败时退回原图
         val url = if (item.isVideo) api.posterUrl(item) else if (useOrig) api.fileUrl(item) else api.imageUrl(item, LocalSettings.current.chatImageWidth)
         var failed by remember(item.id) { mutableStateOf(false) }
@@ -757,7 +760,9 @@ private fun MediaGrid(
         items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
             val item = items[index]
             if (item != null) {
-                MediaThumb(item, api, loadEnabled = !fast || !LocalSettings.current.pauseThumbsWhenFast, modifier = Modifier.aspectRatio(1f).mediaShared(item.id, androidx.compose.ui.graphics.RectangleShape).combinedClickable(
+                val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() } // 按住时轻轻缩小、松手弹回(细节动效)
+                MediaThumb(item, api, loadEnabled = !fast || !LocalSettings.current.pauseThumbsWhenFast, modifier = Modifier.aspectRatio(1f).pressScale(src, 0.05f).mediaShared(item.id, androidx.compose.ui.graphics.RectangleShape).combinedClickable(
+                    interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current,
                     onClick = { hap.perform(Hap.Click); onOpen(item) },
                     onLongClick = { hap.perform(Hap.Long); onLongPress(item) },
                 ))

@@ -1258,24 +1258,27 @@ private fun selectTrack(p: ExoPlayer, o: TrackOpt) {
 @Composable
 private fun CtrlIcon(icon: ImageVector, desc: String, enabled: Boolean = true, tint: Color = Color.White, onClick: () -> Unit) {
     val hap = LocalHaptics.current
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Box(
-        Modifier.size(44.dp).clip(CircleShape).clickable(enabled = enabled) { hap.perform(Hap.Click); onClick() },
+        Modifier.size(44.dp).pressScale(src, 0.14f).clip(CircleShape)
+            .clickable(interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current, enabled = enabled) { hap.perform(Hap.Click); onClick() },
         contentAlignment = Alignment.Center,
     ) { Icon(icon, desc, tint = if (enabled) tint else Color(0x55FFFFFF), modifier = Modifier.size(24.dp)) }
 }
 
 @Composable
 private fun TextCtrl(text: String, onClick: () -> Unit) {
-    val hap = LocalHaptics.current
-    Box(Modifier.size(44.dp).clip(CircleShape).hapticClickable(onClick = onClick), contentAlignment = Alignment.Center) {
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    Box(Modifier.size(44.dp).pressScale(src, 0.14f).clip(CircleShape).hapticClickable(src, onClick = onClick), contentAlignment = Alignment.Center) {
         Text(text, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
     }
 }
 
 @Composable
 private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Box(
-        modifier.size(size).clip(CircleShape).background(Color(0x66000000)).hapticClickable(onClick = onClick),
+        modifier.size(size).pressScale(src, 0.1f).clip(CircleShape).background(Color(0x66000000)).hapticClickable(src, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, desc, tint = Color.White, modifier = Modifier.size(size * 0.55f)) }
 }

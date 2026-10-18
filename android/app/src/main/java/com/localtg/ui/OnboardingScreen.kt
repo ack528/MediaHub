@@ -1,6 +1,7 @@
 package com.localtg.ui
 
 import android.os.Build
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -103,17 +104,28 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 22.dp), verticalAlignment = Alignment.CenterVertically) {
             androidx.compose.foundation.Image(
                 androidx.compose.ui.res.painterResource(com.localtg.R.drawable.ic_logo), null,
-                Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)),
+                Modifier.springEnter(0).size(56.dp).clip(RoundedCornerShape(12.dp)), // 入场:logo → 标题 → 副标题 依次弹出
             )
             Column(Modifier.padding(start = 16.dp)) {
-                Text("本地浏览", color = tg.barText, fontSize = 22.sp, fontWeight = FontWeight.Medium)
-                Text("连接到你自己的媒体服务器", color = tg.barSub, fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp))
+                Text("本地浏览", color = tg.barText, fontSize = 22.sp, fontWeight = FontWeight.Medium, modifier = Modifier.springEnter(1))
+                Text("连接到你自己的媒体服务器", color = tg.barSub, fontSize = 14.sp, modifier = Modifier.springEnter(2).padding(top = 2.dp))
             }
         }
     }
     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 12.dp)) {
 
-        if (info == null && saved.isNotEmpty()) {
+        // 「输入地址」→「输入账号密码」两步之间:新的一步从下方弹簧滑入 + 淡入,旧的一步快速淡出(不再是硬切)
+        val fine = fineMotionOn()
+        androidx.compose.animation.AnimatedContent(
+            targetState = info, contentKey = { it == null }, label = "step",
+            transitionSpec = {
+                if (fine) (androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(220, 90)) +
+                    androidx.compose.animation.slideInVertically(Springs.rise()) { it / 14 }) togetherWith androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(90))
+                else androidx.compose.animation.EnterTransition.None togetherWith androidx.compose.animation.ExitTransition.None
+            },
+        ) { cur ->
+        Column(Modifier.fillMaxWidth()) {
+        if (cur == null && saved.isNotEmpty()) {
             SectionTitle("已保存的服务器")
             saved.forEach { e ->
                 Row(
@@ -140,7 +152,7 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
             SectionTitle("添加服务器")
         }
 
-        if (info == null) {
+        if (cur == null) {
             TgField(address, { address = it; error = null }, "服务器地址", "192.168.1.20:8480", keyboardType = KeyboardType.Uri)
             Spacer(Modifier.height(16.dp))
             TgButton(
@@ -168,7 +180,7 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
             )
         } else {
             SectionTitle("已连接")
-            Text("${info!!.name}  v${info!!.version}", color = tg.name, fontSize = 16.sp)
+            Text("${cur.name}  v${cur.version}", color = tg.name, fontSize = 16.sp)
             Text(normalized, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
             Spacer(Modifier.height(16.dp))
             TgField(user, { user = it; error = null }, "账号")
@@ -193,14 +205,25 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
             )
             TextButton(onClick = { info = null; error = null }, modifier = Modifier.fillMaxWidth()) { Text("更换服务器") }
         }
+        }
+        }
 
         notice?.let {
             Spacer(Modifier.height(12.dp))
             Text(it, color = tg.accent, fontSize = 14.sp)
         }
-        error?.let {
-            Spacer(Modifier.height(12.dp))
-            Text(it, color = tg.danger, fontSize = 14.sp)
+        // 错误提示展开 / 收起;收起的动画期间 error 已经是 null,所以记住最后一条文字
+        var lastError by remember { mutableStateOf("") }
+        error?.let { lastError = it }
+        androidx.compose.animation.AnimatedVisibility(
+            error != null,
+            enter = if (fine) androidx.compose.animation.expandVertically(Springs.rise()) + androidx.compose.animation.fadeIn() else androidx.compose.animation.EnterTransition.None,
+            exit = if (fine) androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut() else androidx.compose.animation.ExitTransition.None,
+        ) {
+            Column {
+                Spacer(Modifier.height(12.dp))
+                Text(lastError, color = tg.danger, fontSize = 14.sp)
+            }
         }
         pendingFp?.let { fp ->
             androidx.compose.material3.AlertDialog(
@@ -263,16 +286,17 @@ private fun TgField(
 private fun TgButton(text: String, enabled: Boolean, busy: Boolean = false, outlined: Boolean = false, onClick: () -> Unit) {
     val tg = LocalTg.current
     val shape = RoundedCornerShape(10.dp)
-    val mod = Modifier.fillMaxWidth().height(48.dp)
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val mod = Modifier.fillMaxWidth().height(48.dp).pressScale(src, 0.03f)
     if (outlined) {
         OutlinedButton(
-            onClick = onClick, modifier = mod, enabled = enabled, shape = shape,
+            onClick = onClick, modifier = mod, enabled = enabled, shape = shape, interactionSource = src,
             border = BorderStroke(1.dp, if (enabled) tg.accent else tg.divider),
             colors = ButtonDefaults.outlinedButtonColors(contentColor = tg.accent),
         ) { Text(text, fontSize = 16.sp) }
     } else {
         Button(
-            onClick = onClick, modifier = mod, enabled = enabled, shape = shape,
+            onClick = onClick, modifier = mod, enabled = enabled, shape = shape, interactionSource = src,
             colors = ButtonDefaults.buttonColors(containerColor = tg.accent, contentColor = Color.White),
         ) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White) else Text(text, fontSize = 16.sp) }
     }
