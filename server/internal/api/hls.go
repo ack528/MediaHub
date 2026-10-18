@@ -110,7 +110,11 @@ type hlsSess struct {
 	cmd      *exec.Cmd
 	cancel   context.CancelFunc
 	runStart int
+	runAt    time.Time // 这一轮 ffmpeg 的启动时间(估算产出速度用)
 	lastErr  string
+	props    hlsProps    // 源视频的宽高 / 编码(决定能不能用核显硬件解码)
+	propsSet atomic.Bool // props 是否已经从库里读过
+	noHwdec  bool        // 这个文件硬件解码失败过:这个会话改用软件解码(编码仍可硬件)
 	forceSW  bool // 这个文件硬件编码失败过:这个会话改用软件编码(只影响这个文件,不再像以前那样把整个服务的 QSV 都关掉)
 	noAudio  bool // 连软编也失败过:去掉音频再试(有画面没声音,好过完全打不开)
 
@@ -338,11 +342,42 @@ func (h *HLS) janitor() {
 	}
 }
 
+// hlsProps 源视频的基本信息。
+type hlsProps struct {
+	w, h   int
+	vcodec string
+}
+
+// useHwdec 这次启动要不要用核显硬件解码(QSV):在用硬件编码、宽高是偶数、QSV 能解这种编码、之前没失败过才用。
+// 软件解码 4K / 高码率 HEVC 很慢,每次拖动进度条 ffmpeg 重新从关键帧解码到目标位置再编出第一段,
+// 软解要好几秒甚至十几秒;核显解码快得多,拖动后等待明显缩短,CPU 也基本不占。失败会自动退回软件解码。
+func (s *hlsSess) useHwdec(hw bool) bool {
+	p := s.props
+	return hw && !s.noHwdec && p.w > 0 && p.h > 0 && p.w%2 == 0 && p.h%2 == 0 && qsvDecodable[strings.ToLower(p.vcodec)]
+}
+
+// loadHLSProps 第一次用到这个会话时,从索引库读源视频的宽高 / 编码。
+func (s *Server) loadHLSProps(sess *hlsSess, id int64) {
+	if sess.propsSet.Swap(true) {
+		return
+	}
+	var pr hlsProps
+	_ = s.DB.QueryRow(`SELECT COALESCE(w,0), COALESCE(h,0), COALESCE(vcodec,'') FROM media WHERE id=?`, id).Scan(&pr.w, &pr.h, &pr.vcodec)
+	sess.mu.Lock()
+	sess.props = pr
+	sess.mu.Unlock()
+}
+
 // args 组装 ffmpeg 参数(工作目录是会话目录,输出用相对名)。
 func (s *hlsSess) args(idx int, hw bool) []string {
-	a := []string{"-hide_banner", "-loglevel", "error", "-nostdin",
-		// AVI / RMVB / WMV / 残缺的 TS 常常缺时间戳或带坏包:补时间戳、丢掉损坏的包;探测时间放长一点,晚出现的流(TS)也能识别
-		"-fflags", "+genpts+discardcorrupt", "-analyzeduration", "10000000", "-probesize", "20000000"}
+	a := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
+	hwdec := s.useHwdec(hw)
+	if hwdec {
+		a = append(a, "-hwaccel", "qsv", "-hwaccel_output_format", "qsv")
+	}
+	// AVI / RMVB / WMV / 残缺的 TS 常常缺时间戳或带坏包:补时间戳、丢掉损坏的包;探测量取 5 秒 / 10MB(每次拖动进度条都要重新探测一次,
+	// 放得太大在机械硬盘 / 网络盘上每次多等好几百毫秒)
+	a = append(a, "-fflags", "+genpts+discardcorrupt", "-analyzeduration", "5000000", "-probesize", "10000000")
 	if idx > 0 {
 		a = append(a, "-ss", strconv.Itoa(idx*hlsSegSec))
 	}
@@ -363,6 +398,9 @@ func (s *hlsSess) args(idx int, hw bool) []string {
 	}
 	// 分辨率保持原样,只做三件小事:隔行扫描的帧反交错(逐行的帧原样通过)、宽高取偶数(奇数宽高编码器会报错)、转成编码器要的像素格式
 	vf := "yadif=mode=0:parity=-1:deint=1,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=" + pix
+	if hwdec { // 帧在显存里:用 vpp_qsv 转成 8 位 nv12(宽高已确认是偶数;隔行视频这条路不做反交错,极少见)
+		vf = "vpp_qsv=format=nv12"
+	}
 	br := s.p.Bitrate
 	if br <= 0 {
 		br = hlsDefaultBitrate
@@ -433,7 +471,7 @@ func (s *hlsSess) launchLocked(idx int, hw bool) error {
 		cancel()
 		return err
 	}
-	s.cmd, s.cancel, s.runStart = cmd, cancel, idx
+	s.cmd, s.cancel, s.runStart, s.runAt = cmd, cancel, idx, time.Now()
 	s.h.log.Info("转码开始", "id", s.p.MediaID, "seg", idx, "bitrate", s.p.Bitrate, "codec", s.p.Codec, "qsv", hw)
 	go func() {
 		defer func() { _ = recover() }()
@@ -453,6 +491,9 @@ func (s *hlsSess) launchLocked(idx int, hw bool) error {
 		if !fileExists(s.segFile(idx)) { // 一段都没转出来:换一种方式重试(只影响这个文件)
 			s.mu.Lock()
 			switch {
+			case s.useHwdec(hw): // 硬件解码没跑起来(这个文件 QSV 解不了):改用软件解码重试,编码仍然硬件
+				s.h.log.Warn("QSV 硬件解码失败,这个视频改用软件解码", "id", s.p.MediaID, "vcodec", s.props.vcodec, "err", msg)
+				s.noHwdec = true
 			case hw && s.p.Codec == "h265": // H.265 硬编失败:这个会话退回 H.264(能硬编就继续硬编),并核对一下 hevc_qsv 是不是真的坏了
 				s.h.log.Warn("H.265 QSV 转码失败,这个视频退回 H.264", "id", s.p.MediaID, "err", msg)
 				s.p.Codec = "h264"
@@ -489,8 +530,19 @@ func (s *hlsSess) ensure(idx int, evict bool) error {
 	if fileExists(s.segFile(idx)) {
 		return nil
 	}
-	if s.cmd != nil && idx >= s.runStart && idx <= s.next(s.runStart)+hlsAheadSegs {
-		return nil // 在转了,等就行
+	if s.cmd != nil && idx >= s.runStart {
+		next := s.next(s.runStart)
+		gap := idx - next // 目标段之前还差几段没转出来
+		if gap <= 1 {
+			return nil // 马上就到,等就行
+		}
+		// 往前拖了一段:是等 ffmpeg 追上去,还是从目标段重新启动(约 1 ~ 2 秒起步)?按它实际的产出速度估算,
+		// 追上去更快就等,否则重启。以前固定"8 段以内都等",硬件编码快的时候白等好几秒、软编慢的时候又等不起。
+		if el, produced := time.Since(s.runAt).Seconds(), next-s.runStart; produced >= 2 && el > 0 && gap <= hlsAheadSegs {
+			if float64(gap)/(float64(produced)/el) <= 1.5 {
+				return nil
+			}
+		}
 	}
 	// 需要(重新)启动:先看总路数,超了就停掉最久没动静的那一路
 	max := s.h.cfg.Video.MaxTranscodes
@@ -629,6 +681,7 @@ func (s *Server) builtinHLS(w http.ResponseWriter, r *http.Request, id, durMs in
 		return
 	}
 	sess := s.HLS.session(p, full, durMs)
+	s.loadHLSProps(sess, id) // 读源视频的宽高 / 编码,决定能不能用核显硬件解码
 	sess.last.Store(time.Now().Unix())
 
 	if rest == "master.m3u8" || rest == "main.m3u8" {
@@ -737,6 +790,7 @@ func (s *Server) mediaHLSPrepare(w http.ResponseWriter, r *http.Request) {
 	pp := s.playerPrefs(userID(r))
 	p := s.HLS.effective(parseHLSParams(id, r), pp.Bitrate, pp.Codec)
 	sess := s.HLS.session(p, full, durMs)
+	s.loadHLSProps(sess, id) // 读源视频的宽高 / 编码,决定能不能用核显硬件解码
 	sess.last.Store(time.Now().Unix())
 	if err := sess.ensure(0, false); err != nil && err != errPrepareFull {
 		s.Log.Debug("预热转码失败", "id", id, "err", err)

@@ -160,3 +160,36 @@ func TestHLSH265PrefsPrepare(t *testing.T) {
 }
 
 func writeFile(path string, b []byte) error { return os.WriteFile(path, b, 0o644) }
+
+// 核显硬件解码的参数:偶数宽高、QSV 能解的编码、用硬件编码时才用;失败过(noHwdec)或奇数宽高退回软件解码。
+func TestHLSHwDecodeArgs(t *testing.T) {
+	h := &HLS{}
+	mk := func(w, hh int, vc string) *hlsSess {
+		s := &hlsSess{h: h, p: hlsParams{Bitrate: 3_000_000, Codec: "h264"}, path: "in.mkv", segs: 10}
+		s.props = hlsProps{w, hh, vc}
+		return s
+	}
+	join := func(a []string) string { return strings.Join(a, " ") }
+	hw := join(mk(1920, 1080, "hevc").args(5, true))
+	for _, want := range []string{"-hwaccel qsv", "-hwaccel_output_format qsv", "vpp_qsv=format=nv12", "-c:v h264_qsv", "-analyzeduration 5000000", "-ss 20"} {
+		if !strings.Contains(hw, want) {
+			t.Errorf("硬解参数缺少 %q:\n%s", want, hw)
+		}
+	}
+	if strings.Contains(hw, "scale=") || strings.Contains(hw, "yadif") {
+		t.Errorf("硬解路径不该有软件滤镜: %s", hw)
+	}
+	for name, s := range map[string]*hlsSess{"奇数宽高": mk(1921, 1080, "h264"), "不能硬解的编码": mk(640, 480, "wmv3"), "没有信息": mk(0, 0, "")} {
+		if a := join(s.args(0, true)); strings.Contains(a, "-hwaccel") || !strings.Contains(a, "scale=trunc(iw/2)*2") {
+			t.Errorf("%s 应该用软件解码: %s", name, a)
+		}
+	}
+	failed := mk(1920, 1080, "h264")
+	failed.noHwdec = true
+	if a := join(failed.args(0, true)); strings.Contains(a, "-hwaccel") || !strings.Contains(a, "-c:v h264_qsv") {
+		t.Errorf("硬解失败过应该退回软解但仍用硬编: %s", a)
+	}
+	if a := join(mk(1920, 1080, "h264").args(0, false)); strings.Contains(a, "-hwaccel") || !strings.Contains(a, "libx264") {
+		t.Errorf("软件编码时不用硬解: %s", a)
+	}
+}

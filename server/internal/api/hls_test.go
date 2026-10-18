@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 内置 ffmpeg 转码:完整 VOD 播放列表、顺序取段、拖动到后面的段(重启 ffmpeg)、停止后清理。
@@ -100,4 +101,47 @@ func firstN(b []byte, n int) string {
 		b = b[:n]
 	}
 	return string(bytes.ToValidUTF8(b, nil))
+}
+
+// 本机有 QSV 时:硬件解码 + 硬件编码真的能转出段(顺序、跳到最后、回看都行);没有 QSV 就跳过。
+func TestBuiltinHLSHwDecode(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.srv.Cfg.Video.HWAccel = "qsv"
+	e.srv.HLS = NewHLS(e.srv.Cfg, e.srv.Log)
+	if h264, _ := e.srv.HLS.QSV(); !h264 {
+		t.Skip("这台机器没有可用的 QSV")
+	}
+	src := filepath.Join(e.lib, "相册", "嵌套", "更深", "clip.mp4")
+	long := filepath.Join(e.lib, "相册", "hwlong.mp4")
+	if out, err := exec.Command(e.srv.Cfg.Tools.FFmpeg, "-y", "-v", "error", "-stream_loop", "9", "-i", src, "-c", "copy", long).CombinedOutput(); err != nil {
+		t.Skipf("无法生成长样本: %v %s", err, out)
+	}
+	roots, _ := e.srv.Idx.SyncRoots()
+	if err := e.srv.Idx.ScanRoot(context.Background(), roots[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.srv.Idx.Enrich(context.Background(), roots[0]); err != nil {
+		t.Fatal(err)
+	}
+	var s struct{ Items []Item }
+	e.getJSON("/api/v1/search?q=hwlong&types=video", &s)
+	if len(s.Items) != 1 {
+		t.Fatal("hwlong.mp4 not found")
+	}
+	id := s.Items[0].ID
+	q := "?maxBitrate=500000&sid=hw1"
+	resp, body := e.do("GET", "/api/v1/media/"+id+"/hls/master.m3u8"+q, nil, nil)
+	n := strings.Count(string(body), "#EXTINF")
+	if resp.StatusCode != 200 || n < 3 {
+		t.Fatalf("playlist: %d %d 段", resp.StatusCode, n)
+	}
+	for _, i := range []int{0, n - 1, 1} {
+		t0 := time.Now()
+		resp, b := e.do("GET", "/api/v1/media/"+id+"/hls/seg"+pad5(i)+".ts"+q, nil, nil)
+		if resp.StatusCode != 200 || len(b) < 188 || b[0] != 0x47 {
+			t.Fatalf("硬解 seg %d: %d len=%d %s", i, resp.StatusCode, len(b), firstN(b, 200))
+		}
+		t.Logf("段 %d:%v", i, time.Since(t0).Round(10*time.Millisecond))
+	}
 }
