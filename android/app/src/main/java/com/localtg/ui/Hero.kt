@@ -17,6 +17,7 @@ import androidx.compose.animation.core.VectorConverter
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -62,7 +63,7 @@ import kotlinx.coroutines.launch
 
 class HeroState {
     /** 当前屏幕上每个缩略图的位置(列表自己的坐标系,不含背景退后时的缩放)和圆角(px)。只给动画用,不触发重组。 */
-    val bounds = HashMap<String, Pair<Rect, Float>>()
+    val bounds = HashMap<String, HeroSrc>()
 
     /** 列表所在的坐标系(背景缩放层里面的那一层):缩略图位置相对它取,背景怎么缩放都不影响记下的位置。 */
     var space: androidx.compose.ui.layout.LayoutCoordinates? = null
@@ -109,6 +110,11 @@ class HeroState {
 }
 
 val LocalHero = staticCompositionLocalOf<HeroState?> { null }
+
+/** 一个缩略图的位置:full = 完整的格子,visible = 被列表裁剪后看得见的部分(顶部被顶栏挡住的那截不算),corner = 圆角 px。 */
+class HeroSrc(val full: Rect, val visible: Rect, val corner: Float)
+
+private fun Rect.s() = "[%.0f,%.0f %.0fx%.0f]".format(left, top, width, height)
 
 /**
  * 页面缩小时四周露出来的空隙填什么颜色("临近色"):空隙紧挨着哪部分就用哪部分的颜色 ——
@@ -167,8 +173,15 @@ fun Modifier.heroSource(id: String, corner: Dp = 0.dp): Modifier {
     return this
         .onGloballyPositioned { lc ->
             val sp = h.space
-            val r = if (sp != null && sp.isAttached && lc.isAttached) sp.localBoundingBoxOf(lc, clipBounds = false) else Rect(lc.positionInRoot(), lc.size.toSize())
-            h.bounds[id] = r to c
+            val ok = sp != null && sp.isAttached && lc.isAttached
+            val full = if (ok) sp!!.localBoundingBoxOf(lc, clipBounds = false) else Rect(lc.positionInRoot(), lc.size.toSize())
+            val vis = if (ok) sp!!.localBoundingBoxOf(lc, clipBounds = true) else full
+            val old = h.bounds[id]
+            // 诊断:动画期间正在看的那一格在列表里动了(列表被滚动 / 重新排版)—— "抽动"多半就是这个
+            if (old != null && id == h.hiddenId && h.phase != HeroState.Phase.Idle && (kotlin.math.abs(old.full.top - full.top) > 1f || kotlin.math.abs(old.full.left - full.left) > 1f)) {
+                AppLog.i("anim", "格子移动 ${h.phase} ${old.full.s()} → ${full.s()}")
+            }
+            h.bounds[id] = HeroSrc(full, if (vis.width > 0f && vis.height > 0f) vis else full, c)
         }
         .graphicsLayer { alpha = if (h.hiddenId == id) 0f else 1f }
 }
@@ -278,6 +291,7 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
                 if (item.id == current?.id) {
                     // 关闭途中点回同一张:从当前位置原路展开回去(Animatable 接着当前值走,关闭协程被取消)
                     AppLog.i("nav", "关闭途中重新打开 index=$i")
+                    AppLog.i("anim", "关闭途中重新打开 ${item.name} p=${"%.3f".format(hero.p.value)}")
                     hero.closeFrom = null; hero.bgMul = 1f; hero.backMul = 1f; hero.exiting = false; hero.exitReady = false
                     hero.phase = HeroState.Phase.Opening
                     scope.launch {
@@ -292,6 +306,7 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             }
             if (hero.phase != HeroState.Phase.Idle) return@open
             AppLog.i("nav", "进入查看器 index=$i")
+            hero.bounds[item.id].let { b -> AppLog.i("anim", "打开 ${item.name} index=$i/${c.viewerFeed.items.size} 屏幕=${w.toInt()}x${h.toInt()} 格子=${b?.full?.s()} 可见=${b?.visible?.s()} 宽高比=${"%.3f".format(aspectOf(item, null))}") }
             current = item
             aspect = aspectOf(item, memoryThumb(ctx, item))
             hero.drag = 0f; hero.exiting = false; hero.exitReady = false
@@ -321,6 +336,7 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             if (!animate || cur == null) { scope.launch { hero.p.snapTo(0f) }; finishClose(); return }
             if (hero.phase == HeroState.Phase.Closing || hero.phase == HeroState.Phase.Idle) return
             val interrupt = hero.phase == HeroState.Phase.Opening // 打开没结束:从当前位置直接收回(Animatable 接着当前值走)
+            AppLog.i("anim", "返回 ${cur.name} 打断打开=$interrupt p=${"%.3f".format(hero.p.value)} 拖拽起点=${hero.closeFrom?.s()} 格子=${hero.bounds[cur.id]?.full?.s()}")
             aspect = aspectOf(cur, memoryThumb(ctx, cur))
             hero.hiddenId = cur.id
             hero.snapJob?.cancel()
@@ -361,6 +377,30 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
         ) {
             Box(Modifier.fillMaxSize().onGloballyPositioned { hero.space = it }) {
                 CompositionLocalProvider(LocalHero provides hero, LocalBackdrop provides backdrop) { root(open) }
+            }
+        }
+
+        // 诊断:动画 / 拖拽期间逐帧记录,用来分析"抽动"(格子在动 = 列表滚动;帧间隔大 = 卡顿;容器跳 = 位置算错)
+        LaunchedEffect(hero.phase, hero.dragging) {
+            if (hero.phase == HeroState.Phase.Idle || (hero.phase == HeroState.Phase.Open && !hero.dragging)) return@LaunchedEffect
+            val ph = hero.phase
+            val cur = current
+            var t0 = 0L
+            var last = 0L
+            for (n in 0 until 150) {
+                val now = androidx.compose.runtime.withFrameNanos { it }
+                if (t0 == 0L) { t0 = now; last = now }
+                val dt = (now - last) / 1e6
+                last = now
+                val p = hero.p.value
+                val box = containerState(hero, cur, aspect, full, p, CORNER_DP * density)?.first
+                val img = imageState(hero, cur, aspect, full, p)
+                val src = cur?.let { hero.bounds[it.id] }
+                AppLog.i("anim", "%s %4.0fms 帧%5.1fms p=%.3f 背景=%.2f 拖=%s 容器=%s 图片=%s 格子=%s".format(
+                    ph.name, (now - t0) / 1e6, dt, p, bgFactor(hero, full.height), hero.dragOffset.let { "%.0f,%.0f".format(it.x, it.y) },
+                    box?.s(), img?.s(), src?.full?.s()))
+                if (dt > 34) AppLog.i("anim", "卡顿 %.0fms".format(dt))
+                if (hero.phase != ph && !(ph == HeroState.Phase.Open && hero.dragging)) break
             }
         }
 
@@ -420,7 +460,8 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
                                     }
                                     if (!moved) {
                                         val s = 1f - BG_SCALE * bgFactor(hero, full.height)
-                                        val hit = hero.bounds.entries.firstOrNull { (_, b) -> b.first.scaleAbout(s, full.center.x, full.center.y).contains(down.position) }?.key
+                                        val hit = hero.bounds.entries.firstOrNull { (_, b) -> b.visible.scaleAbout(s, full.center.x, full.center.y).contains(down.position) }?.key
+                                        AppLog.i("anim", "关闭途中点击 ${down.position} → ${hit ?: "没点中缩略图"}")
                                         val idx = hit?.let { id -> c.viewerFeed.items.indexOfFirst { it.id == id } } ?: -1
                                         if (idx >= 0) openRef(idx)
                                     }
@@ -526,10 +567,12 @@ private fun openImgRect(h: HeroState, aspect: Float, full: Rect): Rect? {
 }
 
 /** 缩略图在屏幕上当前的位置:记下的(列表坐标)按背景当前的缩放换算;找不到返回 null。 */
-private fun sourceRect(h: HeroState, item: Item?, full: Rect): Pair<Rect, Float>? {
+private fun sourceRect(h: HeroState, item: Item?, full: Rect): HeroSrc? {
     val b = item?.let { h.bounds[it.id] } ?: return null
     val s = 1f - BG_SCALE * bgFactor(h, full.height)
-    return b.first.scaleAbout(s, full.center.x, full.center.y) to b.second
+    val cx = full.center.x
+    val cy = full.center.y
+    return HeroSrc(b.full.scaleAbout(s, cx, cy), b.visible.scaleAbout(s, cx, cy), b.corner)
 }
 
 /** 动画的终点(打开)/ 起点(返回):全屏居中的图片,或拖拽松手时的位置。 */
@@ -545,10 +588,10 @@ private fun containerState(h: HeroState, item: Item?, aspect: Float, full: Rect,
     val pc = p.coerceIn(0f, 1f)
     val end = endRect(h, aspect, full)
     val src = sourceRect(h, item, full)
-    val from = src?.first ?: end.scaleAbout(0.6f, end.center.x, end.center.y)
+    val from = src?.visible ?: end.scaleAbout(0.6f, end.center.x, end.center.y)
     val r = lerp(from, end, p)
     // 圆角:从缩略图的圆角很快变到 ~22dp,整个过程保持,最后 12% 收成直角(从拖拽返回时一直保持圆角)
-    val base = lerp(src?.second ?: cornerPx, cornerPx, (pc / 0.25f).coerceAtMost(1f))
+    val base = lerp(src?.corner ?: cornerPx, cornerPx, (pc / 0.25f).coerceAtMost(1f))
     val corner = if (h.phase == HeroState.Phase.Closing && h.closeFrom != null) base else base * (1f - ((pc - 0.88f) / 0.12f).coerceIn(0f, 1f))
     return r to corner
 }
@@ -558,6 +601,6 @@ private fun imageState(h: HeroState, item: Item?, aspect: Float, full: Rect, p: 
     if (h.phase == HeroState.Phase.Open || h.phase == HeroState.Phase.Idle) return openImgRect(h, aspect, full)
     val end = endRect(h, aspect, full)
     val src = sourceRect(h, item, full)
-    val from = src?.let { coverRect(aspect, it.first) } ?: end.scaleAbout(0.6f, end.center.x, end.center.y)
+    val from = src?.let { coverRect(aspect, it.full) } ?: end.scaleAbout(0.6f, end.center.x, end.center.y)
     return lerp(from, end, p)
 }

@@ -421,6 +421,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
     var scrollTarget by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(retId, lazyItems.itemCount, lazyItems.loadState.refresh) {
         val id = retId ?: return@LaunchedEffect
+        com.localtg.AppLog.i("anim", "查看器当前项 $id 打开时=${vm.viewerOpenedId}")
         if (id == vm.viewerOpenedId) { c.viewerReturn.value = null; return@LaunchedEffect }
         if (lazyItems.loadState.refresh !is LoadState.NotLoading || lazyItems.itemCount == 0) return@LaunchedEffect
         if (lazyItems.itemSnapshotList.indexOfFirst { it?.id == id } >= 0) scrollTarget = id
@@ -585,6 +586,7 @@ private fun PositionMemory(
     LaunchedEffect(gen, refresh, items.itemCount) {
         if (!done && sawLoading && refresh is LoadState.NotLoading && items.itemCount > 0) {
             val idx = items.itemSnapshotList.indexOfFirst { it?.id == restoreId }
+            com.localtg.AppLog.i("anim", "列表恢复位置 $restoreId idx=$idx")
             if (idx >= 0) scrollTo(idx, restoreOffset)
             done = true
             onRestored()
@@ -609,10 +611,12 @@ private fun ChatFeed(
     scrollTarget: String?, onScrollDone: () -> Unit,
 ) {
     val state = rememberLazyListState()
-    LaunchedEffect(scrollTarget) { // 从查看器返回:定位到查看器里最后停留的那一项
+    LaunchedEffect(scrollTarget) { // 查看器里换到了别的项:列表定位过去(已经在屏幕上就不动,免得打开 / 关闭的瞬间位置变)
         val id = scrollTarget ?: return@LaunchedEffect
         val idx = items.itemSnapshotList.indexOfFirst { it?.id == id }
-        if (idx >= 0) state.scrollToItem(idx)
+        val visible = state.layoutInfo.visibleItemsInfo.any { it.index == idx }
+        com.localtg.AppLog.i("anim", "列表定位 $id idx=$idx 已可见=$visible" + if (idx >= 0 && !visible) " → 滚动" else "")
+        if (idx >= 0 && !visible) state.scrollToItem(idx)
         onScrollDone()
     }
     PositionMemory(items, gen, restoreId, restoreOffset, { state.firstVisibleItemIndex }, { state.firstVisibleItemScrollOffset },
@@ -758,10 +762,12 @@ private fun MediaGrid(
 ) {
     val hap = LocalHaptics.current
     val state = rememberLazyGridState()
-    LaunchedEffect(scrollTarget) { // 从查看器返回:定位到查看器里最后停留的那一项
+    LaunchedEffect(scrollTarget) { // 查看器里换到了别的项:列表定位过去(已经在屏幕上就不动,免得打开 / 关闭的瞬间位置变)
         val id = scrollTarget ?: return@LaunchedEffect
         val idx = items.itemSnapshotList.indexOfFirst { it?.id == id }
-        if (idx >= 0) state.scrollToItem(idx)
+        val visible = state.layoutInfo.visibleItemsInfo.any { it.index == idx }
+        com.localtg.AppLog.i("anim", "列表定位 $id idx=$idx 已可见=$visible" + if (idx >= 0 && !visible) " → 滚动" else "")
+        if (idx >= 0 && !visible) state.scrollToItem(idx)
         onScrollDone()
     }
     PositionMemory(items, gen, restoreId, restoreOffset, { state.firstVisibleItemIndex }, { state.firstVisibleItemScrollOffset },
@@ -824,10 +830,12 @@ private fun MediaFeed(
     onLongPress: (Item) -> Unit, scrollTarget: String?, onScrollDone: () -> Unit,
 ) {
     val state = androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState()
-    LaunchedEffect(scrollTarget) {
+    LaunchedEffect(scrollTarget) { // 查看器里换到了别的项:列表定位过去(已经在屏幕上就不动,免得打开 / 关闭的瞬间位置变)
         val id = scrollTarget ?: return@LaunchedEffect
         val idx = items.itemSnapshotList.indexOfFirst { it?.id == id }
-        if (idx >= 0) state.scrollToItem(idx)
+        val visible = state.layoutInfo.visibleItemsInfo.any { it.index == idx }
+        com.localtg.AppLog.i("anim", "列表定位 $id idx=$idx 已可见=$visible" + if (idx >= 0 && !visible) " → 滚动" else "")
+        if (idx >= 0 && !visible) state.scrollToItem(idx)
         onScrollDone()
     }
     PositionMemory(items, gen, restoreId, restoreOffset, { state.firstVisibleItemIndex }, { state.firstVisibleItemScrollOffset },
