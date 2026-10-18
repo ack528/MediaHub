@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 从文件夹(消息页)返回:页面正常向右滑出,下面的主界面同时从 0.92 放大回来(在 AppRoot 里做,空隙用临近色) -->
+<translate xmlns:android="http://schemas.android.com/apk/res/android" android:zAdjustment="top"
+    android:fromXDelta="0" android:toXDelta="100%" android:duration="320" android:interpolator="@interpolator/emphasized_decel" />

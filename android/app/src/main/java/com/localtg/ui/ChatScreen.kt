@@ -505,6 +505,14 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
             ) { DatePicker(state = st) }
         }
 
+        val bdSpec = LocalBackdrop.current
+        val belowColors = when {
+            mode == 2 -> listOf(if (tg.dark) Color(0xFF0F1012) else Color(0xFFF3F4F6))
+            grid -> listOf(tg.bg)
+            LocalSettings.current.chatBackground == "plain" -> listOf(tg.chatTop)
+            else -> listOf(tg.chatTop, tg.chatBottom)
+        }
+        androidx.compose.runtime.SideEffect { bdSpec?.below = belowColors }
         Box(
             Modifier.weight(1f).fillMaxWidth().then(
                 if (mode == 2) Modifier.background(if (tg.dark) Color(0xFF0F1012) else Color(0xFFF3F4F6))

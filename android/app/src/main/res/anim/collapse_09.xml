@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- 返回列表:页面朝着点进来的那一行(屏幕高度 47.5% 处)收起并淡出;由 tools 生成的 20 档之一(见 Motion.collapseAnim) -->
-<set xmlns:android="http://schemas.android.com/apk/res/android" android:shareInterpolator="false" android:zAdjustment="top">
-    <scale android:fromXScale="1" android:toXScale="0.96" android:fromYScale="1" android:toYScale="0.1"
-        android:pivotX="50%" android:pivotY="47.5%" android:duration="300" android:interpolator="@interpolator/standard" />
-    <alpha android:fromAlpha="1" android:toAlpha="0" android:startOffset="110" android:duration="190" android:interpolator="@interpolator/standard" />
-</set>

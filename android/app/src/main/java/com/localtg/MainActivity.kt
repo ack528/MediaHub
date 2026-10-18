@@ -74,7 +74,7 @@ abstract class TgActivity : ComponentActivity() {
             // 打开的展开动画由打开它的页面通过 ActivityOptions 指定;返回时朝那一行收起
             if (android.os.Build.VERSION.SDK_INT >= 34) {
                 clearOverrideActivityTransition(OVERRIDE_TRANSITION_OPEN)
-                overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, com.localtg.ui.collapseAnim(ex))
+                overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, com.localtg.R.anim.slide_out_right)
             }
             return
         }
@@ -98,7 +98,7 @@ abstract class TgActivity : ComponentActivity() {
         super.finish()
         if (customTransitions && android.os.Build.VERSION.SDK_INT < 34) {
             val style = container.settings.value.motion
-            if (expandCenter >= 0f && style != com.localtg.ui.Motion.OFF) @Suppress("DEPRECATION") overridePendingTransition(0, com.localtg.ui.collapseAnim(expandCenter))
+            if (expandCenter >= 0f && style != com.localtg.ui.Motion.OFF) @Suppress("DEPRECATION") overridePendingTransition(0, com.localtg.R.anim.slide_out_right)
             else com.localtg.ui.Motion.activityAnims(style)?.let { @Suppress("DEPRECATION") overridePendingTransition(it[2], it[3]) }
         }
     }

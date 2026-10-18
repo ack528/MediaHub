@@ -65,32 +65,6 @@ fun expandFrom(view: android.view.View, r: androidx.compose.ui.geometry.Rect?, s
     return Expand(o.toBundle(), (r.center.y / view.height).coerceIn(0f, 1f))
 }
 
-/** 返回时朝那一行收起的动画(按位置分 20 档,res/anim/collapse_00 ~ 19)。 */
-fun collapseAnim(center: Float): Int = COLLAPSE[(center * COLLAPSE.size).toInt().coerceIn(0, COLLAPSE.size - 1)]
-
-private val COLLAPSE = intArrayOf(
-    com.localtg.R.anim.collapse_00,
-    com.localtg.R.anim.collapse_01,
-    com.localtg.R.anim.collapse_02,
-    com.localtg.R.anim.collapse_03,
-    com.localtg.R.anim.collapse_04,
-    com.localtg.R.anim.collapse_05,
-    com.localtg.R.anim.collapse_06,
-    com.localtg.R.anim.collapse_07,
-    com.localtg.R.anim.collapse_08,
-    com.localtg.R.anim.collapse_09,
-    com.localtg.R.anim.collapse_10,
-    com.localtg.R.anim.collapse_11,
-    com.localtg.R.anim.collapse_12,
-    com.localtg.R.anim.collapse_13,
-    com.localtg.R.anim.collapse_14,
-    com.localtg.R.anim.collapse_15,
-    com.localtg.R.anim.collapse_16,
-    com.localtg.R.anim.collapse_17,
-    com.localtg.R.anim.collapse_18,
-    com.localtg.R.anim.collapse_19,
-)
-
 /** fade through:用于互不相关的页面(登录 ↔ 列表)。 */
 fun fadeThroughIn(style: String): EnterTransition = when (style) {
     Motion.OFF -> EnterTransition.None

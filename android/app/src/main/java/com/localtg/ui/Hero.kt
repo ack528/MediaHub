@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -108,6 +109,34 @@ class HeroState {
 }
 
 val LocalHero = staticCompositionLocalOf<HeroState?> { null }
+
+/**
+ * 页面缩小时四周露出来的空隙填什么颜色("临近色"):空隙紧挨着哪部分就用哪部分的颜色 ——
+ * 顶部和顶栏两侧用顶栏的颜色,下面用页面自己的背景(聊天背景渐变 / 网格底色 / 列表底色)。以前一律是白色,很突兀。
+ * TgBar 报告自己的高度和颜色,页面报告下方的背景色。
+ */
+class BackdropSpec {
+    var barHeight by mutableFloatStateOf(0f)
+    var barColor by mutableStateOf(Color.Unspecified)
+    var below by mutableStateOf<List<Color>>(emptyList())
+}
+
+val LocalBackdrop = staticCompositionLocalOf<BackdropSpec?> { null }
+
+/** 画缩放内容后面的底:内容按 s 以中心缩小时,顶栏底边在屏幕上的位置以上用顶栏色,以下用页面背景色。 */
+fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBackdrop(spec: BackdropSpec, s: Float, fallback: Color) {
+    val below = spec.below
+    when {
+        below.size >= 2 -> drawRect(androidx.compose.ui.graphics.Brush.verticalGradient(below))
+        below.size == 1 -> drawRect(below[0])
+        else -> drawRect(fallback)
+    }
+    if (spec.barHeight > 0f && spec.barColor != Color.Unspecified) {
+        val cy = size.height / 2
+        val barBottom = cy + (spec.barHeight - cy) * s
+        drawRect(spec.barColor, size = Size(size.width, barBottom.coerceAtLeast(0f)))
+    }
+}
 
 /** 图片页报告自己有没有放大(条目 id, 是否放大):放大时上下拖动是平移图片,不触发拖拽关闭。 */
 val LocalViewerZoomReport = staticCompositionLocalOf<(String, Boolean) -> Unit> { { _, _ -> } }
@@ -241,8 +270,26 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             AppLog.i("nav", "离开查看器")
         }
 
+        var openSeq by remember { mutableIntStateOf(0) } // 每次打开 +1:查看器重新创建(翻到的页从这次点的那一项开始)
+        lateinit var openRef: (Int) -> Unit
         val open: (Int) -> Unit = open@{ i ->
             val item = c.viewerFeed.items.getOrNull(i) ?: return@open
+            if (hero.phase == HeroState.Phase.Closing) {
+                if (item.id == current?.id) {
+                    // 关闭途中点回同一张:从当前位置原路展开回去(Animatable 接着当前值走,关闭协程被取消)
+                    AppLog.i("nav", "关闭途中重新打开 index=$i")
+                    hero.closeFrom = null; hero.bgMul = 1f; hero.backMul = 1f; hero.exiting = false; hero.exitReady = false
+                    hero.phase = HeroState.Phase.Opening
+                    scope.launch {
+                        hero.p.animateTo(1f, OPEN_SPRING)
+                        if (hero.phase == HeroState.Phase.Opening) hero.phase = HeroState.Phase.Open
+                    }
+                    return@open
+                }
+                // 点了别的:当前这个直接收尾,马上打开新的
+                scope.launch { hero.p.snapTo(0f) }
+                finishClose()
+            }
             if (hero.phase != HeroState.Phase.Idle) return@open
             AppLog.i("nav", "进入查看器 index=$i")
             current = item
@@ -256,6 +303,7 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             hero.hiddenId = item.id
             hero.phase = HeroState.Phase.Opening
             index = i
+            openSeq++
             scope.launch {
                 hero.p.snapTo(0f)
                 // 查看器第一次组合比较重:先组合、画出两帧再开始动,否则卡住的那一帧把动画前半段吃掉
@@ -264,6 +312,8 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
                 if (hero.phase == HeroState.Phase.Opening) hero.phase = HeroState.Phase.Open
             }
         }
+
+        openRef = open
 
         fun close() {
             val cur = current
@@ -297,8 +347,9 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
 
         // ---- 背景:列表跟着进度退后(缩小 + 模糊),返回 / 拖拽时恢复;完全收起时不加任何效果
         val pageBg = com.localtg.ui.tg.LocalTg.current.bg
+        val backdrop = remember { BackdropSpec() }
         Box(
-            Modifier.fillMaxSize().background(pageBg).graphicsLayer {
+            Modifier.fillMaxSize().drawBehind { drawBackdrop(backdrop, 1f - BG_SCALE * bgFactor(hero, full.height), pageBg) }.graphicsLayer {
                 val bp = bgFactor(hero, full.height)
                 val s = 1f - BG_SCALE * bp
                 scaleX = s; scaleY = s
@@ -309,7 +360,7 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             },
         ) {
             Box(Modifier.fillMaxSize().onGloballyPositioned { hero.space = it }) {
-                CompositionLocalProvider(LocalHero provides hero) { root(open) }
+                CompositionLocalProvider(LocalHero provides hero, LocalBackdrop provides backdrop) { root(open) }
             }
         }
 
@@ -357,6 +408,24 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
                             val slop = viewConfiguration.touchSlop
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                                if (hero.phase == HeroState.Phase.Closing) {
+                                    down.consume()
+                                    var moved = false
+                                    while (true) {
+                                        val ev = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                                        val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                        ch.consume()
+                                        if ((ch.position - down.position).getDistance() > slop) moved = true
+                                        if (!ch.pressed) break
+                                    }
+                                    if (!moved) {
+                                        val s = 1f - BG_SCALE * bgFactor(hero, full.height)
+                                        val hit = hero.bounds.entries.firstOrNull { (_, b) -> b.first.scaleAbout(s, full.center.x, full.center.y).contains(down.position) }?.key
+                                        val idx = hit?.let { id -> c.viewerFeed.items.indexOfFirst { it.id == id } } ?: -1
+                                        if (idx >= 0) openRef(idx)
+                                    }
+                                    return@awaitEachGesture
+                                }
                                 val canDrag = hero.phase == HeroState.Phase.Open && current?.isVideo == false && !hero.zoomed && hero.drag == 0f
                                 if (!canDrag) return@awaitEachGesture
                                 val vt = androidx.compose.ui.input.pointer.util.VelocityTracker()
@@ -413,7 +482,9 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
                             }
                         },
                     ) {
-                        ViewerScreen(c, startIndex = index, onBack = { close() }, onCurrent = { current = it; hero.hiddenId = it.id; aspect = aspectOf(it, memoryThumb(ctx, it)) })
+                        androidx.compose.runtime.key(openSeq) {
+                            ViewerScreen(c, startIndex = index, onBack = { close() }, onCurrent = { current = it; hero.hiddenId = it.id; aspect = aspectOf(it, memoryThumb(ctx, it)) })
+                        }
                     }
                 }
             }
