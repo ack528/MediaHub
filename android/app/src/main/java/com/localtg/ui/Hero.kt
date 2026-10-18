@@ -10,6 +10,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -67,20 +71,46 @@ class HeroState {
 
     var phase by mutableStateOf(Phase.Idle)
 
-    /** 容器完成度:0 = 在缩略图的位置,1 = 全屏。背景的缩放 / 模糊 / 压暗也跟着它。 */
+    /** 打开进度:0 = 在缩略图的位置,1 = 全屏。背景的缩放 / 模糊 / 压暗、黑色背景也跟着它。 */
     val p = Animatable(0f)
 
-    /** 返回手势的进度 0 ~ 1(整个查看器跟着缩小)。 */
+    /** 系统预测性返回手势的进度 0 ~ 1(支持的系统才有)。 */
     var drag by mutableFloatStateOf(0f)
+
+    /** 拖拽关闭:手指拖出的位移(图片跟着走),是否正在拖。 */
+    var dragOffset by mutableStateOf(Offset.Zero)
+    var dragging by mutableStateOf(false)
+    var snapJob: kotlinx.coroutines.Job? = null
+
+    /** 当前图片放大了(放大时拖动是平移图片,不是关闭)。 */
+    var zoomed = false
+
+    /** 返回动画的起点(拖拽 / 手势松手时图片的位置;null = 全屏居中)、背景和黑底从多少开始恢复。 */
+    var closeFrom: Rect? = null
+    var bgMul = 1f
+    var backMul = 1f
 
     /** 返回动画开始前,视频页要先把画面截图盖住(SurfaceView 不跟着裁剪 / 缩放)。 */
     var exiting by mutableStateOf(false)
     var exitReady by mutableStateOf(false)
 
+    /** 拖拽没到关闭的程度:弹回原位(途中可以再抓住)。 */
+    fun snapBack(scope: kotlinx.coroutines.CoroutineScope) {
+        snapJob?.cancel()
+        val from = dragOffset
+        snapJob = scope.launch {
+            val a = Animatable(from, Offset.VectorConverter)
+            a.animateTo(Offset.Zero, spring(dampingRatio = 0.85f, stiffness = 500f)) { dragOffset = value }
+        }
+    }
+
     enum class Phase { Idle, Opening, Open, Closing }
 }
 
 val LocalHero = staticCompositionLocalOf<HeroState?> { null }
+
+/** 图片页报告自己有没有放大(条目 id, 是否放大):放大时上下拖动是平移图片,不触发拖拽关闭。 */
+val LocalViewerZoomReport = staticCompositionLocalOf<(String, Boolean) -> Unit> { { _, _ -> } }
 
 /** 查看器里的图片 / 视频页第一次把内容(哪怕是占位的缩略图)画出来时调用,参数是条目 id。 */
 val LocalViewerReady = staticCompositionLocalOf<(String) -> Unit> { {} }
@@ -161,6 +191,8 @@ private fun Rect.scaleAbout(s: Float, cx: Float, cy: Float) = Rect(cx + (left - 
  *  - 返回:约 25ms 延迟后慢起步、中段近似匀速、再减速,约 340ms → cubic-bezier(0.30, 0.40, 0.40, 0.95)。
  */
 private val OPEN_SPRING = spring<Float>(dampingRatio = 1.2f, stiffness = 420f, visibilityThreshold = 0.001f)
+/** 打开途中被打断(还没展开完就返回):从当前位置、带着惯性收回。 */
+private val CLOSE_SPRING = spring<Float>(dampingRatio = 1f, stiffness = 500f, visibilityThreshold = 0.001f)
 private val CLOSE_TWEEN = tween<Float>(durationMillis = 340, delayMillis = 25, easing = CubicBezierEasing(0.30f, 0.40f, 0.40f, 0.95f))
 
 /** 背景(列表)随容器进度 p 退后:缩小到 0.905(以屏幕中心为中心)、模糊到屏宽的 2.6%、压暗 0.235。返回时反着来,都跟着 p 走。 */
@@ -175,13 +207,15 @@ private fun lerp(a: Rect, b: Rect, t: Float) = Rect(lerp(a.left, b.left, t), ler
 /**
  * 聊天 / 搜索 / 随机页的根:[root] 是列表页,openViewer(index) 打开 c.viewerFeed 里的第 index 项。
  *
- * 做法(照小红书 / B 站,docs/14):**下一个界面从第一帧起就是加载好的真页面**,没有"先放一张替身图、动画完再换成真页面"的交接 ——
- * 以前闪屏就出在交接这一下。查看器一打开就组合,放在一个圆角容器里:
- *  - 容器的矩形从缩略图的位置变到全屏(四条边同一个进度 p),容器外面是退后的列表(缩小 + 模糊 + 压暗);
- *  - 容器里的查看器按全屏排版,整体缩放 / 平移,让查看器里图片的位置正好从缩略图(铺满裁剪)变到全屏居中;
- *    查看器底下垫的是内存里的缩略图(ViewerBaseThumb),大图没解码好之前也有画面;
- *  - 返回时反过来,容器朝缩略图收回;目标位置每一帧按背景当前的缩放实时换算(背景从 0.905 放大回 1 的同时容器落到格子上,不会最后跳一下);
- *  - 视频:动画期间不创建播放器(SurfaceView 不跟着裁剪和缩放),动画结束才开始播;返回前先把当前画面截图盖住。
+ * 做法(照小红书 / B 站 / Telegram,docs/14):
+ *  - **下一个界面从第一帧起就是加载好的真页面**:查看器一打开就组合,没有"先放替身图、动画完再换"的交接(以前闪屏的根源);
+ *  - 动画中只裁出**图片本身**那块(从缩略图的位置 / 圆角变到全屏居中),黑色背景单独按进度淡入淡出 ——
+ *    不再有一整块黑色圆角矩形在浅色列表上展开 / 收回(用户看到的"闪");
+ *  - 列表跟着进度退后(缩小 + 模糊 + 压暗);返回时目标位置每一帧按背景当前的缩放换算,容器和格子同时落定;
+ *  - **跟手**:按住图片上下拖,图片跟着手指走、越远越小,背景同步露出列表;松手按距离 / 速度决定关闭还是弹回。
+ *    不依赖系统的预测性返回(很多国产 ROM 的侧滑返回只在松手时发一个"返回",不给进度);
+ *  - **可打断**:打开没结束就返回,从当前位置直接收回;弹回途中可以再抓住;返回动画用 Animatable,随时接着当前值走。
+ *  - 视频:动画期间不创建播放器(SurfaceView 不跟着裁剪和缩放),动画结束才开始播;返回前先截图盖住画面。视频页不做拖拽关闭(上下滑是亮度 / 音量)。
  */
 @Composable
 fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit) -> Unit) {
@@ -203,6 +237,7 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             index = -1; current = null
             hero.phase = HeroState.Phase.Idle; hero.hiddenId = null; hero.drag = 0f
             hero.exiting = false; hero.exitReady = false
+            hero.closeFrom = null; hero.bgMul = 1f; hero.backMul = 1f; hero.dragOffset = Offset.Zero; hero.dragging = false
             AppLog.i("nav", "离开查看器")
         }
 
@@ -213,8 +248,8 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             current = item
             aspect = aspectOf(item, memoryThumb(ctx, item))
             hero.drag = 0f; hero.exiting = false; hero.exitReady = false
+            hero.closeFrom = null; hero.bgMul = 1f; hero.backMul = 1f; hero.dragOffset = Offset.Zero
             if (!animate) { index = i; scope.launch { hero.p.snapTo(1f) }; hero.phase = HeroState.Phase.Open; return@open }
-            // 全屏的图先开始加载(动画期间就在下载 / 解码)
             if (!item.isVideo && item.canShowNatively()) runCatching {
                 coil3.SingletonImageLoader.get(ctx).enqueue(coil3.request.ImageRequest.Builder(ctx).data(c.api.imageUrl(item, cfg.viewerImageWidth)).build())
             }
@@ -223,11 +258,10 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             index = i
             scope.launch {
                 hero.p.snapTo(0f)
-                // 查看器第一次组合比较重(分页器 + 图片 / 播放器):先让它组合、画出两帧,再开始动。
-                // 否则卡住的那一帧把动画前半段吃掉,看起来就是"一下子跳到快全屏"
+                // 查看器第一次组合比较重:先组合、画出两帧再开始动,否则卡住的那一帧把动画前半段吃掉
                 androidx.compose.runtime.withFrameNanos { }; androidx.compose.runtime.withFrameNanos { }
                 hero.p.animateTo(1f, OPEN_SPRING)
-                hero.phase = HeroState.Phase.Open
+                if (hero.phase == HeroState.Phase.Opening) hero.phase = HeroState.Phase.Open
             }
         }
 
@@ -235,37 +269,41 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             val cur = current
             if (index < 0) return
             if (!animate || cur == null) { scope.launch { hero.p.snapTo(0f) }; finishClose(); return }
-            when (hero.phase) {
-                HeroState.Phase.Opening -> { // 打开动画还没完:等它完了再关
-                    scope.launch { snapshotFlow { hero.phase }.first { it == HeroState.Phase.Open }; close() }
-                    return
-                }
-                HeroState.Phase.Closing, HeroState.Phase.Idle -> return
-                HeroState.Phase.Open -> {}
-            }
+            if (hero.phase == HeroState.Phase.Closing || hero.phase == HeroState.Phase.Idle) return
+            val interrupt = hero.phase == HeroState.Phase.Opening // 打开没结束:从当前位置直接收回(Animatable 接着当前值走)
             aspect = aspectOf(cur, memoryThumb(ctx, cur))
             hero.hiddenId = cur.id
+            hero.snapJob?.cancel()
             scope.launch {
-                // 视频:先截图盖住 SurfaceView(最多等 150ms),再开始收回
-                if (cur.isVideo) {
+                if (cur.isVideo && !interrupt) { // 视频:先截图盖住 SurfaceView(最多等 150ms),再开始收回
                     hero.exiting = true
                     kotlinx.coroutines.withTimeoutOrNull(150) { snapshotFlow { hero.exitReady }.first { it } }
                 }
                 hero.phase = HeroState.Phase.Closing
-                hero.p.animateTo(0f, CLOSE_TWEEN)
+                hero.dragging = false
+                hero.p.animateTo(0f, if (interrupt) CLOSE_SPRING else CLOSE_TWEEN)
                 finishClose()
             }
         }
 
-        // ---- 背景:列表跟着容器进度 p 退后(缩小 + 模糊),返回时恢复;p=0 时不加任何效果
+        /** 拖拽松手,决定关闭:把当前拖到的位置作为返回动画的起点,背景从当前露出的程度接着恢复。 */
+        fun closeFromDrag() {
+            val fr = dragFrac(hero, full.height)
+            hero.closeFrom = openImgRect(hero, aspect, full)
+            hero.bgMul = 1f - fr
+            hero.backMul = backdropOpen(fr)
+            close()
+        }
+
+        // ---- 背景:列表跟着进度退后(缩小 + 模糊),返回 / 拖拽时恢复;完全收起时不加任何效果
         val pageBg = com.localtg.ui.tg.LocalTg.current.bg
         Box(
             Modifier.fillMaxSize().background(pageBg).graphicsLayer {
-                val p = hero.p.value.coerceIn(0f, 1f)
-                val s = 1f - BG_SCALE * p
+                val bp = bgFactor(hero, full.height)
+                val s = 1f - BG_SCALE * bp
                 scaleX = s; scaleY = s
-                renderEffect = if (android.os.Build.VERSION.SDK_INT >= 31 && p > 0.01f) {
-                    val sigma = BG_BLUR * size.width * (p / 0.8f).coerceAtMost(1f)
+                renderEffect = if (android.os.Build.VERSION.SDK_INT >= 31 && bp > 0.01f) {
+                    val sigma = BG_BLUR * size.width * (bp / 0.8f).coerceAtMost(1f)
                     BlurEffect(sigma, sigma, TileMode.Clamp)
                 } else null
             },
@@ -276,10 +314,11 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
         }
 
         if (index >= 0) {
-            // 返回手势:查看器跟着手指缩小(露出下面的列表),松手收回列表,取消弹回
+            // 系统的预测性返回(Android 14+、支持的系统才有进度):整个查看器跟着缩小;很多 ROM 只在松手时发返回,这时直接收回
             PredictiveBackHandler(enabled = true) { progress ->
                 try {
-                    progress.collect { e -> if (hero.phase == HeroState.Phase.Open) { hero.drag = e.progress; if (e.progress > 0f) hero.exiting = true } }
+                    progress.collect { e -> if (hero.phase == HeroState.Phase.Open && !hero.dragging) { hero.drag = e.progress; if (e.progress > 0f) hero.exiting = true } }
+                    if (hero.drag > 0f) { hero.closeFrom = openImgRect(hero, aspect, full); hero.bgMul = 1f - dragFrac(hero, full.height); hero.backMul = backdropOpen(dragFrac(hero, full.height)) }
                     close()
                 } catch (e: CancellationException) {
                     val a = Animatable(hero.drag)
@@ -288,37 +327,80 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
                     throw e
                 }
             }
-            // 压暗:盖在退后的列表上(查看器打开后被全屏容器盖住)
-            Canvas(Modifier.fillMaxSize()) { drawRect(Color.Black, alpha = BG_DIM * hero.p.value.coerceIn(0f, 1f)) }
+            // 压暗(盖在退后的列表上)+ 查看器的黑色背景(按进度淡入淡出,拖拽时变淡露出列表)
+            Canvas(Modifier.fillMaxSize()) {
+                val bp = bgFactor(hero, full.height)
+                drawRect(Color.Black, alpha = BG_DIM * bp)
+                drawRect(Color.Black, alpha = backdropAlpha(hero, full.height))
+            }
 
             val cur = current
             val cornerPx = CORNER_DP * density
             CompositionLocalProvider(
                 LocalHero provides null,
                 LocalViewerExiting provides (hero.exiting || hero.drag > 0f),
-                LocalViewerShown provides (hero.phase == HeroState.Phase.Open),
+                LocalViewerShown provides (hero.phase == HeroState.Phase.Open && !hero.dragging),
                 LocalViewerPlayerOk provides (hero.phase != HeroState.Phase.Opening),
                 LocalViewerExitReady provides { id -> if (id == cur?.id) hero.exitReady = true },
+                LocalViewerZoomReport provides { id, z -> if (id == cur?.id) hero.zoomed = z },
             ) {
                 Box(
                     Modifier.fillMaxSize()
                         .drawWithContent {
-                            val p = hero.p.value
-                            val st = containerState(hero, cur, aspect, full, p, cornerPx)
+                            val st = containerState(hero, cur, aspect, full, hero.p.value, cornerPx)
                             if (st == null) { drawContent(); return@drawWithContent }
                             val path = Path().apply { addRoundRect(RoundRect(st.first, CornerRadius(st.second))) }
-                            clipPath(path) {
-                                drawRect(Color.Black, st.first.topLeft, st.first.size)
-                                this@drawWithContent.drawContent()
-                            }
+                            clipPath(path) { this@drawWithContent.drawContent() }
                         }
-                        // 查看器盖在列表上:没被查看器里的控件接住的触摸也不能漏到下面的列表
-                        .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } },
+                        // 拖拽关闭(只在图片页、没放大、已经打开时):在 Initial 阶段先看手势,竖直方向拖动才接管,横滑留给翻页,双指留给缩放
+                        .pointerInput(Unit) {
+                            val slop = viewConfiguration.touchSlop
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                                val canDrag = hero.phase == HeroState.Phase.Open && current?.isVideo == false && !hero.zoomed && hero.drag == 0f
+                                if (!canDrag) return@awaitEachGesture
+                                val vt = androidx.compose.ui.input.pointer.util.VelocityTracker()
+                                vt.addPosition(down.uptimeMillis, down.position)
+                                val start = hero.dragOffset // 弹回途中又抓住:接着当前位置
+                                var total = Offset.Zero
+                                var dragging = false
+                                while (true) {
+                                    val ev = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                                    if (ev.changes.count { it.pressed } > 1) { // 第二根手指:交给缩放
+                                        if (dragging) { hero.dragging = false; hero.snapBack(scope) }
+                                        break
+                                    }
+                                    val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                    vt.addPosition(ch.uptimeMillis, ch.position)
+                                    if (!ch.pressed) {
+                                        if (dragging) {
+                                            val v = vt.calculateVelocity()
+                                            val off = hero.dragOffset
+                                            val far = kotlin.math.abs(off.y) > full.height * 0.08f
+                                            val flick = kotlin.math.abs(v.y) > 900f && kotlin.math.sign(v.y) == kotlin.math.sign(off.y)
+                                            if (far || flick) closeFromDrag() else { hero.dragging = false; hero.snapBack(scope) }
+                                        }
+                                        break
+                                    }
+                                    total += ch.positionChange()
+                                    if (!dragging && total.getDistance() > slop) {
+                                        if (kotlin.math.abs(total.y) > kotlin.math.abs(total.x) * 1.3f || start != Offset.Zero) {
+                                            dragging = true
+                                            hero.snapJob?.cancel()
+                                            hero.dragging = true
+                                        } else break // 横滑:交给翻页
+                                    }
+                                    if (dragging) {
+                                        ch.consume()
+                                        hero.dragOffset = start + total
+                                    }
+                                }
+                            }
+                        },
                 ) {
                     Box(
                         Modifier.fillMaxSize().graphicsLayer {
-                            val p = hero.p.value
-                            val img = imageState(hero, cur, aspect, full, p)
+                            val img = imageState(hero, cur, aspect, full, hero.p.value)
                             val f = fitRect(aspect, full.width, full.height)
                             if (img == null || f.width <= 0f) {
                                 scaleX = 1f; scaleY = 1f; translationX = 0f; translationY = 0f
@@ -329,7 +411,7 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
                                 translationX = img.left - k * f.left
                                 translationY = img.top - k * f.top
                             }
-                        }.background(Color.Black),
+                        },
                     ) {
                         ViewerScreen(c, startIndex = index, onBack = { close() }, onCurrent = { current = it; hero.hiddenId = it.id; aspect = aspectOf(it, memoryThumb(ctx, it)) })
                     }
@@ -339,40 +421,72 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
     }
 }
 
-/** 返回手势时整个查看器缩小的比例(以屏幕中心为中心)。 */
-private fun dragScale(h: HeroState) = 1f - 0.15f * h.drag
+/** 拖拽 / 系统返回手势让查看器"退出"了多少:0 = 没动,1 = 拖了半屏(或系统手势到底)。 */
+private fun dragFrac(h: HeroState, H: Float): Float =
+    if (h.drag > 0f) h.drag * 0.5f else (kotlin.math.abs(h.dragOffset.y) / (H * 0.5f)).coerceIn(0f, 1f)
 
-/** 缩略图在屏幕上当前的位置:记下的(列表坐标)按背景当前的缩放换算;找不到就用屏幕中间一个小框。 */
-private fun sourceRect(h: HeroState, item: Item?, aspect: Float, full: Rect, p: Float): Pair<Rect, Float>? {
+/** 拖拽时黑色背景剩多少(拖得越远越淡,露出下面的列表)。 */
+private fun backdropOpen(fr: Float) = (1f - fr * 1.6f).coerceIn(0f, 1f)
+
+/** 黑色背景(查看器的底)的不透明度。 */
+private fun backdropAlpha(h: HeroState, H: Float): Float = when (h.phase) {
+    HeroState.Phase.Opening -> h.p.value.coerceIn(0f, 1f)
+    HeroState.Phase.Closing -> h.p.value.coerceIn(0f, 1f) * h.backMul
+    HeroState.Phase.Open -> backdropOpen(dragFrac(h, H))
+    HeroState.Phase.Idle -> 0f
+}
+
+/** 背景(列表)退后的程度:缩放 / 模糊 / 压暗都按它。 */
+private fun bgFactor(h: HeroState, H: Float): Float = when (h.phase) {
+    HeroState.Phase.Opening -> h.p.value.coerceIn(0f, 1f)
+    HeroState.Phase.Closing -> h.p.value.coerceIn(0f, 1f) * h.bgMul
+    HeroState.Phase.Open -> 1f - dragFrac(h, H)
+    HeroState.Phase.Idle -> 0f
+}
+
+/** 打开状态下(含拖拽 / 系统返回手势)图片的位置;null = 没在拖,不用变换。 */
+private fun openImgRect(h: HeroState, aspect: Float, full: Rect): Rect? {
+    val f = fitRect(aspect, full.width, full.height)
+    val fr = dragFrac(h, full.height)
+    val off = h.dragOffset
+    if (fr <= 0f && off == Offset.Zero) return null
+    val s = 1f - 0.35f * fr // 越拖越小(小红书 / Telegram 的手感)
+    return f.scaleAbout(s, full.center.x, full.center.y).translate(off)
+}
+
+/** 缩略图在屏幕上当前的位置:记下的(列表坐标)按背景当前的缩放换算;找不到返回 null。 */
+private fun sourceRect(h: HeroState, item: Item?, full: Rect): Pair<Rect, Float>? {
     val b = item?.let { h.bounds[it.id] } ?: return null
-    val s = 1f - BG_SCALE * p.coerceIn(0f, 1f)
+    val s = 1f - BG_SCALE * bgFactor(h, full.height)
     return b.first.scaleAbout(s, full.center.x, full.center.y) to b.second
 }
 
-/** 容器当前的矩形和圆角;null = 不用裁剪(已经全屏、没有手势)。 */
+/** 动画的终点(打开)/ 起点(返回):全屏居中的图片,或拖拽松手时的位置。 */
+private fun endRect(h: HeroState, aspect: Float, full: Rect): Rect =
+    if (h.phase == HeroState.Phase.Closing) h.closeFrom ?: fitRect(aspect, full.width, full.height) else fitRect(aspect, full.width, full.height)
+
+/** 裁剪框(只包住图片本身)和圆角;null = 不用裁剪(已经打开、没在拖)。 */
 private fun containerState(h: HeroState, item: Item?, aspect: Float, full: Rect, p: Float, cornerPx: Float): Pair<Rect, Float>? {
-    val ds = dragScale(h)
-    val to = if (ds < 1f) full.scaleAbout(ds, full.center.x, full.center.y) else full
     if (h.phase == HeroState.Phase.Open || h.phase == HeroState.Phase.Idle) {
-        return if (h.drag > 0f) to to cornerPx * (h.drag * 4f).coerceAtMost(1f) else null
+        val r = openImgRect(h, aspect, full) ?: return null
+        return r to cornerPx * (dragFrac(h, full.height) * 4f).coerceAtMost(1f)
     }
     val pc = p.coerceIn(0f, 1f)
-    val src = sourceRect(h, item, aspect, full, p)
-    val from = src?.first ?: fitRect(aspect, full.width, full.height).scaleAbout(0.6f, full.center.x, full.center.y)
-    val r = lerp(from, to, p)
-    // 圆角:从缩略图的圆角很快变到 ~22dp,整个过程保持,最后 12% 才收成直角
+    val end = endRect(h, aspect, full)
+    val src = sourceRect(h, item, full)
+    val from = src?.first ?: end.scaleAbout(0.6f, end.center.x, end.center.y)
+    val r = lerp(from, end, p)
+    // 圆角:从缩略图的圆角很快变到 ~22dp,整个过程保持,最后 12% 收成直角(从拖拽返回时一直保持圆角)
     val base = lerp(src?.second ?: cornerPx, cornerPx, (pc / 0.25f).coerceAtMost(1f))
-    val corner = base * (1f - ((pc - 0.88f) / 0.12f).coerceIn(0f, 1f))
+    val corner = if (h.phase == HeroState.Phase.Closing && h.closeFrom != null) base else base * (1f - ((pc - 0.88f) / 0.12f).coerceIn(0f, 1f))
     return r to corner
 }
 
 /** 查看器里图片当前应该在的位置;null = 不用变换。 */
 private fun imageState(h: HeroState, item: Item?, aspect: Float, full: Rect, p: Float): Rect? {
-    val f = fitRect(aspect, full.width, full.height)
-    val ds = dragScale(h)
-    val to = if (ds < 1f) f.scaleAbout(ds, full.center.x, full.center.y) else f
-    if (h.phase == HeroState.Phase.Open || h.phase == HeroState.Phase.Idle) return if (h.drag > 0f) to else null
-    val src = sourceRect(h, item, aspect, full, p)
-    val from = src?.let { coverRect(aspect, it.first) } ?: f.scaleAbout(0.6f, full.center.x, full.center.y)
-    return lerp(from, to, p)
+    if (h.phase == HeroState.Phase.Open || h.phase == HeroState.Phase.Idle) return openImgRect(h, aspect, full)
+    val end = endRect(h, aspect, full)
+    val src = sourceRect(h, item, full)
+    val from = src?.let { coverRect(aspect, it.first) } ?: end.scaleAbout(0.6f, end.center.x, end.center.y)
+    return lerp(from, end, p)
 }

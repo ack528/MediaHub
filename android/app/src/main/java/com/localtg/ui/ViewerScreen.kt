@@ -278,6 +278,10 @@ private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean
     val zs = me.saket.telephoto.zoomable.rememberZoomableImageState(
         me.saket.telephoto.zoomable.rememberZoomableState(zoomSpec = me.saket.telephoto.zoomable.ZoomSpec(maxZoomFactor = cfg.maxZoom)),
     )
+    // 放大了就告诉外层:这时上下拖是平移图片,不是拖拽关闭
+    val zoomedNow = (zs.zoomableState.zoomFraction ?: 0f) > 0.01f
+    val zoomReport = LocalViewerZoomReport.current
+    androidx.compose.runtime.SideEffect { zoomReport(item.id, zoomedNow) }
     // 占位的缩略图或原图画出来了:告诉打开动画可以交接了
     // 最底下先垫上内存里的缩略图(第一帧就有,和打开动画同一张);大图显示出来以后就拿掉
     val based = if (!zs.isImageDisplayed) ViewerBaseThumb(item) else false
