@@ -343,8 +343,15 @@ func (p *Poster) WarmPhotos(ctx context.Context, rootID int64) int {
 			t0 := time.Now()
 			p.photoHash(ctx, r.id, strings.ToLower(r.ext), r.w, r.h)
 			done++
+			worked := time.Since(t0)
 			if p.Throttle != nil {
-				p.Throttle(ctx, time.Since(t0))
+				p.Throttle(ctx, worked)
+			}
+			// 占空比 ≤ 50%:每处理一张至少歇和干活一样长的时间(几十万张的大库第一次补算要几个小时,别让它一直占着 CPU 和进程创建的开销)
+			select {
+			case <-ctx.Done():
+				return done
+			case <-time.After(max(worked, 40*time.Millisecond)):
 			}
 		}
 	}

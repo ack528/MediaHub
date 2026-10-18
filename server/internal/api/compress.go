@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,6 +51,7 @@ type optJob struct {
 	Name string `json:"name"`
 	Dir  string `json:"dir"`
 	Root string `json:"root"`
+	Path string `json:"path,omitempty"` // 视频的完整路径(管理程序「定位」按钮用);替换后原位置是压缩版,容器变了名字可能对不上,界面会退回打开所在目录
 }
 
 type compressState struct {
@@ -134,6 +136,11 @@ func (s *Server) StartOptimizeWorker(ctx context.Context) {
 	c.once.Do(func() {
 		c.wake = make(chan struct{}, 1)
 		_, _ = s.DB.Exec(`UPDATE opt_job SET state='queued', progress=0 WHERE state='running'`)
+		var pv string
+		if s.DB.QueryRow(`SELECT v FROM kv WHERE k='compress.paused'`).Scan(&pv) == nil && pv == "1" {
+			c.paused = true
+			s.Log.Info("压缩队列上次是暂停状态,保持暂停(在管理程序里点「继续」恢复)")
+		}
 		// 3.2.0 之前的校验会把「音频带无害警告」的好结果判成失败(原因以「输出的结尾不能完整解码」开头):升级后自动重新排队
 		if res, err := s.DB.Exec(`UPDATE opt_job SET state='queued', progress=0, err='', out_path='' WHERE state='failed' AND err LIKE '输出的结尾不能完整解码%'`); err == nil {
 			if n, _ := res.RowsAffected(); n > 0 {
@@ -180,7 +187,7 @@ func (s *Server) compressLoop(ctx context.Context) {
 			continue
 		}
 		// 有客户端连着(governor 不是 Idle)时不开始新的压缩;没有客户端后自动继续
-		if s.Gov.PauseCompress() {
+		if s.compressHoldReason() != "" {
 			time.Sleep(3 * time.Second)
 			return
 		}
@@ -284,9 +291,14 @@ func outExtFor(ext string, hasSub bool) string {
 	return ".mkv"
 }
 
-func (s *Server) compressArgs(src, out string, j optJob, enc string, hw bool, si streamInfo, aacAudio, simple bool) []string {
-	a := []string{"-hide_banner", "-nostdin", "-y", "-v", "error", "-progress", "pipe:1", "-nostats", "-i", src,
-		"-map", "0:V:0", "-map", "0:a?"} // 0:V = 不含封面图 / 附件图片的视频流(mp4 / mkv 常带封面,0:v:0 可能选到它)
+func (s *Server) compressArgs(src, out string, j optJob, enc string, hw bool, si streamInfo, aacAudio, simple, hwdec bool) []string {
+	threads := strconv.Itoa(s.compressThreads())
+	a := []string{"-hide_banner", "-nostdin", "-y", "-v", "error", "-progress", "pipe:1", "-nostats"}
+	if hwdec { // 核显硬件解码:解码是压缩时 CPU 占用的大头(软件解码 1080p / 4K 要占好几个核),交给 QSV 后 CPU 基本空闲
+		a = append(a, "-hwaccel", "qsv", "-hwaccel_output_format", "qsv")
+	}
+	a = append(a, "-threads", threads, "-i", src, // 软件解码 / 软件编码时最多用这么多线程(默认 CPU 核数的一半),别把整台机器吃满
+		"-map", "0:V:0", "-map", "0:a?") // 0:V = 不含封面图 / 附件图片的视频流(mp4 / mkv 常带封面,0:v:0 可能选到它)
 	isMKV := strings.EqualFold(filepath.Ext(out), ".mkv")
 	if isMKV {
 		a = append(a, "-map", "0:s?", "-c:s", "copy")
@@ -303,8 +315,12 @@ func (s *Server) compressArgs(src, out string, j optJob, enc string, hw bool, si
 	case si.tenBit && enc == "libx265":
 		pix = "yuv420p10le"
 	}
-	// 宽高必须是偶数(奇数宽高的片源硬件编码器会直接报错);已经是偶数时这一步什么都不做
-	a = append(a, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format="+pix)
+	if hwdec { // 帧在显存里:用 vpp_qsv 转像素格式(宽高已确认是偶数才会走这一路)
+		a = append(a, "-vf", "vpp_qsv=format="+pix)
+	} else {
+		// 宽高必须是偶数(奇数宽高的片源硬件编码器会直接报错);已经是偶数时这一步什么都不做
+		a = append(a, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format="+pix)
+	}
 	rate := strconv.Itoa(j.Kbps) + "k"
 	maxr := strconv.Itoa(j.Kbps*3/2) + "k"
 	buf := strconv.Itoa(j.Kbps*2) + "k"
@@ -324,9 +340,9 @@ func (s *Server) compressArgs(src, out string, j optJob, enc string, hw bool, si
 			a = append(a, "-look_ahead", "1")
 		}
 	case "libx265":
-		a = append(a, "-c:v", "libx265", "-preset", j.Preset, "-b:v", rate, "-maxrate", maxr, "-bufsize", buf, "-x265-params", "log-level=error")
+		a = append(a, "-c:v", "libx265", "-preset", j.Preset, "-b:v", rate, "-maxrate", maxr, "-bufsize", buf, "-x265-params", "log-level=error:pools="+threads)
 	default:
-		a = append(a, "-c:v", "libx264", "-preset", j.Preset, "-b:v", rate, "-maxrate", maxr, "-bufsize", buf)
+		a = append(a, "-c:v", "libx264", "-preset", j.Preset, "-b:v", rate, "-maxrate", maxr, "-bufsize", buf, "-threads", threads)
 	}
 	if aacAudio {
 		a = append(a, "-c:a", "aac", "-b:a", "192k")
@@ -347,17 +363,55 @@ type encAttempt struct {
 	enc    string
 	hw     bool
 	simple bool
+	hwdec  bool // 用核显硬件解码(QSV 编码时才有意义)
 }
 
-func (s *Server) compressAttempts(codec string) []encAttempt {
+// compressThreads 压缩时软件解码 / 软件编码最多用的线程数:配置 optimize.maxThreads,0 = CPU 核数的一半(至少 2)。
+func (s *Server) compressThreads() int {
+	n := s.Cfg.Optimize.MaxThreads
+	if n <= 0 {
+		n = runtime.NumCPU() / 2
+	}
+	return min(max(n, 1), 32)
+}
+
+// qsvDecodable QSV 能硬解的视频编码(ffprobe 名)。
+var qsvDecodable = map[string]bool{"h264": true, "hevc": true, "vp9": true, "av1": true, "mpeg2video": true, "vc1": true, "mjpeg": true}
+
+// compressWindowOpen 现在是不是允许压缩的时段:配置 optimize.window,形如 "01:00-07:00"(跨午夜的 "23:00-07:00" 也行),空 = 全天。
+func (s *Server) compressWindowOpen(now time.Time) bool {
+	w := strings.TrimSpace(s.Cfg.Optimize.Window)
+	if w == "" {
+		return true
+	}
+	var h1, m1, h2, m2 int
+	if _, err := fmt.Sscanf(strings.ReplaceAll(w, "：", ":"), "%d:%d-%d:%d", &h1, &m1, &h2, &m2); err != nil {
+		return true // 写错了就当全天,别让压缩永远不跑
+	}
+	cur, from, to := now.Hour()*60+now.Minute(), h1*60+m1, h2*60+m2
+	if from == to {
+		return true
+	}
+	if from < to {
+		return cur >= from && cur < to
+	}
+	return cur >= from || cur < to // 跨午夜
+}
+
+func (s *Server) compressAttempts(codec string, m mediaInfo) []encAttempt {
 	enc, hw := s.encoderFor(codec)
-	out := []encAttempt{{enc, hw, false}}
+	var out []encAttempt
+	// 第一选择:核显硬件解码 + 硬件编码(CPU 几乎不占)。要求宽高是偶数、视频编码 QSV 能解;失败了自动退到下面的方式
+	if hw && m.W > 0 && m.H > 0 && m.W%2 == 0 && m.H%2 == 0 && qsvDecodable[strings.ToLower(m.Vcodec)] {
+		out = append(out, encAttempt{enc, true, false, true})
+	}
+	out = append(out, encAttempt{enc, hw, false, false})
 	if hw {
 		sw := "libx264"
 		if codec == "h265" {
 			sw = "libx265"
 		}
-		out = append(out, encAttempt{enc, true, true}, encAttempt{sw, false, false})
+		out = append(out, encAttempt{enc, true, true, false}, encAttempt{sw, false, false, false})
 	}
 	return out
 }
@@ -406,7 +460,7 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 		return
 	}
 	out := filepath.Join(outDir, fmt.Sprintf("%d-%d%s", m.ID, j.ID, outExtFor(m.Ext, si.hasSub)))
-	attempts := s.compressAttempts(j.Codec)
+	attempts := s.compressAttempts(j.Codec, m)
 	jctx, cancel := context.WithCancel(ctx)
 	c.mu.Lock()
 	c.cur, c.cancel = id, cancel
@@ -421,7 +475,7 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 	s.Log.Info("压缩开始", "id", id, "media", m.Name, "codec", attempts[0].enc, "kbps", j.Kbps, "preset", j.Preset)
 
 	run := func(at encAttempt, aac bool) (string, error) {
-		cmd := proc.Background(exec.CommandContext(jctx, s.Cfg.Tools.FFmpeg, s.compressArgs(src, winfs.Path(out), j, at.enc, at.hw, si, aac, at.simple)...)) // 较低的 CPU 优先级
+		cmd := proc.Background(exec.CommandContext(jctx, s.Cfg.Tools.FFmpeg, s.compressArgs(src, winfs.Path(out), j, at.enc, at.hw, si, aac, at.simple, at.hwdec)...)) // 较低的 CPU 优先级
 		errBuf := &tailBuf{}
 		cmd.Stderr = errBuf
 		stdout, err := cmd.StdoutPipe()
@@ -431,6 +485,7 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 		if err := cmd.Start(); err != nil {
 			return "", err
 		}
+		_ = proc.SetLowPriority(cmd.Process.Pid, true) // 空闲优先级:别的程序一用 CPU 它就让路,压缩只吃空闲的算力
 		// 监视调度级别:有客户端连着就把 ffmpeg 整个进程挂起(进度保留、不占 CPU / 磁盘 / QSV),没有客户端后恢复
 		pid := cmd.Process.Pid
 		stopMon := make(chan struct{})
@@ -447,17 +502,18 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 					}
 					return
 				case <-t.C:
-					want := s.Gov.PauseCompress()
+					reason := s.compressHoldReason() // 手动暂停 / 不在允许的时段 / 有客户端连接
+					want := reason != ""
 					if want && !suspended {
 						if proc.Suspend(pid) == nil {
 							suspended = true
-							s.Log.Info("有客户端连接,压缩已暂停", "id", id)
-							s.jobSet(id, map[string]any{"err": "⏸ 有客户端连接,已暂停;没有客户端后自动继续"})
+							s.Log.Info("压缩已暂停", "id", id, "reason", reason)
+							s.jobSet(id, map[string]any{"err": "⏸ " + reason + ",已暂停;条件解除后自动继续"})
 						}
 					} else if !want && suspended {
 						if proc.Resume(pid) == nil {
 							suspended = false
-							s.Log.Info("没有客户端连接,压缩已继续", "id", id)
+							s.Log.Info("压缩已继续", "id", id)
 							s.jobSet(id, map[string]any{"err": ""})
 						}
 					}
@@ -843,7 +899,7 @@ func (s *Server) adminCompressJobs(w http.ResponseWriter, r *http.Request) {
 	off, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	lim := limitParam(r, 50, 200)
 	q := `SELECT j.id, j.media_id, j.state, j.codec, j.bitrate_kbps, j.preset, j.orig_size, j.new_size, j.progress, j.err, j.trash_path, j.created, j.updated,
-		COALESCE(m.name,''), COALESCE(m.dir_rel,''), COALESCE(ro.label,'')
+		COALESCE(m.name,''), COALESCE(m.dir_rel,''), COALESCE(ro.label,''), COALESCE(ro.path,'')
 		FROM opt_job j LEFT JOIN media m ON m.id=j.media_id LEFT JOIN roots ro ON ro.id=m.root_id`
 	var args []any
 	if state != "" {
@@ -861,7 +917,11 @@ func (s *Server) adminCompressJobs(w http.ResponseWriter, r *http.Request) {
 	jobs := []optJob{}
 	for rows.Next() {
 		var j optJob
-		if rows.Scan(&j.ID, &j.MediaID, &j.State, &j.Codec, &j.Kbps, &j.Preset, &j.Orig, &j.New, &j.Progress, &j.Err, &j.Trash, &j.Created, &j.Updated, &j.Name, &j.Dir, &j.Root) == nil {
+		var rootPath string
+		if rows.Scan(&j.ID, &j.MediaID, &j.State, &j.Codec, &j.Kbps, &j.Preset, &j.Orig, &j.New, &j.Progress, &j.Err, &j.Trash, &j.Created, &j.Updated, &j.Name, &j.Dir, &j.Root, &rootPath) == nil {
+			if rootPath != "" && j.Name != "" {
+				j.Path = filepath.Join(rootPath, j.Dir, j.Name)
+			}
 			jobs = append(jobs, j)
 		}
 	}
@@ -1058,11 +1118,40 @@ func (s *Server) adminCompressPause(pause bool) http.HandlerFunc {
 		c.mu.Lock()
 		c.paused = pause
 		c.mu.Unlock()
+		v := "0"
+		if pause {
+			v = "1"
+		}
+		// 记住暂停状态:服务重启 / 自动更新后仍然是暂停(以前重启一下队列就自己又开始跑了)
+		_, _ = s.DB.Exec(`INSERT INTO kv(k,v) VALUES('compress.paused',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, v)
+		s.Log.Info("压缩队列", "paused", pause)
 		if !pause {
 			s.compressKick()
 		}
+		// 暂停 = 正在压缩的那个 ffmpeg 也会在 2 秒内被挂起(见 compressOne 里的监视协程),不再占 CPU / 磁盘 / 核显;继续 = 恢复
 		w.WriteHeader(204)
 	}
+}
+
+// compressPaused 是否被手动暂停。
+func (s *Server) compressPaused() bool {
+	c := &s.opt.cp
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.paused
+}
+
+// compressHoldReason 现在为什么不该压缩(空 = 可以压缩):手动暂停 / 不在允许的时段 / 有客户端连接。
+func (s *Server) compressHoldReason() string {
+	switch {
+	case s.compressPaused():
+		return "已手动暂停"
+	case !s.compressWindowOpen(time.Now()):
+		return "不在允许压缩的时段"
+	case s.Gov.PauseCompress():
+		return "有客户端连接"
+	}
+	return ""
 }
 
 // applyResult 一批替换的结果。

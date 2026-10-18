@@ -54,6 +54,8 @@ type Config struct {
 		AutoReplace   bool `json:"autoReplace"`   // 压缩结果校验通过(能正常播放)就自动替换原文件,默认 true;原文件进回收区,可还原
 		PurgeOriginal bool `json:"purgeOriginal"` // 替换后立刻永久删除原文件(省空间,没有后悔药),默认 false
 		TrashKeepDays int  `json:"trashKeepDays"` // 「压缩替换」回收区里的原文件保留多少天后自动永久删除;0 = 永不自动删除。默认 7
+		MaxThreads    int    `json:"maxThreads"`    // 压缩时软件解码 / 软件编码最多用的线程数;0 = CPU 核数的一半(至少 2)
+		Window        string `json:"window"`        // 只在这个时段压缩,如 "01:00-07:00"(可跨午夜);空 = 全天。时段外正在压缩的会被挂起
 	} `json:"optimize"`
 	Auth struct {
 		TokenDays int `json:"tokenDays"`

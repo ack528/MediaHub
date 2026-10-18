@@ -515,6 +515,29 @@ async fn open_path(path: String) -> Result<(), String> {
     .await
 }
 
+/// 在资源管理器里打开文件所在的文件夹并选中这个文件(explorer /select,)。
+/// 文件已经不在了(被替换成别的容器、被移走)就退回到打开它所在的文件夹;文件夹也没有就报错。
+#[tauri::command]
+async fn reveal_path(path: String) -> Result<(), String> {
+    blocking(move || {
+        use std::os::windows::process::CommandExt;
+        let p = PathBuf::from(&path);
+        if p.exists() {
+            // explorer 要求 /select,"路径" 是同一个参数,而且路径必须带引号(含空格 / 逗号时才不会被拆开)
+            return Command::new("explorer.exe")
+                .raw_arg(format!("/select,\"{}\"", p.display()))
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("打开失败:{}", e));
+        }
+        match p.parent() {
+            Some(dir) if dir.exists() => Command::new("explorer.exe").arg(dir).spawn().map(|_| ()).map_err(|e| format!("打开失败:{}", e)),
+            _ => Err(format!("文件和所在的文件夹都不存在了:{}", p.display())),
+        }
+    })
+    .await
+}
+
 // ---------------------------------------------------------------- 命令:日志
 
 fn log_dir() -> PathBuf {
@@ -753,6 +776,7 @@ pub fn run() {
             firewall_status,
             firewall_add,
             open_path,
+            reveal_path,
             update_status,
             update_action,
             admin_call,

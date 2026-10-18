@@ -26,6 +26,8 @@ export interface Bridge {
   firewallAdd(port: number): Promise<void>;
   pickFolder(): Promise<string | null>;
   openPath(path: string): Promise<void>;
+  /** 在资源管理器里打开文件所在的文件夹并选中它(文件不在了就只打开文件夹) */
+  revealPath(path: string): Promise<void>;
   updateStatus(): Promise<UpdateStatus>;
   updateAction(kind: "check" | "apply"): Promise<void>;
   /** 通用的管理接口调用(只能访问 /api/v1/admin/ 下的路径)。出错时抛出服务端的错误文字。 */
@@ -58,6 +60,7 @@ const tauri: Bridge = {
     return typeof r === "string" ? r : null;
   },
   openPath: (path) => invoke("open_path", { path }),
+  revealPath: (path) => invoke("reveal_path", { path }),
   updateStatus: () => invoke("update_status"),
   updateAction: (kind) => invoke("update_action", { kind }),
   admin: (method, path, body, timeoutMs) => invoke("admin_call", { method, path, body: body ?? null, timeoutMs: timeoutMs ?? null }),
@@ -128,6 +131,7 @@ const mockBridge: Bridge = {
   firewallAdd: async () => { localStorage.setItem("mock-fw", "1"); },
   pickFolder: async () => window.prompt("(浏览器模式)输入文件夹路径", "G:\\") || null,
   openPath: async (p) => { window.alert("打开:" + p); },
+  revealPath: async (p) => { window.alert("定位:" + p); },
   updateStatus: async () => ({ current: "1.0.0", state: "uptodate", message: "已是最新版本", progress: 0, checkedAt: new Date().toISOString(), installable: true, auto: true }),
   updateAction: async () => {},
   admin: async () => { throw "浏览器调试模式没有服务端"; },

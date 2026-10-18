@@ -196,6 +196,16 @@ export const ITEMS: Item[] = [
     ...at("optimize.purgeOriginal"),
   },
   {
+    id: "optThreads", page: "optimize", tab: "视频压缩", icon: "cpu", kind: "number", unit: "线程", min: 0, max: 32, restart: true,
+    title: "压缩时最多使用的 CPU 线程", desc: "压缩时软件解码 / 软件编码最多用多少个线程(有 Intel 核显时默认走硬件解码 + 硬件编码,CPU 几乎不占)。0 = 自动(CPU 核数的一半)。压缩进程本来就是最低的「空闲」优先级,不会和别的程序抢,但任务管理器里仍会显示占用。",
+    ...at("optimize.maxThreads"),
+  },
+  {
+    id: "optWindow", page: "optimize", tab: "视频压缩", icon: "clock", kind: "text", restart: true, placeholder: "例如 01:00-07:00(留空 = 全天)",
+    title: "只在这个时段压缩", desc: "队列很长时,可以让压缩只在夜里跑,白天机器留给别的事。格式 小时:分钟-小时:分钟,可以跨午夜(23:00-07:00)。时段外正在压缩的任务会被暂停,时段内自动继续。留空 = 全天(没有客户端连接时)。",
+    ...at("optimize.window"),
+  },
+  {
     id: "optKeep", page: "optimize", tab: "视频压缩", icon: "clock", kind: "number", unit: "天", min: 0, max: 365, restart: true,
     title: "回收区里被替换的原文件保留多久", desc: "「压缩替换」产生的原文件在回收区放这么多天后自动永久删除,释放空间。0 = 永不自动删除(手动清空回收区)。手动删除重复文件产生的回收批次不受影响。",
     ...at("optimize.trashKeepDays"),

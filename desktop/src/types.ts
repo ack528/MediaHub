@@ -13,7 +13,7 @@ export interface Config {
   jellyfin: { url: string; apiKey: string };
   auth: { tokenDays: number; loginLockSec: number };
   /** 存储优化:压缩校验通过后怎么处理 */
-  optimize: { autoReplace: boolean; purgeOriginal: boolean; trashKeepDays: number };
+  optimize: { autoReplace: boolean; purgeOriginal: boolean; trashKeepDays: number; maxThreads: number; window: string };
   tools: { ffmpeg: string; ffprobe: string; exiftool: string; vips: string };
   indexOtherFiles: boolean;
   scan: { skipWithinHours: number; intervalHours: number; watch: boolean };
@@ -45,7 +45,7 @@ export const DEFAULT_CONFIG: Config = {
   video: { engine: "auto", maxTranscodes: 2, hwaccel: "qsv", softwareFallback: true, posterSource: "auto" },
   jellyfin: { url: "http://127.0.0.1:8096", apiKey: "" },
   auth: { tokenDays: 180, loginLockSec: 20 },
-  optimize: { autoReplace: true, purgeOriginal: false, trashKeepDays: 7 },
+  optimize: { autoReplace: true, purgeOriginal: false, trashKeepDays: 7, maxThreads: 0, window: "" },
   tools: { ffmpeg: "", ffprobe: "", exiftool: "", vips: "" },
   indexOtherFiles: false,
   scan: { skipWithinHours: 12, intervalHours: 24, watch: true },

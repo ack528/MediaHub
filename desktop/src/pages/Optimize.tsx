@@ -19,7 +19,7 @@ interface DdItem {
 interface DdGroup { id: number; kind: string; wasted: number; items: DdItem[] }
 interface Job {
   id: number; mediaId: number; state: string; codec: string; kbps: number; preset: string; origSize: number; newSize: number;
-  progress: number; err?: string; name: string; dir: string; root: string;
+  progress: number; err?: string; name: string; dir: string; root: string; path?: string;
 }
 interface TrashBatch { rootId: number; root: string; batch: string; reason: string; files: number; bytes: number; created: number }
 
@@ -296,7 +296,7 @@ function Compress() {
               <Btn icon="trash" onClick={async () => { const ids = jobs.filter((j) => ["failed", "cancelled"].includes(j.state)).map((j) => j.id); if (ids.length) { await act("remove", ids); load(); } }}>清除失败 / 取消的</Btn>
               <Btn kind="danger" icon="trash" disabled={busy || jobs.length === 0} onClick={clearQueue}>一键清除队列</Btn>
             </div>}>
-        <Row icon="info" title={`排队 ${counts.queued ?? 0} · 压缩中 ${counts.running ?? 0} · 待替换 ${counts.done ?? 0} · 已替换 ${counts.applied ?? 0} · 失败 ${counts.failed ?? 0}`}
+        <Row icon={caps?.paused ? "alert" : "info"} title={`${caps?.paused ? "【已暂停】" : ""}排队 ${counts.queued ?? 0} · 压缩中 ${counts.running ?? 0} · 待替换 ${counts.done ?? 0} · 已替换 ${counts.applied ?? 0} · 失败 ${counts.failed ?? 0}`}
              desc={`累计已省下 ${fmtBytes(saved)}(含待替换的)。同一时间只压缩一个;有人正在看转码视频时会自动让一让。`}>
           <div className="btn-group">
             <Btn icon="check" disabled={busy || done.length === 0} onClick={() => setPick(new Set(done.map((j) => j.id)))}>全选待替换</Btn>
@@ -317,7 +317,7 @@ function Compress() {
         {jobs.map((j) => {
           const [label, tone] = STATE_TEXT[j.state] ?? [j.state, "gray" as const];
           return (
-            <div key={j.id} style={{ display: "grid", gridTemplateColumns: "24px 1fr 130px 210px 150px", gap: 12, alignItems: "center", padding: "8px 20px", borderTop: "1px solid var(--border)" }}>
+            <div key={j.id} style={{ display: "grid", gridTemplateColumns: "24px 1fr 130px 210px 200px", gap: 12, alignItems: "center", padding: "8px 20px", borderTop: "1px solid var(--border)" }}>
               {j.state === "done" ? <input type="checkbox" checked={pick.has(j.id)} onChange={() => togglePick(j.id)} /> : <span />}
               <span style={{ minWidth: 0 }}>
                 <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.name || `媒体 ${j.mediaId}`}</div>
@@ -331,6 +331,7 @@ function Compress() {
                 {(j.state === "done" || j.state === "applied") && <span>{fmtBytes(j.origSize)} → {fmtBytes(j.newSize)} <span style={{ color: "var(--green)" }}>(省 {j.origSize ? Math.round(((j.origSize - j.newSize) * 100) / j.origSize) : 0}%)</span></span>}
               </span>
               <span className="btn-group">
+                {j.path && <Btn icon="folderopen" onClick={async () => { try { await bridge.revealPath(j.path!); } catch (e) { toast(String(e), "err"); } }}>定位</Btn>}
                 {(j.state === "queued" || j.state === "running") && <Btn onClick={async () => { await act("cancel", [j.id]); load(); }}>取消</Btn>}
                 {["done", "failed", "cancelled"].includes(j.state) && <Btn onClick={async () => { await act("remove", [j.id]); load(); }}>移除</Btn>}
               </span>
