@@ -699,6 +699,7 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
             )
             if (failed && loadEnabled) BrokenTile("预览不可用\n(点开仍可尝试播放)", Modifier.fillMaxSize())
         }
+        MediaNameLabel(item, Modifier.align(Alignment.BottomStart)) // 图片和视频都显示名称(以前只有视频)
         if (item.flags.truncated) {
             Row(
                 Modifier.align(Alignment.TopEnd).padding(6.dp).clip(RoundedCornerShape(50)).background(Color(0xCCFFB74D)).padding(horizontal = 8.dp, vertical = 2.dp),
@@ -710,7 +711,6 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
                 Icon(TgIcons.Play, null, tint = Color.White, modifier = Modifier.size(28.dp))
             }
             formatDuration(item.durationMs).takeIf { it.isNotEmpty() && LocalSettings.current.showDuration }?.let { Pill(it, Modifier.align(Alignment.TopStart).padding(6.dp), sizeSp = 12) }
-            VideoNameLabel(item, Modifier.align(Alignment.BottomStart))
         }
     }
 }

@@ -55,9 +55,9 @@ fun formatSize(b: Long): String = when {
     else -> "$b B"
 }
 
-/** 视频缩略图左下角的文件名:小字(10sp)、单行省略、底部渐变压暗,尽量不占画面。 */
+/** 缩略图左下角的文件名(图片和视频一样):小字(10sp)、单行省略、底部渐变压暗,尽量不占画面。设置里「显示文件名」可关。 */
 @Composable
-fun VideoNameLabel(item: Item, modifier: Modifier = Modifier) {
+fun MediaNameLabel(item: Item, modifier: Modifier = Modifier) {
     if (!com.localtg.ui.tg.LocalSettings.current.showVideoName) return
     Box(
         modifier.then(Modifier.fillMaxWidth()).background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Transparent, Color(0x99000000))))
@@ -129,6 +129,7 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
             )
             if (failed && loadEnabled) BrokenTile("预览不可用", Modifier.fillMaxSize(), compact = true)
         }
+        MediaNameLabel(item, Modifier.align(Alignment.BottomStart)) // 以前只有视频显示名称,图片不显示,同一个网格里有的有名字有的没有
         if (item.flags.truncated) { // 不完整的视频(下载中断):角上放个警告图标
             androidx.compose.material3.Icon(
                 com.localtg.ui.tg.TgIcons.Warning, "文件不完整", tint = Color(0xFFFFB74D),
@@ -136,7 +137,6 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
             )
         }
         if (item.isVideo) {
-            VideoNameLabel(item, Modifier.align(Alignment.BottomStart))
             Box(
                 Modifier.align(Alignment.TopStart).padding(4.dp).clip(RoundedCornerShape(4.dp))
                     .background(Color(0x99000000)).padding(horizontal = 4.dp, vertical = 1.dp),

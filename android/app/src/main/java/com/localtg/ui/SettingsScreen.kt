@@ -230,7 +230,7 @@ private fun BrowsePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Uni
         "缩略图清晰度", s.gridThumbWidth, listOf(320 to "标准(省流量)", 480 to "高(默认)", 720 to "很高", 960 to "最高"),
         desc = "列数少、屏幕大时调高更清晰",
     ) { u { copy(gridThumbWidth = it) } }
-    SwitchRow("显示视频名称", "视频缩略图左下角用小字显示文件名(不含扩展名),单行、过长省略", s.showVideoName) { u { copy(showVideoName = it) } }
+    SwitchRow("显示文件名", "缩略图左下角用小字显示文件名(图片和视频,不含扩展名),单行、过长省略", s.showVideoName) { u { copy(showVideoName = it) } }
     SwitchRow("显示视频时长", "视频缩略图上显示时长;关闭后只显示一个播放标记", s.showDuration) { u { copy(showDuration = it) } }
     Header("聊天流")
     ChoiceRow("气泡间距", s.chatSpacing, listOf(1 to "紧凑 1 dp", 3 to "标准 3 dp(默认)", 6 to "宽松 6 dp", 12 to "很宽 12 dp")) { u { copy(chatSpacing = it) } }
