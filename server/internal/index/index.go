@@ -114,6 +114,9 @@ type Indexer struct {
 	exclude  map[string]bool
 	// rootLocks:同一个根目录的整盘扫描和增量扫描互斥(见 LockRoot)
 	rootLocks map[int64]chan struct{}
+	// 概览用的索引库数量缓存(见 dbCounts)
+	cntMu sync.Mutex
+	cnt   map[int64]dbCount
 }
 
 func New(db *sql.DB, cfg *config.Config, log *slog.Logger) *Indexer {
@@ -186,7 +189,6 @@ func (ix *Indexer) sampler() {
 
 func (ix *Indexer) Progress() []Progress {
 	ix.mu.Lock()
-	defer ix.mu.Unlock()
 	out := make([]Progress, 0, len(ix.progress))
 	ids := make([]int64, 0, len(ix.progress))
 	for id := range ix.progress {
@@ -216,7 +218,41 @@ func (ix *Indexer) Progress() []Progress {
 			ETASec: p.ETASec, Resumed: p.Resumed, Current: p.Current, StalledSec: p.StalledSec,
 		})
 	}
+	ix.mu.Unlock()
+	// 启动时"近期已完整扫描过"的盘不重新扫描,进度计数是 0 —— 以前概览里一堆盘显示「0 个文件 · 0 个文件夹」,实际索引库里有。
+	// 这种(没在扫描、计数为 0)的改用索引库里的数量显示。
+	for i := range out {
+		if out[i].State != "scanning" && out[i].State != "enriching" && out[i].Files == 0 && out[i].Dirs == 0 {
+			out[i].Files, out[i].Dirs = ix.dbCounts(out[i].RootID)
+		}
+	}
 	return out
+}
+
+// dbCounts 索引库里这个根目录的文件数和有媒体的文件夹数(缓存 60 秒,概览页每 2 秒轮询一次,不能每次都数)。
+func (ix *Indexer) dbCounts(rootID int64) (files, dirs int64) {
+	ix.cntMu.Lock()
+	if c, ok := ix.cnt[rootID]; ok && time.Since(c.at) < 60*time.Second {
+		ix.cntMu.Unlock()
+		return c.files, c.dirs
+	}
+	ix.cntMu.Unlock()
+	_ = ix.DB.QueryRow(`SELECT count(*), count(DISTINCT dir_rel) FROM media WHERE root_id=?`, rootID).Scan(&files, &dirs)
+	if files > 0 {
+		dirs++ // 根目录本身
+	}
+	ix.cntMu.Lock()
+	if ix.cnt == nil {
+		ix.cnt = map[int64]dbCount{}
+	}
+	ix.cnt[rootID] = dbCount{files, dirs, time.Now()}
+	ix.cntMu.Unlock()
+	return
+}
+
+type dbCount struct {
+	files, dirs int64
+	at          time.Time
 }
 
 func (ix *Indexer) prog(r Root) *Progress {

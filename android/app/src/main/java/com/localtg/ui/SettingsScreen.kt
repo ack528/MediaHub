@@ -831,7 +831,7 @@ private fun UpdateSection(ver: String) {
         if (r.notes.isNotEmpty()) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                 Text("v${r.version} 更新内容", color = tg.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                Text(r.notes, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+                Text(com.localtg.data.cleanMarkdown(r.notes), color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
             }
         }
         ActionRow(
@@ -891,7 +891,8 @@ private fun parseChangelog(ctx: android.content.Context, section: String): List<
         when {
             l.startsWith("## ") -> inSection = l.removePrefix("## ").contains(section)
             inSection && l.startsWith("### ") -> out += l.removePrefix("### ").trim() to mutableListOf()
-            inSection && l.startsWith("- ") && out.isNotEmpty() -> out.last().second += l.removePrefix("- ").trim()
+            // 顶层「- 」和缩进的子条目都认,并去掉 **加粗** / `代码` 标记
+            inSection && out.isNotEmpty() && Regex("^\\s*[-*]\\s+").containsMatchIn(l) -> out.last().second += com.localtg.data.inlineClean(l.replace(Regex("^\\s*[-*]\\s+"), "").trim())
         }
     }
     return out

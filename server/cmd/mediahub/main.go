@@ -46,7 +46,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "3.2.2"
+const version = "3.2.3"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {

@@ -302,3 +302,21 @@ func TestResumeInterruptedScan(t *testing.T) {
 		t.Fatalf("完整重扫后 IMG_0002.jpg 应消失, n=%d", n)
 	}
 }
+
+// 启动时跳过扫描(近期扫描过)的盘,进度计数不能是 0:概览里显示索引库里已有的文件数(以前一堆盘显示「0 个文件」)。
+func TestProgressShowsDBCountsWhenNotScanned(t *testing.T) {
+	ix, r, _ := setup(t)
+	ctx := context.Background()
+	if err := ix.ScanRoot(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟重启:内存里的进度清零,索引库里的数据还在
+	ix.mu.Lock()
+	ix.progress = map[int64]*Progress{}
+	ix.mu.Unlock()
+	ix.prog(r) // 建一个空进度(state = idle,计数 0)
+	ps := ix.Progress()
+	if len(ps) != 1 || ps[0].Files < 5 || ps[0].Dirs < 2 {
+		t.Fatalf("没在扫描时应该显示索引库里的数量: %+v", ps)
+	}
+}

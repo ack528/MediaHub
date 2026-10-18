@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { bridge } from "../bridge";
 import { Badge, Btn, Card, Row } from "../components";
 import { Backup } from "./Backup";
@@ -77,16 +77,35 @@ function Mirrors() {
 }
 
 /** 解析随程序打包的 CHANGELOG.md:取「## 服务端 / 管理程序」下每个「### 版本」及其「- 条目」(新 → 旧)。 */
-function parseChangelog(text: string, section: string): { title: string; items: string[] }[] {
-  const out: { title: string; items: string[] }[] = [];
+interface LogItem { text: string; sub: boolean }
+function parseChangelog(text: string, section: string): { title: string; items: LogItem[] }[] {
+  const out: { title: string; items: LogItem[] }[] = [];
   let inSection = false;
   for (const raw of text.split(/\r?\n/)) {
     const l = raw.trimEnd();
     if (l.startsWith("## ")) inSection = l.slice(3).includes(section);
     else if (inSection && l.startsWith("### ")) out.push({ title: l.slice(4).trim(), items: [] });
-    else if (inSection && l.startsWith("- ") && out.length) out[out.length - 1].items.push(l.slice(2).trim());
+    else if (inSection && out.length) {
+      // 顶层「- 」和缩进的子条目「  - 」都认(以前缩进的子条目整行丢失)
+      const m = /^(\s*)[-*]\s+(.*)$/.exec(l);
+      if (m) out[out.length - 1].items.push({ text: m[2].trim(), sub: m[1].length >= 2 });
+    }
   }
   return out;
+}
+
+/** 行内标记:**加粗** 和 `代码` 渲染成真正的格式,不再把星号 / 反引号原样显示出来。 */
+function inlineMd(s: string): ReactNode[] {
+  const parts: ReactNode[] = [];
+  const re = /\*\*(.+?)\*\*|`([^`]+)`/g;
+  let last = 0, m: RegExpExecArray | null, k = 0;
+  while ((m = re.exec(s))) {
+    if (m.index > last) parts.push(s.slice(last, m.index));
+    parts.push(m[1] !== undefined ? <strong key={k++}>{m[1]}</strong> : <code key={k++}>{m[2]}</code>);
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) parts.push(s.slice(last));
+  return parts;
 }
 
 /** 更新说明:当前版本的更新内容 + 全部历史版本(点开看)。 */
@@ -99,7 +118,7 @@ function Changelog() {
       {entries.length === 0 && <Row icon="info" title="没有找到更新说明" />}
       {shown.map((e, i) => (
         <Row key={e.title} icon="tag" title={e.title + (i === 0 && !all ? "(当前版本)" : "")}
-             desc={<ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>{e.items.map((t) => <li key={t}>{t}</li>)}</ul>} />
+             desc={<ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>{e.items.map((t, n) => <li key={n} style={t.sub ? { marginLeft: 16, listStyleType: "circle" } : undefined}>{inlineMd(t.text)}</li>)}</ul>} />
       ))}
     </Card>
   );
