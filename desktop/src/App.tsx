@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Btn, Card, ItemRow, Progress, Tabs, fmtBytes } from "./components";
 import { Icon } from "./icons";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { Accounts } from "./pages/Accounts";
 import { Clients } from "./pages/Clients";
 import { About } from "./pages/About";
@@ -114,7 +115,7 @@ export default function App() {
               ? <Card title="没有匹配的配置项" icon="search"><div className="log-empty">换个关键词试试,例如"缓存"、"端口"、"转码"。</div></Card>
               : <Card icon="search" title="搜索结果" count={results.length}>{results.map((i) => <ItemRow key={i.id} item={i} />)}</Card>
           ) : (
-            <PageBody page={page} tab={tab} />
+            <ErrorBoundary key={page + "/" + tab} label={def.label}><PageBody page={page} tab={tab} /></ErrorBoundary>
           )}
         </div>
       </main>

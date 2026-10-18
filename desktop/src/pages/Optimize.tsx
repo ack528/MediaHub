@@ -180,14 +180,25 @@ function Compress() {
   const [saved, setSaved] = useState(0);
   const [pick, setPick] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
+  // 队列很长(几千个排队)时,失败的任务排在后面看不到:可以只看失败的;顶部汇总失败原因
+  const [onlyFailed, setOnlyFailed] = useState(false);
+  const [reasons, setReasons] = useState<{ reason: string; count: number }[]>([]);
 
   const load = useCallback(async () => {
     try {
-      const r = await bridge.admin<{ jobs: Job[]; counts: Record<string, number>; savedBytes: number }>("GET", "/api/v1/admin/compress/jobs?limit=100");
-      setJobs(r.jobs); setCounts(r.counts ?? {}); setSaved(r.savedBytes ?? 0);
+      const r = await bridge.admin<{ jobs: Job[]; counts: Record<string, number>; savedBytes: number; failReasons?: { reason: string; count: number }[] }>("GET", "/api/v1/admin/compress/jobs?limit=100" + (onlyFailed ? "&state=failed" : ""));
+      setJobs(r.jobs ?? []); setCounts(r.counts ?? {}); setSaved(r.savedBytes ?? 0); setReasons(r.failReasons ?? []);
       setCaps(await bridge.admin("GET", "/api/v1/admin/compress/caps"));
     } catch { /* 服务没运行 */ }
-  }, []);
+  }, [onlyFailed]);
+  const retryFailed = async () => {
+    setBusy(true);
+    try {
+      const r = await bridge.admin<{ requeued: number }>("POST", "/api/v1/admin/compress/retry", {});
+      toast(`已把 ${r.requeued} 个失败的任务重新排队(现在的编码会依次尝试 QSV → 简化 QSV → 软件编码)`);
+    } catch (e) { toast(String(e), "err"); }
+    setBusy(false); load();
+  };
   useEffect(() => { load(); const t = setInterval(load, 2000); return () => clearInterval(t); }, [load]);
 
   const body = (dryRun: boolean) => ({
@@ -293,6 +304,15 @@ function Compress() {
             <Btn kind="danger" icon="trash" disabled={busy || pick.size === 0} onClick={() => apply(true)}>替换并永久删除原文件</Btn>
           </div>
         </Row>
+        {(counts.failed ?? 0) > 0 && (
+          <Row icon="alert" block title={`失败 ${counts.failed} 个 —— 主要原因`}
+               desc={<div style={{ display: "grid", gap: 2, marginTop: 4 }}>{reasons.map((x) => <div key={x.reason}><b>{x.count}</b> × {x.reason}</div>)}</div>}>
+            <div className="btn-group">
+              <Btn icon="refresh" disabled={busy} onClick={retryFailed}>重试全部失败项</Btn>
+              <Btn icon="search" onClick={() => setOnlyFailed((v) => !v)}>{onlyFailed ? "显示全部" : "只看失败的"}</Btn>
+            </div>
+          </Row>
+        )}
         {jobs.length === 0 && <Row icon="check" title="队列是空的" />}
         {jobs.map((j) => {
           const [label, tone] = STATE_TEXT[j.state] ?? [j.state, "gray" as const];

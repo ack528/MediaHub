@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -132,6 +134,12 @@ func (s *Server) StartOptimizeWorker(ctx context.Context) {
 	c.once.Do(func() {
 		c.wake = make(chan struct{}, 1)
 		_, _ = s.DB.Exec(`UPDATE opt_job SET state='queued', progress=0 WHERE state='running'`)
+		// 3.2.0 之前的校验会把「音频带无害警告」的好结果判成失败(原因以「输出的结尾不能完整解码」开头):升级后自动重新排队
+		if res, err := s.DB.Exec(`UPDATE opt_job SET state='queued', progress=0, err='', out_path='' WHERE state='failed' AND err LIKE '输出的结尾不能完整解码%'`); err == nil {
+			if n, _ := res.RowsAffected(); n > 0 {
+				s.Log.Info("旧版校验误判的压缩失败已重新排队", "n", n)
+			}
+		}
 		go func() {
 			for {
 				select {
@@ -873,7 +881,72 @@ func (s *Server) adminCompressJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		rs.Close()
 	}
-	writeJSON(w, 200, map[string]any{"jobs": jobs, "counts": sum, "savedBytes": saved})
+	// 失败原因汇总(把数字抹掉再归类),界面上一眼看出失败主要是什么原因
+	reasons := map[string]int{}
+	if fr, err := s.DB.Query(`SELECT err FROM opt_job WHERE state='failed'`); err == nil {
+		for fr.Next() {
+			var e string
+			if fr.Scan(&e) == nil {
+				reasons[normalizeReason(e)]++
+			}
+		}
+		fr.Close()
+	}
+	type reasonCount struct {
+		Reason string `json:"reason"`
+		Count  int    `json:"count"`
+	}
+	fail := []reasonCount{}
+	for k, v := range reasons {
+		fail = append(fail, reasonCount{k, v})
+	}
+	sort.Slice(fail, func(i, j int) bool { return fail[i].Count > fail[j].Count })
+	if len(fail) > 10 {
+		fail = fail[:10]
+	}
+	writeJSON(w, 200, map[string]any{"jobs": jobs, "counts": sum, "savedBytes": saved, "failReasons": fail})
+}
+
+var digitsRe = regexp.MustCompile(`\d+`)
+
+// normalizeReason 失败原因归类:数字换成 N,截断。
+func normalizeReason(e string) string {
+	e = strings.TrimSpace(digitsRe.ReplaceAllString(e, "N"))
+	if e == "" {
+		return "(没有记录原因)"
+	}
+	if r := []rune(e); len(r) > 70 {
+		e = string(r[:70]) + "…"
+	}
+	return e
+}
+
+// adminCompressRetry POST /api/v1/admin/compress/retry {ids:[…]} —— 把失败的任务重新排队(不带 ids = 全部失败的)。
+func (s *Server) adminCompressRetry(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		IDs []int64 `json:"ids"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in)
+	q := `UPDATE opt_job SET state='queued', progress=0, err='', out_path='', updated=? WHERE state='failed'`
+	args := []any{time.Now().Unix()}
+	if len(in.IDs) == 0 {
+		q += ` AND err NOT LIKE '压缩后没有明显变小%'`
+	}
+	if len(in.IDs) > 0 {
+		q += ` AND id IN (` + strings.TrimRight(strings.Repeat("?,", len(in.IDs)), ",") + `)`
+		for _, id := range in.IDs {
+			args = append(args, id)
+		}
+	}
+	res, err := s.DB.Exec(q, args...)
+	if err != nil {
+		writeErr(w, 500, "internal", err.Error())
+		return
+	}
+	n, _ := res.RowsAffected()
+	s.compressKick()
+	s.Log.Info("失败的压缩任务已重新排队", "n", n)
+	writeJSON(w, 200, map[string]any{"requeued": n})
 }
 
 type idsReq struct {

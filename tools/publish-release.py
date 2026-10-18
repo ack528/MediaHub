@@ -53,6 +53,20 @@ def latest_entry(text, section):
     return title, items
 
 
+def save_last():
+    """发布成功后把这次的文件存一份到 dist/last-release/:下次只打包有改动的一端时,另一端沿用这里的 APK / update.zip。"""
+    import glob, shutil
+    last = os.path.join(ROOT, "dist", "last-release")
+    os.makedirs(last, exist_ok=True)
+    for pat in ("LocalBrowse-*.apk", "MediaHub-*-update.zip"):
+        new = glob.glob(os.path.join(REL, pat))
+        if new:  # 这次有新的:删掉旧的再复制
+            for old in glob.glob(os.path.join(last, pat)):
+                os.remove(old)
+            for f in new:
+                shutil.copy2(f, last)
+
+
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
@@ -83,6 +97,7 @@ def main():
         print("上传", f, f"{len(data) / 1048576:.1f} MB")
         api(tok, "POST", f"{up}?name={urllib.parse.quote(f)}", data, {"Content-Type": ctype})
     print("完成:", rel["html_url"])
+    save_last()
 
 
 main()

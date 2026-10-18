@@ -59,7 +59,9 @@ func (g *loginGuard) snapshot() map[string]any {
 	if rem < 0 {
 		rem = 0
 	}
-	return map[string]any{"remainingSec": int(rem + 0.999), "failures": g.total, "recent": append([]loginFail(nil), g.recent...)}
+	recent := make([]loginFail, len(g.recent)) // 不能是 nil:nil 切片会编码成 JSON null,管理程序界面对 null 调 slice() 会崩溃白屏
+	copy(recent, g.recent)
+	return map[string]any{"remainingSec": int(rem + 0.999), "failures": g.total, "recent": recent}
 }
 
 func (g *loginGuard) clear() {

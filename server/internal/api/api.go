@@ -148,6 +148,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/compress/remove", s.adminOnly(s.adminCompressRemove))
 	mux.Handle("POST /api/v1/admin/compress/apply", s.adminOnly(s.adminCompressApply))
 	mux.Handle("POST /api/v1/admin/compress/clear", s.adminOnly(s.adminCompressClear))
+	mux.Handle("POST /api/v1/admin/compress/retry", s.adminOnly(s.adminCompressRetry))
 	mux.Handle("POST /api/v1/admin/compress/pause", s.adminOnly(s.adminCompressPause(true)))
 	mux.Handle("POST /api/v1/admin/compress/resume", s.adminOnly(s.adminCompressPause(false)))
 	mux.Handle("GET /api/v1/admin/logs", s.adminOnly(s.adminLogs))

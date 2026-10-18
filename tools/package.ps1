@@ -3,6 +3,7 @@
 #   powershell -File tools\package.ps1 -SkipAndroid    # 只打服务端 / 桌面端(便携版)
 #   powershell -File tools\package.ps1 -SkipDesktop    # 只打安卓端
 #   powershell -File tools\package.ps1 -Both -SkipTests   # 一次出两套:自己用的(带 Lossless.dll,放 dist\)和发布用的(放 dist\release\),桌面端只编译一次
+#   powershell -File tools\package.ps1 -Both -Changed -SkipTests   # 只打有改动的那一端:对比最近一个 git 标签,android\ 有改动才打手机端,server\ 或 desktop\ 有改动才打服务端 + 管理程序;没改动的那端沿用上次发布的文件
 # 桌面端(Rust)、Android、Go 三条编译互不依赖,会同时跑;Android 的第二套(带 DLL)只重新打包,不重新编译 Kotlin。
 # 前提:已运行过 tools\setup.ps1(便携工具链),signing\ 下有 Android 发布密钥(没有则用调试签名)。
 param(
@@ -12,10 +13,28 @@ param(
   [switch]$SkipDesktop,
   [switch]$SkipTests,
   [switch]$Release,                   # 发布到 GitHub 用:APK 不内置 Lossless.dll(版权),另出自动更新用的 -update.zip,产物放 dist\release\
-  [switch]$Both                       # 自用版和发布版一次打完(桌面端只编译一次)
+  [switch]$Both,                      # 自用版和发布版一次打完(桌面端只编译一次)
+  [switch]$Changed                    # 只打有改动的那一端(见上面的说明)
 )
 $ErrorActionPreference = 'Stop'
 if ($Both) { $Release = $true }
+$Root0 = Split-Path -Parent $PSScriptRoot
+if ($Changed) {
+  # 对比最近一个发布标签:手机端 = android\ 下有改动;服务端 + 管理程序 = server\ 或 desktop\ 下有改动。
+  # 打包时自动同步的更新日志副本(android\...\changelog.md、desktop\src\changelog.md)不算改动。
+  $lastTag = (& git -C $Root0 describe --tags --abbrev=0 2>$null)
+  if (-not $lastTag) { Write-Host '没有找到发布标签,按全部有改动处理' -ForegroundColor Yellow }
+  else {
+    $files = @(& git -C $Root0 -c core.quotepath=false diff --name-only $lastTag) + @(& git -C $Root0 -c core.quotepath=false ls-files --others --exclude-standard)
+    $files = $files | Where-Object { $_ -and $_ -notmatch 'changelog\.md$' }
+    $phone = [bool]($files | Where-Object { $_ -like 'android/*' })
+    $server = [bool]($files | Where-Object { $_ -like 'server/*' -or $_ -like 'desktop/*' })
+    Write-Host ("改动检测(对比 {0}):手机端 {1},服务端 + 管理程序 {2}" -f $lastTag, $(if ($phone) { '有改动 → 打包' } else { '没有改动 → 跳过' }), $(if ($server) { '有改动 → 打包' } else { '没有改动 → 跳过' })) -ForegroundColor Cyan
+    if (-not $phone) { $SkipAndroid = $true }
+    if (-not $server) { $SkipDesktop = $true }
+    if ($SkipAndroid -and $SkipDesktop) { Write-Host '两端都没有改动,没有需要打包的内容。'; exit 0 }
+  }
+}
 $Personal = (-not $Release) -or $Both   # 要不要出自用版(带 Lossless.dll,放 dist\)
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
@@ -46,7 +65,7 @@ function Show-Job($name, $job) {
   $code = ($out | Where-Object { $_ -match '^EXIT=' } | Select-Object -Last 1)
   if ($code -ne 'EXIT=0') { throw "$name 构建失败(见上面的输出)" }
 }
-$jobTauri = $null; $jobAndroid = $null
+$jobTauri = $null; $procAndroid = $null
 if (-not $SkipDesktop) {
   Step '后台启动:构建桌面管理程序 (Tauri,只编译,不生成安装包)'
   $jobTauri = Start-Job -Name tauri -ArgumentList (Join-Path $Root 'desktop') -ScriptBlock {
@@ -59,59 +78,49 @@ if (-not $SkipDesktop) {
 }
 if (-not $SkipAndroid) {
   Step '后台启动:构建 Android APK'
-  $jobAndroid = Start-Job -Name android -ArgumentList $Root, $Dist, $RelDir, $Version, [bool]$Release, [bool]$Personal -ScriptBlock {
-    param($Root, $Dist, $RelDir, $Version, $Release, $Personal)
-    $ErrorActionPreference = 'Stop'
-    $dll = Join-Path $Root 'android\app\src\main\assets\lsfg\Lossless.dll'
-    $dllHold = Join-Path $Dist 'Lossless.dll.hold'
-    $apk = Join-Path $Root 'android\app\build\outputs\apk\release\app-release.apk'
-    function Build { & powershell -NoProfile -File (Join-Path $Root 'tools\build-android.ps1') ':app:assembleRelease' 2>&1; if ($LASTEXITCODE -ne 0) { throw 'Android 构建失败' } }
-    try {
-      if ($Release) {
-        # 发布到 GitHub(公开仓库)的 APK 不能带 Lossless.dll(版权,只能自己用):构建期间把它临时挪走,构建完(无论成败)放回去
-        $moved = $false
-        if (Test-Path -LiteralPath $dll) { Move-Item -LiteralPath $dll -Destination $dllHold -Force; $moved = $true; '发布版:本次构建不包含 Lossless.dll' }
-        try { Build; Copy-Item $apk (Join-Path $RelDir "LocalBrowse-$Version.apk") -Force }
-        finally { if ($moved) { Move-Item -LiteralPath $dllHold -Destination $dll -Force } }
-      }
-      if ($Personal) { Build; Copy-Item $apk (Join-Path $Dist "LocalBrowse-$Version.apk") -Force }
-      'EXIT=0'
-    } catch { "失败:$_"; 'EXIT=1' }
-  }
+  $androidLog = Join-Path $Dist 'logs\android-variants.log'
+  New-Item -ItemType Directory -Force (Split-Path -Parent $androidLog) | Out-Null
+  $aa = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'android-variants.ps1'), '-Version', $Version)
+  if ($Release) { $aa += '-Release' }
+  if ($Personal) { $aa += '-Personal' }
+  # 用 Start-Process + 文件重定向,不用 Start-Job:Job 的输出是管道,Gradle 守护进程继承了这根管道,守护进程不退出管道就不关,这里会一直等
+  $procAndroid = Start-Process -FilePath 'powershell.exe' -ArgumentList $aa -NoNewWindow -PassThru -RedirectStandardOutput $androidLog -RedirectStandardError "$androidLog.err"
+  $null = $procAndroid.Handle
 }
 
 # ---------------------------------------------------------------- 服务端 + 工具(暂存)
-Step '编译服务端 mediahub.exe'
-# 内置 frpc(内网穿透用):tools\frp\frpc.exe 压成 gzip 放进 embed 目录,编译进 mediahub.exe(frp 是 Apache-2.0,许可证随包附带)
-$frpc = Join-Path $Root 'tools\frp\frpc.exe'
-$frpGz = Join-Path $Root 'server\internal\tunnel\embed\frpc.exe.gz'
-if (Test-Path -LiteralPath $frpc) {
-  Step '内置 frpc(压缩后编译进服务端)'
-  $in = [IO.File]::OpenRead($frpc); $out = [IO.File]::Create($frpGz)
-  $gz = New-Object IO.Compression.GZipStream($out, [IO.Compression.CompressionLevel]::Optimal)
-  $in.CopyTo($gz); $gz.Dispose(); $out.Dispose(); $in.Dispose()
-  Write-Host ("  frpc.exe {0:N1} MB -> {1:N1} MB" -f ((Get-Item $frpc).Length / 1MB), ((Get-Item $frpGz).Length / 1MB))
-} else {
-  Remove-Item -LiteralPath $frpGz -Force -ErrorAction SilentlyContinue
-  Write-Host '  没有 tools\frp\frpc.exe:本次服务端不内置 frpc(先运行 tools\setup.ps1 -Only frp)' -ForegroundColor Yellow
-}
-Push-Location (Join-Path $Root 'server')
-if (-not $SkipTests) {
-  & go test -p $env:BUILD_JOBS ./... 2>&1 | Select-Object -Last 12
-  if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'Go 测试未通过,已中止打包' }
-}
-if (Test-Path $Stage) { Remove-Item -LiteralPath $Stage -Recurse -Force }
-New-Item -ItemType Directory -Force (Join-Path $Stage 'runtime\bin') | Out-Null
-& go build -p $env:BUILD_JOBS -trimpath -ldflags '-s -w' -o (Join-Path $Stage 'runtime\bin\mediahub.exe') .\cmd\mediahub
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'go build 失败' }
-Pop-Location
+if (-not $SkipDesktop) {
+  Step '编译服务端 mediahub.exe'
+  # 内置 frpc(内网穿透用):tools\frp\frpc.exe 压成 gzip 放进 embed 目录,编译进 mediahub.exe(frp 是 Apache-2.0,许可证随包附带)
+  $frpc = Join-Path $Root 'tools\frp\frpc.exe'
+  $frpGz = Join-Path $Root 'server\internal\tunnel\embed\frpc.exe.gz'
+  if (Test-Path -LiteralPath $frpc) {
+    Step '内置 frpc(压缩后编译进服务端)'
+    $in = [IO.File]::OpenRead($frpc); $out = [IO.File]::Create($frpGz)
+    $gz = New-Object IO.Compression.GZipStream($out, [IO.Compression.CompressionLevel]::Optimal)
+    $in.CopyTo($gz); $gz.Dispose(); $out.Dispose(); $in.Dispose()
+    Write-Host ("  frpc.exe {0:N1} MB -> {1:N1} MB" -f ((Get-Item $frpc).Length / 1MB), ((Get-Item $frpGz).Length / 1MB))
+  } else {
+    Remove-Item -LiteralPath $frpGz -Force -ErrorAction SilentlyContinue
+    Write-Host '  没有 tools\frp\frpc.exe:本次服务端不内置 frpc(先运行 tools\setup.ps1 -Only frp)' -ForegroundColor Yellow
+  }
+  Push-Location (Join-Path $Root 'server')
+  if (-not $SkipTests) {
+    & go test -p $env:BUILD_JOBS ./... 2>&1 | Select-Object -Last 12
+    if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'Go 测试未通过,已中止打包' }
+  }
+  if (Test-Path $Stage) { Remove-Item -LiteralPath $Stage -Recurse -Force }
+  New-Item -ItemType Directory -Force (Join-Path $Stage 'runtime\bin') | Out-Null
+  & go build -p $env:BUILD_JOBS -trimpath -ldflags '-s -w' -o (Join-Path $Stage 'runtime\bin\mediahub.exe') .\cmd\mediahub
+  if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'go build 失败' }
+  Pop-Location
 
-Step '暂存随包工具 (ffmpeg / ffprobe / ExifTool)'
-$tf = Join-Path $Stage 'tools\ffmpeg'
-New-Item -ItemType Directory -Force $tf | Out-Null
-Copy-Item (Join-Path $Root 'tools\ffmpeg\ffmpeg.exe'), (Join-Path $Root 'tools\ffmpeg\ffprobe.exe') $tf
-Copy-Tree (Join-Path $Root 'tools\exiftool') (Join-Path $Stage 'tools\exiftool')
-@'
+  Step '暂存随包工具 (ffmpeg / ffprobe / ExifTool)'
+  $tf = Join-Path $Stage 'tools\ffmpeg'
+  New-Item -ItemType Directory -Force $tf | Out-Null
+  Copy-Item (Join-Path $Root 'tools\ffmpeg\ffmpeg.exe'), (Join-Path $Root 'tools\ffmpeg\ffprobe.exe') $tf
+  Copy-Tree (Join-Path $Root 'tools\exiftool') (Join-Path $Stage 'tools\exiftool')
+  @'
 MediaHub 便携包里随附的第三方程序:
 
 - ffmpeg / ffprobe:jellyfin-ffmpeg(GPLv3 构建),源码与许可证见 https://github.com/jellyfin/jellyfin-ffmpeg 。本包只是原样附带其可执行文件,未做修改。
@@ -119,8 +128,9 @@ MediaHub 便携包里随附的第三方程序:
 - frpc:fatedier/frp(Apache-2.0),内置在 mediahub.exe 里,内网穿透功能第一次启动时释放到数据目录下的 tunnel\bin\。许可证见同目录 LICENSE-frp.txt,源码见 https://github.com/fatedier/frp 。
 - 其余部分(MediaHub 服务端 / 管理程序)的源码见 https://github.com/ack528/MediaHub 。
 '@ | Set-Content -LiteralPath (Join-Path $Stage 'tools\THIRD_PARTY_NOTICES.txt') -Encoding UTF8
-Remove-Item (Join-Path $Stage 'tools\exiftool\.installed') -ErrorAction SilentlyContinue
-if (Test-Path (Join-Path $Root 'tools\frp\LICENSE')) { Copy-Item (Join-Path $Root 'tools\frp\LICENSE') (Join-Path $Stage 'tools\LICENSE-frp.txt') }
+  Remove-Item (Join-Path $Stage 'tools\exiftool\.installed') -ErrorAction SilentlyContinue
+  if (Test-Path (Join-Path $Root 'tools\frp\LICENSE')) { Copy-Item (Join-Path $Root 'tools\frp\LICENSE') (Join-Path $Stage 'tools\LICENSE-frp.txt') }
+}
 
 # ---------------------------------------------------------------- 桌面端
 if (-not $SkipDesktop) {
@@ -157,10 +167,22 @@ if (-not $SkipDesktop) {
 # ---------------------------------------------------------------- 安卓端
 if (-not $SkipAndroid) {
   Step '等待 Android 构建完成'
-  Show-Job 'android' $jobAndroid
+  while (-not $procAndroid.HasExited) { Start-Sleep -Seconds 1 }
+  Get-Content $androidLog -Tail 25 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  [android] $_" }
+  if ($procAndroid.ExitCode -ne 0) { throw "Android 构建失败(见 $androidLog)" }
 }
 
 # ---------------------------------------------------------------- 收尾
+# 发布时某一端没有打包:沿用上次发布的文件(dist\last-release\ 由 publish-release.py 在发布成功后保存)。
+# 只带小文件(APK、-update.zip):手机和服务端的自动更新只看「最新发布」,里面缺一端的文件就收不到那一端的更新。
+if ($Release -and ($SkipAndroid -or $SkipDesktop)) {
+  $last = Join-Path $Dist 'last-release'
+  if (Test-Path $last) {
+    if ($SkipAndroid) { Get-ChildItem $last -Filter 'LocalBrowse-*.apk' -File | ForEach-Object { Copy-Item $_.FullName $RelDir -Force; Write-Host "  手机端没有改动:沿用上次发布的 $($_.Name)" } }
+    if ($SkipDesktop) { Get-ChildItem $last -Filter 'MediaHub-*-update.zip' -File | ForEach-Object { Copy-Item $_.FullName $RelDir -Force; Write-Host "  服务端没有改动:沿用上次发布的 $($_.Name)" } }
+  } else { Write-Host '  (没有 dist\last-release,这次发布里不含没打包的那一端)' -ForegroundColor Yellow }
+}
+
 Step '清理 dist 里的历史版本'
 # 每种产物只留这次打出来的:手机端 APK 只留当前版本,服务端便携包只留当前版本;以前的安装包(setup.exe)不再生成,旧的一并删掉
 if (-not $SkipAndroid) {

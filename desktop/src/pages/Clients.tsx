@@ -120,7 +120,7 @@ export function Clients({ tab }: { tab: string }) {
             : "没有开启(账号安全 → 登录里设置锁定秒数)。"}>
             <Badge tone={r.loginLock.remainingSec > 0 ? "red" : "green"}>{r.loginLock.remainingSec > 0 ? `锁定中 · 还剩 ${r.loginLock.remainingSec} 秒` : "正常"}</Badge>
           </Row>
-          {r.loginLock.recent.slice().reverse().slice(0, 8).map((f) => (
+          {(r.loginLock.recent ?? []).slice().reverse().slice(0, 8).map((f) => (
             <Row key={f.at + f.ip + f.user} icon="alert" title={`${fmtTime(f.at)} 登录失败`} desc={`账号「${f.user || "—"}」· 设备「${f.device || "—"}」· 来源 ${f.ip}`} />
           ))}
         </Card>

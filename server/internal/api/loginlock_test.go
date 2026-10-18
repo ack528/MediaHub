@@ -15,6 +15,10 @@ func TestLoginGlobalLock(t *testing.T) {
 		resp, b := e.do("POST", "/api/v1/auth/login", map[string]any{"username": user, "password": pw, "deviceName": device}, nil)
 		return resp.StatusCode, string(b)
 	}
+	// 没有任何失败时 recent 必须是 [] 而不是 null:管理程序界面对 null 调 .slice() 会崩溃白屏(3.2.0 的一个真实 bug)
+	if _, b0 := e.do("GET", "/api/v1/admin/clients", nil, adminHdr(e)); !strings.Contains(string(b0), `"recent":[]`) {
+		t.Fatalf("没有失败记录时 recent 应该是空数组: %s", b0)
+	}
 	// 先登录一台设备(此时没有锁定)
 	st, body := login("me", "secret1", "手机")
 	if st != 200 {
