@@ -614,10 +614,12 @@ fun VideoPage(
     var snap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var snapRect by remember { mutableStateOf(android.graphics.Rect()) }
     var surfaceView by remember { mutableStateOf<android.view.SurfaceView?>(null) }
+    var snapTried by remember { mutableStateOf(false) }
+    val exitReady = com.localtg.ui.LocalViewerExitReady.current
     LaunchedEffect(exiting) {
-        if (!exiting) { snap = null; return@LaunchedEffect }
-        val sv = surfaceView ?: return@LaunchedEffect
-        if (snap != null || sv.width <= 0 || sv.height <= 0 || !sv.holder.surface.isValid) return@LaunchedEffect
+        if (!exiting) { snap = null; snapTried = false; return@LaunchedEffect }
+        val sv = surfaceView
+        if (sv == null || snap != null || sv.width <= 0 || sv.height <= 0 || !sv.holder.surface.isValid) { snapTried = true; exitReady(item.id); return@LaunchedEffect }
         val bmp = android.graphics.Bitmap.createBitmap(maxOf(sv.width / 2, 1), maxOf(sv.height / 2, 1), android.graphics.Bitmap.Config.ARGB_8888)
         val ok = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { cont ->
             runCatching {
@@ -628,7 +630,11 @@ fun VideoPage(
             snapRect = android.graphics.Rect(sv.left, sv.top, sv.right, sv.bottom)
             snap = bmp
         }
+        snapTried = true
+        exitReady(item.id)
     }
+    // 退出中:截到图就盖图,没截到(还没出首帧等)也把 SurfaceView 藏起来,底下垫缩略图
+    val hideSurface = exiting && (snap != null || snapTried)
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = if (com.localtg.render.Lsfg.deviceSupported) cfg.enhFrc else "off", frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, lsfgFp32 = cfg.lsfgFp32, trace = cfg.frcTrace, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH, upscaleAuto = cfg.enhAuto)
         var enhFailed by remember(item.id) { mutableStateOf(false) }
@@ -645,7 +651,7 @@ fun VideoPage(
                     surfaceView = this
                 } },
                 update = { v ->
-                    v.visibility = if (snap != null) android.view.View.INVISIBLE else android.view.View.VISIBLE
+                    v.visibility = if (hideSurface) android.view.View.INVISIBLE else android.view.View.VISIBLE
                     v.keepScreenOn = cfg.keepScreenOn
                     v.setEnhance(enh, resize)
                     v.setPlayer(p)
@@ -667,7 +673,7 @@ fun VideoPage(
                     surfaceView = videoSurfaceView as? android.view.SurfaceView
                 } },
                 update = {
-                    it.videoSurfaceView?.visibility = if (snap != null) android.view.View.INVISIBLE else android.view.View.VISIBLE
+                    it.videoSurfaceView?.visibility = if (hideSurface) android.view.View.INVISIBLE else android.view.View.VISIBLE
                     it.player = p
                     styleSubtitles(it, cfg)
                     it.keepScreenOn = cfg.keepScreenOn
@@ -691,6 +697,7 @@ fun VideoPage(
                     .size(with(d) { snapRect.width().toDp() }, with(d) { snapRect.height().toDp() }),
             )
         }
+        if (hideSurface && snap == null && firstFrame) ViewerBaseThumb(item) // 没截到图:藏起来的 SurfaceView 那里垫缩略图
         val ready = LocalViewerReady.current
         LaunchedEffect(firstFrame) { if (firstFrame) ready(item.id) }
         if (!firstFrame) { // 封面先显示,首帧到达后消失

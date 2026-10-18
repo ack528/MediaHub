@@ -152,7 +152,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
             userScrollEnabled = !ui.locked && !videoSwipeSeek,
         ) { page ->
             val item = items[page]
-            val isCurrent = pager.settledPage == page
+            val isCurrent = pager.settledPage == page && LocalViewerPlayerOk.current // 打开动画期间不创建播放器
             if (item.isVideo) {
                 VideoPage(
                     item, c, isCurrent, ui, onBack = onBack,
