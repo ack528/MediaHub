@@ -43,6 +43,7 @@ type Options struct {
 	Mirrors    []string      // 内置的 GitHub 镜像前缀(配置文件 update.mirrors),直连失败或更慢时使用
 	Root       string        // 便携版根目录
 	ConfigPath string        // 当前使用的配置文件(重启服务时原样带上)
+	AppDir     string        // 手机端安装包的缓存目录(数据目录\app-update);空 = 不缓存(见 app.go)
 	Log        *slog.Logger
 	// Exit 在安装脚本启动之后调用:让服务优雅退出(脚本等进程结束后覆盖文件)。
 	Exit func()
@@ -57,9 +58,10 @@ type Status struct {
 	State       string    `json:"state"` // idle | checking | uptodate | available | downloading | installing | error | disabled
 	Message     string    `json:"message,omitempty"`
 	Progress    int       `json:"progress"` // 下载进度 0 ~ 100
-	CheckedAt   time.Time `json:"checkedAt"`
-	Installable bool      `json:"installable"` // 按便携版布局运行,可以自动安装
-	Auto        bool      `json:"auto"`
+	CheckedAt   time.Time  `json:"checkedAt"`
+	Installable bool       `json:"installable"` // 按便携版布局运行,可以自动安装
+	Auto        bool       `json:"auto"`
+	App         *AppStatus `json:"app,omitempty"` // 手机端安装包的缓存状态(见 app.go)
 }
 
 type Updater struct {
@@ -74,6 +76,11 @@ type Updater struct {
 
 	msMu sync.Mutex
 	ms   map[string]int64 // 镜像前缀 → 最近一次探测的首字节耗时(毫秒);-1 = 不通。用来给镜像排序
+
+	appMu   sync.Mutex // 手机端安装包缓存(app.go)
+	app     AppStatus
+	appPath string
+	appBusy bool
 }
 
 func New(o Options, auto bool) *Updater {
@@ -85,6 +92,7 @@ func New(o Options, auto bool) *Updater {
 	}
 	u := &Updater{o: o, auto: auto, failed: map[string]time.Time{}, client: newHTTPClient(30 * time.Second), dl: newHTTPClient(0)}
 	u.st = Status{Current: o.Version, State: "idle", Installable: u.installable(), Auto: auto}
+	u.loadAppCache()
 	return u
 }
 
@@ -106,8 +114,11 @@ func (u *Updater) installable() bool {
 
 func (u *Updater) Status() Status {
 	u.mu.Lock()
-	defer u.mu.Unlock()
-	return u.st
+	st := u.st
+	u.mu.Unlock()
+	a := u.AppStatus()
+	st.App = &a
+	return st
 }
 
 func (u *Updater) set(f func(s *Status)) {
@@ -162,6 +173,11 @@ func (u *Updater) Check(ctx context.Context, install bool) {
 	rel, err := u.fetchLatest(ctx)
 	if err != nil {
 		u.o.Log.Warn("检查更新失败", "err", err)
+		u.setApp(func(a *AppStatus) {
+			if !a.Ready {
+				a.State, a.Message = "error", "检查更新失败:"+err.Error()
+			}
+		})
 		u.set(func(s *Status) {
 			s.State = "error"
 			s.Message = "检查更新失败:" + err.Error()
@@ -179,6 +195,7 @@ func (u *Updater) Check(ctx context.Context, install bool) {
 		}
 	}
 	u.set(func(s *Status) { s.CheckedAt = time.Now(); s.Tag = rel.Tag; s.Notes = trunc(rel.Body, 2000) })
+	u.noteApp(rel) // 顺便缓存最新的手机端安装包(后台下载)
 	if zipURL == "" || CompareVersions(ver, u.o.Version) <= 0 {
 		u.set(func(s *Status) {
 			s.State = "uptodate"
@@ -333,23 +350,79 @@ func (u *Updater) fetchViaRedirect(ctx context.Context, prefix string) (*release
 	return r, nil
 }
 
+// fetchLatest 同时问 GitHub API、直连 releases/latest 跳转和每个镜像的跳转,谁先拿到完整结果用谁(API 先到时带更新说明)。
+// 以前是一个接一个试,每个都要等到超时才换下一个,网络不好时要好几分钟;现在最多等 45 秒。
 func (u *Updater) fetchLatest(ctx context.Context) (*release, error) {
-	if r, err := u.fetchLatestAPI(ctx); err == nil {
-		return r, nil
-	} else {
-		u.o.Log.Info("GitHub API 不可用(多半是匿名限流),改用 releases/latest 跳转 + SHA256SUMS.txt", "err", err)
+	rctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	type res struct {
+		r   *release
+		err error
+		api bool
 	}
-	r, err := u.fetchViaRedirect(ctx, "")
+	ch := make(chan res, 16)
+	n := 0
+	start := func(api bool, f func() (*release, error)) {
+		n++
+		go func() { r, err := f(); ch <- res{r, err, api} }()
+	}
+	start(true, func() (*release, error) { return u.fetchLatestAPI(rctx) })
+	start(false, func() (*release, error) { return u.fetchViaRedirect(rctx, "") })
 	for _, m := range u.mirrorList() {
-		if err == nil {
-			break
+		if m = strings.TrimSpace(m); m == "" || strings.Contains(m, "github.com") {
+			continue
 		}
 		if !strings.HasSuffix(m, "/") {
 			m += "/"
 		}
-		r, err = u.fetchViaRedirect(ctx, m)
+		m := m
+		start(false, func() (*release, error) { return u.fetchViaRedirect(rctx, m) })
 	}
-	return r, err
+	var firstErr error
+	var got *release
+	var grace <-chan time.Time
+	apiDone := false
+	for i := 0; i < n; i++ {
+		var x res
+		if got != nil {
+			select {
+			case x = <-ch:
+			case <-grace:
+				return got, nil
+			}
+		} else {
+			x = <-ch
+		}
+		if x.api {
+			apiDone = true
+		}
+		if x.err != nil {
+			if firstErr == nil || x.api {
+				firstErr = x.err
+			}
+			if got != nil && apiDone {
+				return got, nil
+			}
+			continue
+		}
+		if x.api {
+			return x.r, nil
+		}
+		if got == nil {
+			got = x.r
+			if apiDone {
+				return got, nil
+			}
+			grace = time.After(2 * time.Second) // 跳转先到:再给 API 最多 2 秒(API 的结果带更新说明)
+		}
+	}
+	if got != nil {
+		return got, nil
+	}
+	if firstErr == nil {
+		firstErr = errors.New("没有可用的下载源")
+	}
+	return nil, firstErr
 }
 
 func (u *Updater) fetchLatestAPI(ctx context.Context) (*release, error) {
@@ -444,8 +517,18 @@ func (u *Updater) download(ctx context.Context, ver, zipURL, sumURL string) erro
 }
 
 func (u *Updater) fetchFile(ctx context.Context, url, dst, wantSum string) error {
+	return u.fetchTo(ctx, url, dst, wantSum, func(p int) { u.set(func(s *Status) { s.Progress = p }) })
+}
+
+// stallTimeout 下载中连续这么久一个字节都没收到就放弃这个地址、换下一个(以前要等到 30 分钟的总超时)。
+var stallTimeout = 30 * time.Second
+
+// fetchTo 下载 url 到 dst 并校验 SHA-256;progress 收到 0 ~ 100(每 0.5 秒最多一次)。
+func (u *Updater) fetchTo(ctx context.Context, url, dst, wantSum string, progress func(int)) error {
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
+	stall := time.AfterFunc(stallTimeout, cancel)
+	defer stall.Stop()
 	req, _ := http.NewRequestWithContext(dctx, "GET", url, nil)
 	req.Header.Set("User-Agent", "MediaHub-Updater/"+u.o.Version)
 	resp, err := u.dl.Do(req) // 大文件:不设整体超时(由 dctx 控制)
@@ -468,6 +551,7 @@ func (u *Updater) fetchFile(ctx context.Context, url, dst, wantSum string) error
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
+			stall.Reset(stallTimeout)
 			if _, werr := f.Write(buf[:n]); werr != nil {
 				f.Close()
 				return werr
@@ -476,8 +560,7 @@ func (u *Updater) fetchFile(ctx context.Context, url, dst, wantSum string) error
 			done += int64(n)
 			if total > 0 && time.Since(last) > 500*time.Millisecond {
 				last = time.Now()
-				p := int(done * 100 / total)
-				u.set(func(s *Status) { s.Progress = p })
+				progress(int(done * 100 / total))
 			}
 		}
 		if rerr == io.EOF {
@@ -485,6 +568,9 @@ func (u *Updater) fetchFile(ctx context.Context, url, dst, wantSum string) error
 		}
 		if rerr != nil {
 			f.Close()
+			if dctx.Err() != nil && ctx.Err() == nil {
+				return fmt.Errorf("下载卡住了(%v 没有收到数据)或超时:%w", stallTimeout, rerr)
+			}
 			return rerr
 		}
 	}

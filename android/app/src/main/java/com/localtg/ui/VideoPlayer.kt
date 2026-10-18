@@ -608,8 +608,7 @@ fun VideoPage(
     // ---- 退出动画:SurfaceView 不会跟着页面一起缩放 / 淡出(它在窗口后面"挖洞"显示),
     // 所以页面开始退出(返回手势一开始 / 点返回)时,把当前画面截成一张位图盖在上面,再把 SurfaceView 藏起来,
     // 缩放和淡出就作用在这张位图上,效果和别的页面一致。手势取消时恢复。
-    val navScope = com.localtg.ui.LocalNavScope.current
-    val exiting = navScope?.transition?.targetState == androidx.compose.animation.EnterExitState.PostExit
+    val exiting = com.localtg.ui.LocalViewerExiting.current
     var snap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var snapRect by remember { mutableStateOf(android.graphics.Rect()) }
     var surfaceView by remember { mutableStateOf<android.view.SurfaceView?>(null) }

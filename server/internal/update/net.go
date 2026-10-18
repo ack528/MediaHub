@@ -69,14 +69,27 @@ func resolve(ctx context.Context, host string) ([]string, error) {
 	if ips, ok := dnsMem.fresh(host); ok {
 		return ips, nil
 	}
-	// DoH 优先:系统 DNS 在部分网络里会返回被污染的地址而不报错,所以不能只在它失败时才换
+	// DoH 优先:系统 DNS 在部分网络里会返回被污染的地址而不报错,所以不能只在它失败时才换。
+	// 所有 DoH 同时问,谁先答用谁(以前一个接一个,每个不通都要等 5 秒超时)
+	dctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	ch := make(chan []string, len(dohServers))
 	for _, d := range dohServers {
-		ips, err := dohLookup(ctx, d.host, host)
-		if err == nil && len(ips) > 0 {
+		go func(server string) {
+			ips, err := dohLookup(dctx, server, host)
+			if err != nil {
+				ips = nil
+			}
+			ch <- ips
+		}(d.host)
+	}
+	for range dohServers {
+		if ips := <-ch; len(ips) > 0 {
+			cancel()
 			dnsMem.put(host, ips)
 			return ips, nil
 		}
 	}
+	cancel()
 	if ips, err := net.DefaultResolver.LookupHost(ctx, host); err == nil && len(ips) > 0 {
 		dnsMem.put(host, ips)
 		return ips, nil

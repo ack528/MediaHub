@@ -56,7 +56,40 @@ abstract class TgActivity : ComponentActivity() {
         }
     }
 
+    /** 根页面(从桌面打开 / 退出应用)不覆盖系统的启动动画。 */
+    protected open val customTransitions = true
+
+    /**
+     * 页面转场按 设置 → 外观 → 动画 → 界面动画:Android 14+ 用 overrideActivityTransition(和预测性返回兼容),
+     * 更早的系统在打开 / 关闭时 overridePendingTransition。系统风格不覆盖。
+     */
+    private fun applyTransitions() {
+        if (!customTransitions) return
+        val a = com.localtg.ui.Motion.activityAnims(container.settings.value.motion)
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            if (a == null) {
+                clearOverrideActivityTransition(OVERRIDE_TRANSITION_OPEN)
+                clearOverrideActivityTransition(OVERRIDE_TRANSITION_CLOSE)
+            } else {
+                overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, a[0], a[1])
+                overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, a[2], a[3])
+            }
+        } else if (a != null) {
+            @Suppress("DEPRECATION") overridePendingTransition(a[0], a[1])
+        }
+    }
+
+    override fun finish() {
+        // 在这个页面里改了界面动画(设置页):关闭时就按新的来
+        if (customTransitions && android.os.Build.VERSION.SDK_INT >= 34) applyTransitions()
+        super.finish()
+        if (customTransitions && android.os.Build.VERSION.SDK_INT < 34) {
+            com.localtg.ui.Motion.activityAnims(container.settings.value.motion)?.let { @Suppress("DEPRECATION") overridePendingTransition(it[2], it[3]) }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        applyTransitions()
         super.onCreate(savedInstanceState)
         // 顶栏是 Telegram 的蓝色/深蓝,状态栏图标用浅色
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
@@ -127,6 +160,8 @@ abstract class TgActivity : ComponentActivity() {
 }
 
 class MainActivity : TgActivity() {
+    override val customTransitions = false
+
     @Composable
     override fun Content() = AppRoot(container)
 }

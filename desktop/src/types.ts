@@ -129,6 +129,8 @@ export interface UpdateStatus {
   current?: string; latest?: string; tag?: string; notes?: string;
   state: string; message?: string; progress?: number; checkedAt?: string;
   installable?: boolean; auto?: boolean;
+  /** 手机端安装包的缓存(服务端检查更新时顺便下载,手机从服务器下载) */
+  app?: { latest?: string; ready?: boolean; state?: string; progress?: number; message?: string; size?: number };
 }
 
 export interface UserInfo { name: string; created: number }

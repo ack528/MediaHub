@@ -71,9 +71,25 @@ def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
     tag, name = sys.argv[1], sys.argv[2]
-    files = sorted(f for f in os.listdir(REL) if os.path.isfile(os.path.join(REL, f)))
+    files = sorted(f for f in os.listdir(REL) if os.path.isfile(os.path.join(REL, f)) and f != "SHA256SUMS.txt")
     assert files, "dist/release 是空的,先运行 tools/package.ps1 -Release"
     assert not any("dll" in f.lower() for f in files), "发布目录里不能有 DLL"
+    # 手机端和服务端的更新程序都只看最新的一个 Release:安装包、更新包、SHA256SUMS.txt 缺一个就检查不了 / 校验不了更新
+    assert any(re.match(r"^LocalBrowse-[\d.]+\.apk$", f) for f in files), "发布目录里没有手机端安装包(另一端没改时应由 package.ps1 从 dist/last-release 带过来)"
+    assert any(re.match(r"^MediaHub-[\d.]+-update\.zip$", f) for f in files), "发布目录里没有服务端更新包"
+    # SHA256SUMS.txt 在这里按实际要上传的文件重新算(以前靠打包脚本生成,那一步出错时发布就缺了校验文件)
+    import hashlib
+    lines = []
+    for f in files:
+        h = hashlib.sha256()
+        with open(os.path.join(REL, f), "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        lines.append(f"{h.hexdigest()}  {f}")
+    with open(os.path.join(REL, "SHA256SUMS.txt"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(lines) + "\n")
+    files.append("SHA256SUMS.txt")
+    print("SHA256SUMS.txt:\n  " + "\n  ".join(lines))
     text = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read()
     ct, ci = latest_entry(text, "手机端")
     st, si = latest_entry(text, "服务端")

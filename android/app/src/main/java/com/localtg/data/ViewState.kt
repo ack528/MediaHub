@@ -24,6 +24,8 @@ data class DialogView(
     val ascChat: Boolean = true,
     val ascGrid: Boolean = false,
     val grid: Boolean = false,
+    /** 网格模式下用瀑布流卡片(小红书式)显示;旧版本不认识这个字段,看到的还是网格 */
+    val feed: Boolean = false,
     val types: List<String> = listOf("photo", "video", "gif"),
     val columns: Int = 3,
     val savedAt: Long = 0,

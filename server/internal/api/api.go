@@ -103,6 +103,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/random", authd(s.random))
 	mux.Handle("POST /api/v1/random/reset", authd(s.randomReset))
 	mux.Handle("GET /api/v1/server/addresses", authd(s.serverAddresses))
+	mux.Handle("GET /api/v1/app/update", authd(s.appUpdate))     // 手机端安装包:服务端缓存的最新版本(见 update/app.go)
+	mux.Handle("GET /api/v1/app/update.apk", authd(s.appUpdateApk)) // 下载缓存好的安装包(支持断点续传)
 	mux.Handle("GET /api/v1/admin/clients", s.adminOnly(s.adminClients))
 	mux.Handle("POST /api/v1/admin/clients/kick", s.adminOnly(s.adminClientKick))
 	mux.Handle("GET /api/v1/admin/tunnel", s.adminOnly(s.adminTunnelStatus))

@@ -171,6 +171,8 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     /** 网格从左上到右下是否为正序(默认新→旧)。 */
     val ascGrid = MutableStateFlow(!c.isLocal) // 按名称时网格从 a 到 z(从前到后);按时间时新的在前
     val grid = MutableStateFlow(false)
+    /** 网格模式下用瀑布流卡片显示(小红书式);排序 / 方向 / 位置和网格完全一样。 */
+    val feed = MutableStateFlow(false)
     val types = MutableStateFlow(defaultTypes)
     val columns = MutableStateFlow(3)
     val total = MutableStateFlow(0)
@@ -227,7 +229,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
             }
             chosen?.let { v ->
                 sortKey.value = v.sort; ascChat.value = v.ascChat; ascGrid.value = v.ascGrid
-                grid.value = v.grid; columns.value = v.columns.coerceIn(2, 6)
+                grid.value = v.grid; feed.value = v.feed; columns.value = v.columns.coerceIn(2, 6)
                 types.value = v.types.toSet().ifEmpty { defaultTypes }
                 anchorId = v.itemId; anchorOffset = v.offsetPx
                 AppLog.i("chat", "恢复位置 item=${v.itemId} offset=${v.offsetPx} grid=${v.grid} sort=${v.sort}")
@@ -333,7 +335,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
         val p = pos
         val v = DialogView(
             itemId = if (p != null) p.first else anchorId, offsetPx = p?.second ?: anchorOffset,
-            sort = sortKey.value, ascChat = ascChat.value, ascGrid = ascGrid.value, grid = grid.value,
+            sort = sortKey.value, ascChat = ascChat.value, ascGrid = ascGrid.value, grid = grid.value, feed = feed.value,
             types = types.value.toList(), columns = columns.value, device = android.os.Build.MODEL,
         )
         c.scope.launch { c.viewState.save(dialogId, v, ns) }
@@ -368,6 +370,8 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
     val tg = LocalTg.current
     val motionStyle = LocalSettings.current.motion
     val grid by vm.grid.collectAsState()
+    val feed by vm.feed.collectAsState()
+    val mode = if (!grid) 0 else if (feed) 2 else 1 // 0 聊天流 / 1 网格 / 2 瀑布流
     val sortKey by vm.sortKey.collectAsState()
     val ascChat by vm.ascChat.collectAsState()
     val ascGrid by vm.ascGrid.collectAsState()
@@ -441,8 +445,11 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                     }.orEmpty().ifEmpty { "$total 项" }
                     Text(sub, color = tg.barSub, fontSize = 13.sp, maxLines = 1)
                 }
-                // 右上角:点击在"聊天流"与"网格"之间切换
-                BarIcon(if (grid) TgIcons.Chat else TgIcons.Grid, if (grid) "聊天视图" else "网格视图") { vm.change(vm.currentItemId(), force = true) { vm.grid.value = !grid } } // 切换视图时保持在当前这一条(强制重建 Pager,锚点才会生效)
+                // 右上角:聊天流 → 网格 → 瀑布流 → 聊天流 轮换(图标是下一个视图);切换时保持在当前这一条(强制重建 Pager,锚点才会生效)
+                val next = (mode + 1) % 3
+                BarIcon(when (next) { 1 -> TgIcons.Grid; 2 -> TgIcons.Feed; else -> TgIcons.Chat }, when (next) { 1 -> "网格视图"; 2 -> "瀑布流视图"; else -> "聊天视图" }) {
+                    vm.change(vm.currentItemId(), force = true) { vm.grid.value = next != 0; vm.feed.value = next == 2 }
+                }
                 Box {
                     BarIcon(TgIcons.More, "更多") { menu = true }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -465,8 +472,14 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                                 if (n.isNotEmpty()) vm.change(null) { vm.types.value = n }
                             })
                         }
-                        if (grid) {
-                            HorizontalDivider()
+                        HorizontalDivider()
+                        listOf(0 to "视图:聊天流", 1 to "视图:网格", 2 to "视图:瀑布流(小红书式卡片)").forEach { (m, label) ->
+                            DropdownMenuItem(text = { Text((if (m == mode) "✓  " else "     ") + label) }, onClick = {
+                                menu = false
+                                if (m != mode) { hap.perform(Hap.Tick); vm.change(vm.currentItemId(), force = true) { vm.grid.value = m != 0; vm.feed.value = m == 2 } }
+                            })
+                        }
+                        if (mode == 1) {
                             DropdownMenuItem(text = { Text("网格列数:$columns(点击切换)") }, onClick = { vm.setColumns(if (columns >= 5) 3 else columns + 1) })
                         }
                     }
@@ -494,7 +507,8 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
 
         Box(
             Modifier.weight(1f).fillMaxWidth().then(
-                if (grid) Modifier.background(tg.bg)
+                if (mode == 2) Modifier.background(if (tg.dark) Color(0xFF0F1012) else Color(0xFFF3F4F6))
+                else if (grid) Modifier.background(tg.bg)
                 else if (LocalSettings.current.chatBackground == "plain") Modifier.background(tg.chatTop)
                 else Modifier.background(Brush.verticalGradient(listOf(tg.chatTop, tg.chatBottom))),
             ),
@@ -508,15 +522,23 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                         TextButton(onClick = { lazyItems.retry() }) { Text("重试") }
                     }
                 lazyItems.itemCount == 0 -> Text("这里没有符合条件的文件", Modifier.align(Alignment.Center), color = if (grid) tg.message else Color.White)
-                // 聊天流 ↔ 网格:淡入 + 轻微缩放(Material fade through)
+                // 聊天流 ↔ 网格 ↔ 瀑布流:淡入 + 轻微缩放(Material fade through)
                 else -> androidx.compose.animation.AnimatedContent(
-                    targetState = grid, label = "chat-grid",
+                    targetState = mode, label = "chat-grid",
                     transitionSpec = {
                         if (motionStyle == Motion.OFF) androidx.compose.animation.EnterTransition.None togetherWith androidx.compose.animation.ExitTransition.None
                         else (fadeIn(tween(220, 90, Motion.Standard)) + scaleIn(tween(300, easing = Motion.Standard), initialScale = 0.96f)) togetherWith fadeOut(tween(90))
                     },
-                ) { g ->
-                    if (g) MediaGrid(
+                ) { md ->
+                    if (md == 2) MediaFeed(
+                        lazyItems, c.api, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest,
+                        onLongPress = { it ->
+                            android.widget.Toast.makeText(ctx, "已在聊天流中定位到这一条", android.widget.Toast.LENGTH_SHORT).show()
+                            vm.change(it.id, force = true) { vm.grid.value = false; vm.feed.value = false }
+                        },
+                        scrollTarget = scrollTarget, onScrollDone = onScrolled,
+                    )
+                    else if (md == 1) MediaGrid(
                         lazyItems, c.api, columns, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest,
                         onLongPress = { it ->
                             // 长按网格里的某一格:切到聊天流并定位到这一条
@@ -685,7 +707,7 @@ private fun MediaBubble(item: Item, api: Api, maxW: Dp, maxH: Dp, loadEnabled: B
     var h = w / aspect
     if (h > maxH) { h = maxH; w = h * aspect }
     val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    Box(Modifier.padding(start = 8.dp).width(w).height(h).pressScale(src, 0.03f).mediaShared(item.id, shape).clip(shape).background(Color(0x33808080)).hapticClickable(src, onClick = onClick)) {
+    Box(Modifier.padding(start = 8.dp).width(w).height(h).heroSource(item.id, 17.dp).pressScale(src, 0.03f).clip(shape).background(Color(0x33808080)).hapticClickable(src, onClick = onClick)) {
         var useOrig by remember(item.id) { mutableStateOf(false) } // 服务端缩略图失败时退回原图
         val url = if (item.isVideo) api.posterUrl(item) else if (useOrig) api.fileUrl(item) else api.imageUrl(item, LocalSettings.current.chatImageWidth)
         var failed by remember(item.id) { mutableStateOf(false) }
@@ -761,7 +783,7 @@ private fun MediaGrid(
             val item = items[index]
             if (item != null) {
                 val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() } // 按住时轻轻缩小、松手弹回(细节动效)
-                MediaThumb(item, api, loadEnabled = !fast || !LocalSettings.current.pauseThumbsWhenFast, modifier = Modifier.aspectRatio(1f).pressScale(src, 0.05f).mediaShared(item.id, androidx.compose.ui.graphics.RectangleShape).combinedClickable(
+                MediaThumb(item, api, loadEnabled = !fast || !LocalSettings.current.pauseThumbsWhenFast, modifier = Modifier.aspectRatio(1f).heroSource(item.id).pressScale(src, 0.04f).combinedClickable(
                     interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current,
                     onClick = { hap.perform(Hap.Click); onOpen(item) },
                     onLongClick = { hap.perform(Hap.Long); onLongPress(item) },
@@ -778,6 +800,88 @@ private fun MediaGrid(
     JumpButton(visible = state.firstVisibleItemIndex > columns * 5, up = true, modifier = Modifier.align(Alignment.BottomEnd)) {
         onJumpNewest(); gridScope.launch { state.scrollToItem(0) }
     }
+    }
+}
+
+// ---------------------------------------------------------------- 瀑布流(小红书式)
+
+/**
+ * 瀑布流:两列卡片,图片按原图比例(竖图最多 2:3、横图最多 3:2,和小红书一样不让一张图占满一屏),
+ * 下面是文件名(两行)和类型 · 日期 · 大小。排序、方向、位置记忆、从查看器返回定位都和网格一样。点开从卡片的图片处展开到全屏。
+ */
+@Composable
+private fun MediaFeed(
+    items: LazyPagingItems<Item>, api: Api, gen: Int, restoreId: String?, restoreOffset: Int,
+    onOpen: (Item) -> Unit, onRestored: () -> Unit, onPosition: (String, Int, Boolean) -> Unit, fresh: Boolean, onJumpNewest: () -> Unit,
+    onLongPress: (Item) -> Unit, scrollTarget: String?, onScrollDone: () -> Unit,
+) {
+    val state = androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState()
+    LaunchedEffect(scrollTarget) {
+        val id = scrollTarget ?: return@LaunchedEffect
+        val idx = items.itemSnapshotList.indexOfFirst { it?.id == id }
+        if (idx >= 0) state.scrollToItem(idx)
+        onScrollDone()
+    }
+    PositionMemory(items, gen, restoreId, restoreOffset, { state.firstVisibleItemIndex }, { state.firstVisibleItemScrollOffset },
+        { i, o -> state.scrollToItem(i, o) }, onRestored, onPosition, fresh)
+    var fast by remember { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        var lastIdx = state.firstVisibleItemIndex
+        var lastT = System.nanoTime()
+        snapshotFlow { state.firstVisibleItemIndex }.collect { idx ->
+            val now = System.nanoTime()
+            val dt = (now - lastT) / 1e9
+            if (dt >= 0.05) { fast = abs(idx - lastIdx) / 2 / dt > 6; lastIdx = idx; lastT = now } // 每秒滑过超过 6 行卡片
+        }
+    }
+    LaunchedEffect(state.isScrollInProgress) { if (!state.isScrollInProgress) fast = false }
+    val scope = rememberCoroutineScope()
+    val cfg = LocalSettings.current
+    Box(Modifier.fillMaxSize()) {
+        androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid(
+            columns = androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells.Fixed(2), state = state, modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalItemSpacing = 6.dp,
+        ) {
+            items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
+                val item = items[index]
+                if (item != null) FeedCard(item, api, loadEnabled = !fast || !cfg.pauseThumbsWhenFast, onClick = { onOpen(item) }, onLongClick = { onLongPress(item) })
+                else Box(Modifier.fillMaxWidth().aspectRatio(0.75f))
+            }
+        }
+        PreloadNear(items, api, cfg.gridThumbWidth, { state.firstVisibleItemIndex }, { state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: state.firstVisibleItemIndex })
+        JumpButton(visible = state.firstVisibleItemIndex > 10, up = true, modifier = Modifier.align(Alignment.BottomEnd)) {
+            onJumpNewest(); scope.launch { state.scrollToItem(0) }
+        }
+    }
+}
+
+@Composable
+private fun FeedCard(item: Item, api: Api, loadEnabled: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+    val tg = LocalTg.current
+    val hap = LocalHaptics.current
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val shape = RoundedCornerShape(10.dp)
+    Column(
+        Modifier.fillMaxWidth().pressScale(src, 0.03f).clip(shape).background(if (tg.dark) Color(0xFF1C1E22) else Color.White)
+            .combinedClickable(
+                interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current,
+                onClick = { hap.perform(Hap.Click); onClick() }, onLongClick = { hap.perform(Hap.Long); onLongClick() },
+            ),
+    ) {
+        val ratio = (item.aspect ?: 0.75f).coerceIn(0.66f, 1.5f)
+        MediaThumb(item, api, Modifier.fillMaxWidth().aspectRatio(ratio).heroSource(item.id, 10.dp), loadEnabled = loadEnabled, showName = false)
+        Text(
+            item.name.substringBeforeLast('.', item.name), Modifier.padding(start = 8.dp, end = 8.dp, top = 7.dp),
+            color = tg.name, fontSize = 14.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+        )
+        Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            val kind = when (item.type) { "video" -> "视频"; "gif" -> "GIF"; else -> item.ext.uppercase().ifEmpty { "图片" } }
+            Text(
+                listOf(kind, formatDate(item.takenAt)).filter { it.isNotEmpty() }.joinToString(" · "), Modifier.weight(1f),
+                color = tg.message, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (item.size > 0) Text(formatSize(item.size), color = tg.message, fontSize = 12.sp, maxLines = 1)
+        }
     }
 }
 

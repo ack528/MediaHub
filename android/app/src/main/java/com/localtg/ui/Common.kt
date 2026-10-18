@@ -106,7 +106,7 @@ fun Item.brokenLabel(): String? = when {
  * loadEnabled=false(快速滑动中)时只读本地缓存,不发起网络请求。
  */
 @Composable
-fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled: Boolean = true) {
+fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled: Boolean = true, showName: Boolean = true) {
     Box(modifier.background(Color(0x22888888))) {
         if (item.brokenLabel() != null) {
             BrokenTile(item.brokenLabel()!!, Modifier.fillMaxSize(), compact = true)
@@ -129,7 +129,7 @@ fun MediaThumb(item: Item, api: Api, modifier: Modifier = Modifier, loadEnabled:
             )
             if (failed && loadEnabled) BrokenTile("预览不可用", Modifier.fillMaxSize(), compact = true)
         }
-        MediaNameLabel(item, Modifier.align(Alignment.BottomStart)) // 以前只有视频显示名称,图片不显示,同一个网格里有的有名字有的没有
+        if (showName) MediaNameLabel(item, Modifier.align(Alignment.BottomStart)) // 以前只有视频显示名称,图片不显示,同一个网格里有的有名字有的没有
         if (item.flags.truncated) { // 不完整的视频(下载中断):角上放个警告图标
             androidx.compose.material3.Icon(
                 com.localtg.ui.tg.TgIcons.Warning, "文件不完整", tint = Color(0xFFFFB74D),

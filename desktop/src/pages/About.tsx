@@ -43,6 +43,11 @@ function Update() {
         </div>
       </Row>
       <Row icon="clock" title="自动更新" desc={`服务端每 10 分钟检查一次 GitHub Releases(ack528/MediaHub),发现新版本后自动下载、校验、安装并重启服务;新版本起不来会自动回退。${st?.auto === false ? "当前配置里关闭了自动更新(config.json → update.enabled)。" : ""}${st?.installable === false ? "当前不是便携版目录布局,只检查、不自动安装。" : ""}`} />
+      <Row icon="drive" title="手机端安装包" desc={!st?.app || st.app.state === "disabled"
+        ? "没有缓存(config.json → update.cacheApp 为 false)。手机检查更新时只能自己连 GitHub。"
+        : st.app.ready ? `已缓存 v${st.app.latest}${st.app.size ? `(${(st.app.size / 1048576).toFixed(1)} MB)` : ""}:手机「检查更新」直接从这台电脑下载,走局域网 / 内网穿透,不用连 GitHub。`
+        : st.app.state === "downloading" ? `正在后台下载 v${st.app.latest ?? ""} · ${st.app.progress ?? 0}%(下好之前手机会自己从 GitHub 下载)`
+        : `还没有缓存${st.app.message ? ":" + st.app.message : ""}。检查更新时会顺便下载最新的手机端安装包。`} />
       {st?.notes && state === "available" && <Row icon="filetext" title="更新内容" desc={<span style={{ whiteSpace: "pre-wrap" }}>{st.notes}</span>} />}
     </Card>
   );

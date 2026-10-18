@@ -169,6 +169,13 @@ object ApiDiskCache {
     }
 }
 
+/** 服务器缓存的手机端安装包(服务端 3.3.0 起,GET /api/v1/app/update)。 */
+@kotlinx.serialization.Serializable
+class AppUpdateInfo(
+    val latest: String = "", val size: Long = 0, val sha256: String = "", val ready: Boolean = false,
+    val state: String = "", val progress: Int = 0, val message: String = "", val notes: String = "",
+)
+
 class CompatStatus(val ready: Boolean, val state: String = "none", val progress: Double = 0.0, val err: String = "", val why: String = "")
 
 class Api(private val http: OkHttpClient, private val store: SessionStore) {
@@ -357,6 +364,10 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
         private set
 
     /** 服务器在各个网络上的地址(服务端 3.1.0 起)。 */
+    /** 服务器缓存的手机端安装包;check = 上次检查超过 1 分钟就让服务器现在查一次(最多等 12 秒)。旧版服务端返回 404。 */
+    suspend fun appUpdate(check: Boolean): AppUpdateInfo = call(Request.Builder().url("$base/api/v1/app/update" + if (check) "?check=1" else "").build())
+    fun appUpdateApkUrl(): String = "$base/api/v1/app/update.apk"
+
     suspend fun addresses(): ServerAddrs = call(Request.Builder().url("$base/api/v1/server/addresses").build())
 
     @kotlinx.serialization.Serializable

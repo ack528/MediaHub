@@ -62,7 +62,7 @@ import me.saket.telephoto.zoomable.coil3.ZoomableAsyncImage
 
 /** 全屏查看器:左右滑动切换;图片可缩放;视频自动开始播放(当前页),带宽只在翻到该页时才使用。 */
 @Composable
-fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
+fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent: (Item) -> Unit = {}) {
     val feed = c.viewerFeed
     val items = feed.items
     if (items.isEmpty()) { onBack(); return }
@@ -105,7 +105,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
             c.api.hlsPrepare(n, br, c.hlsSid(n.id), com.localtg.data.DeviceCodecs.resolveCodec(cfg.playerCodec, c.api.caps.codecs))
         }
     }
-    LaunchedEffect(cur.id) { AppLog.i("viewer", "查看 ${cur.name} (${cur.type}, ${pager.currentPage + 1}/${items.size})") }
+    LaunchedEffect(cur.id) { AppLog.i("viewer", "查看 ${cur.name} (${cur.type}, ${pager.currentPage + 1}/${items.size})"); onCurrent(cur) }
     // 每滑到一项就记下来:退出查看器后,群组页定位到最后停留的这一项(不是打开时的那一项)
     LaunchedEffect(cur.id) { feed.originDialogId?.let { c.viewerReturn.value = it to cur.id } }
 
@@ -142,7 +142,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit) {
 
     // 打开的转场动画期间只加载当前这一页,动画结束后再预加载左右页:三张大图同时解码 / 上传 GPU 会让转场掉帧(看起来就是闪 / 卡一下)
     var settled by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { kotlinx.coroutines.delay(600); settled = true }
+    LaunchedEffect(Unit) { kotlinx.coroutines.delay(250); settled = true }
     // 翻页方向:向右滑 = 上一个(设置里可改)。列表序号和屏幕上的先后可能相反(聊天流最新在底部),所以按"上一个是不是序号更大的一项"决定
     val prevDelta = if (feed.prevIsHigherIndex) 1 else -1
     val reverse = feed.prevIsHigherIndex == cfg.rightSwipePrev
@@ -269,7 +269,7 @@ private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean
         state = me.saket.telephoto.zoomable.rememberZoomableImageState(
             me.saket.telephoto.zoomable.rememberZoomableState(zoomSpec = me.saket.telephoto.zoomable.ZoomSpec(maxZoomFactor = cfg.maxZoom)),
         ),
-        modifier = Modifier.fillMaxSize().then(if (shared) Modifier.mediaShared(item.id, RectangleShape) else Modifier),
+        modifier = Modifier.fillMaxSize(),
         onClick = { ui.chrome = !ui.chrome },
     )
 }

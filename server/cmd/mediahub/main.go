@@ -46,7 +46,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "3.2.5"
+const version = "3.3.0"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -454,6 +454,7 @@ func run(args []string, serve bool) int {
 	srv.Update = update.New(update.Options{
 		Version: version, Repo: cfg.Update.Repo, Interval: time.Duration(cfg.Update.IntervalMinutes) * time.Minute, Mirror: cfg.Update.Mirror, Mirrors: cfg.Update.Mirrors,
 		Root: projectRoot(), ConfigPath: cfg.Path, Log: log, Exit: stop,
+		AppDir: appUpdateDir(cfg.Update.CacheApp, cfg.DataDir),
 	}, cfg.Update.Enabled)
 	if cfg.Update.Enabled {
 		logx.Go("自动更新", func() { srv.Update.Run(ctx) })
@@ -582,3 +583,12 @@ func userCmd(args []string) int {
 	fmt.Fprintln(os.Stderr, "完成")
 	return 0
 }
+
+// appUpdateDir 手机端安装包的缓存目录(数据目录\app-update);配置里关闭了就不缓存。
+func appUpdateDir(on bool, dataDir string) string {
+	if !on {
+		return ""
+	}
+	return filepath.Join(dataDir, "app-update")
+}
+

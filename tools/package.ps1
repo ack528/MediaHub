@@ -183,6 +183,15 @@ if ($Release -and ($SkipAndroid -or $SkipDesktop)) {
   } else { Write-Host '  (没有 dist\last-release,这次发布里不含没打包的那一端)' -ForegroundColor Yellow }
 }
 
+# SHA-256(十六进制小写)。不用 Get-FileHash:从 PowerShell 7 里启动这个脚本(Windows PowerShell 5.1)时,
+# 继承来的 PSModulePath 让 Microsoft.PowerShell.Utility 加载失败,Get-FileHash 报"找不到命令",SHA256SUMS.txt 就没生成
+# (2026-10-18 v3.2.7 因此发布时缺了校验文件,手机和服务端都检查不了更新)。
+function Get-Sha256([string]$Path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $fs = [System.IO.File]::OpenRead($Path)
+  try { return (($sha.ComputeHash($fs) | ForEach-Object { $_.ToString('x2') }) -join '') } finally { $fs.Dispose(); $sha.Dispose() }
+}
+
 Step '清理 dist 里的历史版本'
 # 每种产物只留这次打出来的:手机端 APK 只留当前版本,服务端便携包只留当前版本;以前的安装包(setup.exe)不再生成,旧的一并删掉
 if (-not $SkipAndroid) {
@@ -193,7 +202,7 @@ if (-not $SkipDesktop) {
 }
 
 if ($Release) {
-  $rl = Get-ChildItem $RelDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }
+  $rl = Get-ChildItem $RelDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | ForEach-Object { "{0}  {1}" -f (Get-Sha256 $_.FullName), $_.Name }
   [System.IO.File]::WriteAllLines((Join-Path $RelDir 'SHA256SUMS.txt'), $rl, (New-Object System.Text.UTF8Encoding($false)))
   Write-Host "发布文件在 $RelDir :" -ForegroundColor Green
   Get-ChildItem $RelDir -File | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } } | Format-Table -AutoSize
@@ -204,7 +213,7 @@ Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
 $doc = Join-Path $Root 'docs\09-安装与打包.md'
 if (Test-Path $doc) { Copy-Item $doc (Join-Path $Dist '安装说明.md') -Force }
 $lines = Get-ChildItem $Dist -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | ForEach-Object {
-  "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+  "{0}  {1}" -f (Get-Sha256 $_.FullName), $_.Name
 }
 [System.IO.File]::WriteAllLines((Join-Path $Dist 'SHA256SUMS.txt'), $lines, (New-Object System.Text.UTF8Encoding($false)))
 Get-ChildItem $Dist -File | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } } | Format-Table -AutoSize

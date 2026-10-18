@@ -151,7 +151,8 @@ private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) ->
     ChoiceRow(
         "界面动画", s.motion,
         listOf("slide" to "系统风格(默认)", "parallax" to "整屏滑动 + 视差(Telegram 式)", "axis" to "Material 共享轴", "fade" to "仅淡入淡出", "off" to "关闭动画"),
-        desc = "系统风格 = 和 Android 系统应用同一套转场(短距离滑动 + 淡入淡出,450ms,系统缓动),返回手势时页面缩小并带圆角;打开图片时缩略图会直接放大成全屏(共享元素)",
+        desc = "页面之间(文件夹列表 → 文件夹 → 设置)的进入 / 返回动画,改了下一次打开页面就生效。系统风格 = 用系统自己的转场,返回手势时有系统的预测性返回预览;" +
+            "其它风格是应用自己的转场。打开图片 / 视频时都是从点的位置展开到全屏(选「关闭动画」时直接打开)",
     ) { u { copy(motion = it) } }
     SwitchRow(
         "细节动效", "点按缩略图 / 按钮时轻轻缩小再弹回、文件夹列表第一屏依次弹出、盘符标签的下划线跟着手指滑动、登录页入场。" +
@@ -796,14 +797,17 @@ private fun AboutPage(c: AppContainer) {
     InfoRow("服务端", server)
     InfoRow("系统", "Android ${android.os.Build.VERSION.RELEASE}(API ${android.os.Build.VERSION.SDK_INT})")
     InfoRow("设备", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-    UpdateSection(ver)
+    UpdateSection(ver, c)
     MirrorSection(c.settings.value) { c.settings.update(it) }
     ChangelogSection(ver)
 }
 
-/** 软件更新:手动检查 GitHub Releases 最新版本,发现新版本后点一下下载(校验 SHA-256)并调起系统安装器。 */
+/**
+ * 软件更新:先问自己的服务器(服务器检查更新时已经把最新安装包下载好了,从服务器下载走局域网 / 内网穿透),
+ * 同时问 GitHub;发现新版本后点一下下载(校验 SHA-256)并调起系统安装器。
+ */
 @Composable
-private fun UpdateSection(ver: String) {
+private fun UpdateSection(ver: String, c: AppContainer) {
     val ctx = LocalContext.current
     val tg = LocalTg.current
     var checking by remember { mutableStateOf(false) }
@@ -814,16 +818,20 @@ private fun UpdateSection(ver: String) {
     Header("软件更新")
     ActionRow(
         if (checking) "正在检查…" else "检查更新",
-        if (msg.isNotEmpty()) msg else "当前 v$ver · 从 GitHub(${com.localtg.data.AppUpdater.REPO})检查最新版本",
+        if (msg.isNotEmpty()) msg else "当前 v$ver · 先问自己的服务器(它会提前把新版本下载好),同时从 GitHub(${com.localtg.data.AppUpdater.REPO})检查",
     ) {
         if (checking || progress >= 0) return@ActionRow
         checking = true; msg = ""
         try {
-            val r = com.localtg.data.AppUpdater.latest()
+            val r = com.localtg.data.AppUpdater.latest(if (c.isLocal) null else suspend { serverRelease(c) })
             rel = r
             msg = when {
                 r == null -> "最新发布里没有安装包"
-                com.localtg.data.AppUpdater.compare(r.version, ver) > 0 -> "发现新版本 v${r.version}"
+                com.localtg.data.AppUpdater.compare(r.version, ver) > 0 -> "发现新版本 v${r.version}" + when {
+                    r.server?.ready == true -> "(服务器已下载好,从服务器下载)"
+                    r.server != null -> "(服务器正在下载 ${r.server.progress}%,好了就从服务器下载)"
+                    else -> ""
+                }
                 else -> "已是最新版本(v$ver)"
             }
         } catch (e: Exception) {
@@ -841,12 +849,12 @@ private fun UpdateSection(ver: String) {
         }
         ActionRow(
             if (progress >= 0) "正在下载… $progress%" else "下载并安装 v${r.version}",
-            "大小 ${if (r.size > 0) formatSize(r.size) else "未知"};下载完成会校验后调起系统安装器(第一次需要允许本应用「安装未知应用」)",
+            "大小 ${if (r.size > 0) formatSize(r.size) else "未知"};${if (r.server?.ready == true) "从自己的服务器下载;" else ""}下载完成会校验后调起系统安装器(第一次需要允许本应用「安装未知应用」)",
         ) {
             if (progress >= 0) return@ActionRow
             progress = 0
             try {
-                val f = com.localtg.data.AppUpdater.download(ctx, r) { done, total -> progress = if (total > 0) (done * 100 / total).toInt().coerceIn(0, 100) else 0 }
+                val f = com.localtg.data.AppUpdater.download(ctx, r, c.http, recheck = { serverRelease(c)?.server }) { done, total -> progress = if (total > 0) (done * 100 / total).toInt().coerceIn(0, 100) else 0 }
                 progress = -1
                 msg = if (com.localtg.data.AppUpdater.install(ctx, f)) "已调起安装器" else "请先在系统设置里允许本应用安装未知应用,然后再点一次"
             } catch (e: Exception) {
@@ -856,6 +864,18 @@ private fun UpdateSection(ver: String) {
             }
         }
     }
+}
+
+/** 问服务器:它缓存的最新手机端版本。服务器不知道(旧版服务端 / 它也连不上 GitHub)返回 null。 */
+private suspend fun serverRelease(c: AppContainer): com.localtg.data.AppUpdater.Release? {
+    val i = c.api.appUpdate(check = true)
+    if (i.latest.isEmpty()) return null
+    val base = "https://github.com/${com.localtg.data.AppUpdater.REPO}/releases/latest/download/"
+    return com.localtg.data.AppUpdater.Release(
+        tag = "", version = i.latest, notes = i.notes.trim().take(1500), apkUrl = base + "LocalBrowse-${i.latest}.apk", sumUrl = base + "SHA256SUMS.txt",
+        size = i.size, sha = i.sha256.lowercase().takeIf { it.length == 64 },
+        server = com.localtg.data.AppUpdater.ServerSrc(c.api.appUpdateApkUrl(), i.latest, i.sha256, i.ready, i.progress),
+    )
 }
 
 /** 更新说明:随安装包带的 CHANGELOG(assets/changelog.md 的「手机端」部分),当前版本展开,其余历史版本点开看。 */

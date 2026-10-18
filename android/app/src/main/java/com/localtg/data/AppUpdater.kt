@@ -6,16 +6,21 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.localtg.AppLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -23,6 +28,7 @@ import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -32,14 +38,24 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicIntegerArray
+import java.util.concurrent.atomic.AtomicLongArray
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
- * 手机端检查更新(2.5.0):设置 → 关于 → 检查更新。手动点击:查 GitHub Releases 最新版本 → 下载 APK(校验 SHA-256)→ 调起系统安装器。
- * 发布约定:Release 里有 LocalBrowse-<版本>.apk 和 SHA256SUMS.txt;版本号取自文件名,和当前 versionName 逐段按数字比较。
- * 网络(2.14.0 / 3.0.0):直连 github.com 和内置的 8 个镜像前缀同时探测,谁先响应用谁(设置里可以指定优先用哪个);
- * 域名解析并发问几个 DoH 服务器(哪个先答用哪个),系统 DNS 兜底;同一个域名解析出多个 IP 时按 TCP 连接耗时选最快的(Watt Toolkit 的思路)。
- * SHA256SUMS.txt 同样先直连;镜像只负责搬字节,APK 的 hash 必须和直连拿到的 SHA256SUMS 一致才会安装。
- * 注意:用自己的 OkHttp 客户端(系统信任的证书),不能用访问服务器的那个 —— 它只信任固定指纹的自签名证书,连不上 GitHub。
+ * 手机端检查更新:设置 → 关于 → 检查更新。发布约定:Release 里有 LocalBrowse-<版本>.apk 和 SHA256SUMS.txt;版本号取自文件名。
+ *
+ * 3.3.1 重做(以前"检查不了 / 下载巨慢"的原因:API、直连、8 个镜像是**一个接一个**试的,每个最长等 15 秒连接 + 60 秒读取,
+ * 网络差时要好几分钟才报失败;下载按"谁先回 1 个字节"选源,响应快但限速的镜像会被选中,卡住时要等 2 分钟才换):
+ *  1. **先问自己的服务器**(服务端 3.3.0 起):服务端检查更新时会顺便把最新的手机安装包下载缓存好,手机直接从服务器下载,
+ *     走局域网 / 内网穿透,几秒钟就完,不用连 GitHub。服务器还没下好、版本太旧或连不上时才走下面的 GitHub。
+ *  2. **检查**:GitHub API、直连和每个镜像同时发请求,谁先拿到用谁(API 先到时带更新说明),最多等 25 秒。
+ *  3. **下载**:所有源同时下载开头 256KB 测**实际速度**(并确认返回的是 APK 而不是镜像的拦截页),
+ *     然后在最快的几个源上开 4 个连接分段下载(每段 512KB,哪个连接快哪个多下);某一段 15 秒没有数据就换个源重下这一段,
+ *     最后几段由空闲的连接同时抢着下(谁先完成用谁),不会被一个慢连接拖住。整个文件下完再校验 SHA-256,不对就逐个源整包重下。
+ * 域名解析并发问几个 DoH 服务器(哪个先答用哪个),系统 DNS 兜底;同一个域名解析出多个 IP 时按 TCP 连接耗时选最快的。
+ * 注意:访问 GitHub 用自己的 OkHttp 客户端(系统信任的证书);访问自己的服务器用应用的客户端(只信任固定指纹的自签名证书)。
  */
 object AppUpdater {
     const val REPO = "ack528/MediaHub"
@@ -53,20 +69,37 @@ object AppUpdater {
         "https://gh.llkk.cc/", "https://ghm.078465.xyz/", "https://ghfile.geekertao.top/", "https://wget.la/",
     )
 
-    /** 设置里指定的优先下载源(空 = 自动:按最近一次探测的延迟排序)。由 AppContainer 在设置变化时更新。 */
+    /** 设置里指定的优先下载源(空 = 自动:按实测速度)。由 AppContainer 在设置变化时更新。 */
     @Volatile var preferred: String = ""
 
     /** 镜像前缀 → 最近一次探测的首字节耗时(毫秒);-1 = 探测不通。 */
     val latency = ConcurrentHashMap<String, Long>()
 
-    class Release(val tag: String, val version: String, val notes: String, val apkUrl: String, val sumUrl: String?, val size: Long)
+    private const val UA = "LocalBrowse-Updater"
+    private const val CHUNK = 512 * 1024L
+    private const val PROBE = 256 * 1024L
+
+    /** 自己的服务器上缓存好的安装包。 */
+    class ServerSrc(val url: String, val version: String, val sha: String, val ready: Boolean, val progress: Int = 0)
+
+    /**
+     * 一次发布。[sha] 检查时已经拿到的 SHA-256(从 SHA256SUMS.txt);[server] 不为空 = 版本信息来自自己的服务器。
+     */
+    class Release(
+        val tag: String, val version: String, val notes: String, val apkUrl: String, val sumUrl: String?, val size: Long,
+        val sha: String? = null, val server: ServerSrc? = null,
+    )
 
     @Serializable private class GhAsset(val name: String = "", @SerialName("browser_download_url") val url: String = "", val size: Long = 0)
-    @Serializable private class GhRelease(@SerialName("tag_name") val tag: String = "", val body: String? = null, val assets: List<GhAsset> = emptyList())
+    @Serializable private class GhRelease(@SerialName("tag_name") val tag: String = "", val body: String? = null, val assets: List<GhAsset> = emptyList(), val sums: String? = null)
 
     private val client by lazy {
-        OkHttpClient.Builder().dns(UpdateDns).connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
+        OkHttpClient.Builder().dns(UpdateDns).connectTimeout(8, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).build()
     }
+    /** 检查更新、取 SHA256SUMS 这类小请求:一次最多 15 秒。 */
+    private val checkClient by lazy { client.newBuilder().callTimeout(15, TimeUnit.SECONDS).build() }
+    /** 下载测速:一个源最多 7 秒。 */
+    private val probeClient by lazy { client.newBuilder().callTimeout(7, TimeUnit.SECONDS).build() }
     private val apkName = Regex("""^LocalBrowse-(\d+(?:\.\d+){1,3})\.apk$""")
 
     /** a > b 返回正数,相等 0,小于负数("2.10" > "2.9")。 */
@@ -104,105 +137,182 @@ object AppUpdater {
         return out.distinct()
     }
 
-    private fun get(url: String): String {
-        val req = Request.Builder().url(url).header("User-Agent", "LocalBrowse-Updater").header("Accept", "application/vnd.github+json").build()
-        client.newCall(req).execute().use { r ->
+    /** OkHttp 的异步调用包成可取消的挂起函数:协程取消时连接也立刻断开(同时发很多个请求、只用最快那个时,其余的要马上停)。 */
+    private suspend fun Call.awaitResp(): Response = suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation { cancel() }
+        enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) { if (cont.isActive) cont.resumeWithException(e) }
+            override fun onResponse(call: Call, response: Response) { if (cont.isActive) cont.resume(response) else response.close() }
+        })
+    }
+
+    private suspend fun getText(url: String, accept: String? = null): String {
+        val b = Request.Builder().url(url).header("User-Agent", UA)
+        if (accept != null) b.header("Accept", accept)
+        return checkClient.newCall(b.build()).awaitResp().use { r ->
             if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
-            return r.body.string()
+            r.body.string()
         }
     }
 
-    /** 依次尝试候选地址,返回第一个成功的内容(用于 SHA256SUMS.txt 这类小文件)。 */
-    private fun getAny(url: String): String {
-        var last: Exception? = null
-        for (u in candidates(url)) {
-            try { return get(u) } catch (e: Exception) { last = e; AppLog.w("update", "取 $u 失败,换下一个", e) }
-        }
-        throw last ?: IOException("没有可用的地址")
-    }
+    /** SHA256SUMS.txt 的内容是不是真的(每行 64 位十六进制 + 文件名;镜像的拦截页 / 错误页是 HTML)。 */
+    private fun validSums(text: String): Boolean =
+        text.lineSequence().any { l -> val f = l.trim().split(Regex("\\s+")); f.size >= 2 && f[0].length == 64 && f[0].all { it in "0123456789abcdefABCDEF" } }
 
     /**
-     * 不走 GitHub API(匿名每小时 60 次,手机网络共用出口 IP 时容易被限流返回 403):github.com/<repo>/releases/latest 会 302 到 .../releases/tag/<tag>,
-     * 再取这个 tag 下的 SHA256SUMS.txt,里面每行 "<sha256>  <文件名>" 就是这次发布的全部资源。没有更新说明。prefix 为镜像前缀(空 = 直连)。
+     * 不走 GitHub API(匿名每小时 60 次,共用出口 IP 时容易被限流):取 releases/latest/download/SHA256SUMS.txt,
+     * 每行 "<sha256>  <文件名>" 就是这次发布的全部资源。prefix 为镜像前缀(空 = 直连)。没有更新说明。
      */
-    private fun viaRedirect(prefix: String): GhRelease {
-        val noRedirect = client.newBuilder().followRedirects(false).build()
-        val loc = noRedirect.newCall(Request.Builder().url("${prefix}https://github.com/$REPO/releases/latest").head().build()).execute().use { it.header("Location") }
-            ?: throw IOException("没有取到最新发布的标签")
-        val tag = loc.substringAfter("/releases/tag/", "")
-        if (tag.isEmpty()) throw IOException("没有取到最新发布的标签")
-        val base = "https://github.com/$REPO/releases/download/$tag/"
-        val sums = get(prefix + base + "SHA256SUMS.txt")
+    private suspend fun viaSums(prefix: String): GhRelease {
+        val base = "https://github.com/$REPO/releases/latest/download/"
+        val sums = getText(prefix + base + "SHA256SUMS.txt")
+        if (!validSums(sums)) throw IOException("返回的不是 SHA256SUMS.txt")
         val assets = mutableListOf(GhAsset("SHA256SUMS.txt", base + "SHA256SUMS.txt", 0))
         for (line in sums.lineSequence()) {
             val f = line.trim().split(Regex("\\s+"))
             if (f.size >= 2) { val n = f.last().removePrefix("*"); assets += GhAsset(n, base + n, 0) }
         }
-        return GhRelease(tag, null, assets)
-    }
-
-    /** 最新发布:API → 直连跳转 → 各镜像跳转。发布里没有 APK 返回 null。 */
-    suspend fun latest(): Release? = withContext(Dispatchers.IO) {
-        val r = try {
-            AppJson.decodeFromString<GhRelease>(get("https://api.github.com/repos/$REPO/releases/latest"))
-        } catch (e: Exception) {
-            AppLog.i("update", "GitHub API 不可用(${e.message}),改用 releases/latest 跳转")
-            var rel: GhRelease? = null
-            for (p in listOf("") + sortedMirrors()) {
-                try { rel = viaRedirect(if (p.isEmpty() || p.endsWith("/")) p else "$p/"); break } catch (ex: Exception) { AppLog.w("update", "跳转 $p 失败", ex) }
-            }
-            rel ?: throw e
-        }
-        var apk: GhAsset? = null
-        var ver = ""
-        for (a in r.assets) apkName.find(a.name)?.let { apk = a; ver = it.groupValues[1] }
-        val a = apk ?: return@withContext null
-        Release(r.tag, ver, r.body.orEmpty().trim().take(1500), a.url, r.assets.firstOrNull { it.name == "SHA256SUMS.txt" }?.url, a.size)
+        return GhRelease("latest", null, assets, sums)
     }
 
     /**
-     * 同时对所有候选地址发 1 字节的 Range 请求,谁先返回 200 / 206 就用谁;全部失败返回第一个(下面按顺序回退)。
+     * 最新发布。[server] 问自己的服务器(返回 null = 服务器不知道 / 不支持);它和 GitHub 同时开始,服务器知道就用服务器的。
+     * 发布里没有 APK 返回 null。
      */
-    private suspend fun race(urls: List<String>): String = coroutineScope {
-        val ch = Channel<String?>(urls.size)
-        val jobs = urls.map { u ->
-            launch(Dispatchers.IO) {
-                val ok = try {
-                    withTimeoutOrNull(8_000) {
-                        client.newCall(Request.Builder().url(u).header("Range", "bytes=0-0").header("User-Agent", "LocalBrowse-Updater").build())
-                            .execute().use { r: Response -> r.isSuccessful || r.code == 206 }
-                    } == true
-                } catch (e: Exception) { false }
-                ch.send(if (ok) u else null)
-            }
+    suspend fun latest(server: (suspend () -> Release?)? = null): Release? = coroutineScope {
+        val gh = async { runCatching { latestGithub() } }
+        val sv = server?.let { s ->
+            runCatching { withTimeoutOrNull(16_000) { s() } }.onFailure { AppLog.i("update", "服务器不能提供更新(${it.message}),改用 GitHub") }.getOrNull()
         }
-        var winner: String? = null
-        repeat(urls.size) {
-            if (winner == null) ch.receive()?.let { winner = it; jobs.forEach { j -> j.cancel() } }
+        if (sv != null) {
+            gh.cancel()
+            AppLog.i("update", "最新版本 ${sv.version}(来自服务器,${if (sv.server?.ready == true) "已缓存好" else "服务器还在下载"})")
+            return@coroutineScope sv
         }
-        winner ?: urls.first()
+        gh.await().getOrThrow()
     }
 
-    /** 下载并校验,返回本地文件。onProgress(已下载, 总大小)在 IO 线程调用。 */
-    suspend fun download(ctx: Context, rel: Release, onProgress: (Long, Long) -> Unit): File = withContext(Dispatchers.IO) {
-        val sumUrl = rel.sumUrl ?: throw IOException("发布里没有 SHA256SUMS.txt,无法校验,已放弃")
+    /** GitHub API、直连和每个镜像同时问,谁先拿到用谁;API 的结果带更新说明,跳转 / 镜像先到时再给 API 最多 2 秒。 */
+    private suspend fun latestGithub(): Release? = coroutineScope {
+        val tasks = buildList<Pair<Boolean, suspend () -> GhRelease>> {
+            add(true to suspend { AppJson.decodeFromString<GhRelease>(getText("https://api.github.com/repos/$REPO/releases/latest", "application/vnd.github+json")) })
+            add(false to suspend { viaSums("") })
+            sortedMirrors().forEach { m -> add(false to suspend { viaSums(m) }) }
+        }
+        val ch = Channel<Pair<Boolean, GhRelease?>>(Channel.UNLIMITED)
+        val t0 = System.nanoTime()
+        val jobs = tasks.mapIndexed { i, (api, t) ->
+            launch(Dispatchers.IO) {
+                val r = try { t() } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                    AppLog.i("update", "检查更新:${if (api) "GitHub API" else if (i == 1) "直连" else sortedMirrors().getOrNull(i - 2)} 失败(${e.javaClass.simpleName}: ${e.message?.take(60)})"); null
+                }
+                ch.send(api to r)
+            }
+        }
+        var got: GhRelease? = null
+        var apiDone = false
+        withTimeoutOrNull(25_000) {
+            var left = tasks.size
+            while (left > 0) {
+                val x = if (got == null) ch.receive() else (if (apiDone) null else withTimeoutOrNull(2_000) { ch.receive() }) ?: break
+                left--
+                if (x.first) apiDone = true
+                val r = x.second
+                if (r != null && r.assets.any { apkName.matches(it.name) }) {
+                    if (x.first) { got = r; break }
+                    if (got == null) got = r
+                    if (apiDone) break
+                } else if (got != null && apiDone) break
+            }
+        }
+        jobs.forEach { it.cancel() }
+        val r = got ?: throw IOException("直连 GitHub 和 ${MIRRORS.size} 个镜像都连不上(可以在下面的「下载源与 DNS」里测一下)")
+        AppLog.i("update", "检查更新用时 ${(System.nanoTime() - t0) / 1_000_000}ms(${if (r.body != null) "GitHub API" else "SHA256SUMS"})")
+        var apk: GhAsset? = null
+        var ver = ""
+        for (a in r.assets) apkName.find(a.name)?.let { apk = a; ver = it.groupValues[1] }
+        val a = apk ?: return@coroutineScope null
+        val sha = r.sums?.let { sumFor(it, a.name) }
+        Release(r.tag, ver, r.body.orEmpty().trim().take(1500), a.url, r.assets.firstOrNull { it.name == "SHA256SUMS.txt" }?.url, a.size, sha)
+    }
+
+    private fun sumFor(sums: String, name: String): String? = sums.lineSequence().map { it.trim().split(Regex("\\s+")) }
+        .firstOrNull { it.size >= 2 && it.last().removePrefix("*").equals(name, true) }?.first()?.lowercase()?.takeIf { it.length == 64 }
+
+    /** SHA256SUMS.txt 里这个文件的校验和:直连和镜像同时取,第一个有效的就用。 */
+    private suspend fun wantSum(sumUrl: String, name: String): String = coroutineScope {
+        val ch = Channel<String?>(Channel.UNLIMITED)
+        val urls = candidates(sumUrl)
+        val jobs = urls.map { u -> launch(Dispatchers.IO) { ch.send(runCatching { getText(u) }.getOrNull()?.takeIf { validSums(it) }?.let { sumFor(it, name) }) } }
+        var want: String? = null
+        withTimeoutOrNull(20_000) { repeat(urls.size) { if (want == null) want = ch.receive() } }
+        jobs.forEach { it.cancel() }
+        want ?: throw IOException("取不到 SHA256SUMS.txt 里 $name 的校验和")
+    }
+
+    /**
+     * 下载并校验,返回本地文件。onProgress(已下载, 总大小)在 IO 线程调用。
+     * [serverHttp] 访问自己服务器的客户端;[recheck] 再问一次服务器(检查时服务器还没下好,点下载时可能已经好了)。
+     */
+    suspend fun download(
+        ctx: Context, rel: Release, serverHttp: OkHttpClient? = null, recheck: (suspend () -> ServerSrc?)? = null, onProgress: (Long, Long) -> Unit,
+    ): File = withContext(Dispatchers.IO) {
         val name = "LocalBrowse-${rel.version}.apk"
-        val want = getAny(sumUrl).lineSequence().map { it.trim().split(Regex("\\s+")) }
-            .firstOrNull { it.size >= 2 && it.last().removePrefix("*").equals(name, true) }?.first()?.lowercase()
-            ?: throw IOException("SHA256SUMS.txt 里没有 $name")
         val dir = File(ctx.cacheDir, "updates").apply { deleteRecursively(); mkdirs() }
         val out = File(dir, name)
-        // 直连 + 镜像同时探测,先响应的先下(设置里指定了优先源就先用它);失败再按顺序试其余的。hash 不对就删掉、换下一个。
+        val s0 = rel.server
+        if (s0 != null && serverHttp != null) {
+            val s = if (s0.ready) s0 else runCatching { recheck?.invoke() }.getOrNull() ?: s0
+            if (s.ready && s.version == rel.version && s.sha.length == 64) {
+                try {
+                    val t0 = System.nanoTime()
+                    AppLog.i("update", "从服务器下载 ${s.url}")
+                    fetchTo(serverHttp.newBuilder().readTimeout(30, TimeUnit.SECONDS).build(), s.url, out, s.sha.lowercase(), onProgress)
+                    AppLog.i("update", "已从服务器下载并校验 ${out.name}(${out.length() / 1024} KB,${(System.nanoTime() - t0) / 1_000_000}ms)")
+                    return@withContext out
+                } catch (e: Exception) {
+                    AppLog.w("update", "从服务器下载失败,改用 GitHub", e)
+                    out.delete()
+                }
+            } else AppLog.i("update", "服务器还没下载好 v${rel.version}(${s.progress}%),这次从 GitHub 下载")
+        }
+        val sumUrl = rel.sumUrl ?: throw IOException("发布里没有 SHA256SUMS.txt,无法校验,已放弃")
+        val want = rel.sha ?: wantSum(sumUrl, name)
+        githubDownload(rel, out, want, onProgress)
+        out
+    }
+
+    /** 测速结果:bps = 测速那 256KB 的实际速度;ranged = 支持分段;total = 文件总大小(-1 = 不知道)。 */
+    private class Probe(val url: String, val bps: Double, val ranged: Boolean, val total: Long)
+
+    private fun host(u: String) = u.removePrefix("https://").substringBefore('/')
+
+    private suspend fun githubDownload(rel: Release, out: File, want: String, onProgress: (Long, Long) -> Unit) {
         val urls = candidates(rel.apkUrl)
-        val first = if (preferred.isNotEmpty()) urls.first() else race(urls)
-        val ordered = listOf(first) + urls
+        val probes = measure(if (preferred.isNotEmpty()) urls.take(1) else urls)
+        AppLog.i("update", "下载测速:" + probes.joinToString { "${host(it.url)} ${(it.bps / 1024).toInt()}KB/s${if (it.ranged) "" else "(不支持分段)"}" }.ifEmpty { "全部不通" })
+        val total = probes.firstOrNull { it.total > 0 }?.total ?: rel.size
+        val best = probes.firstOrNull()?.bps ?: 0.0
+        // 速度不到最快那个 15% 的源不参与分段(它拿到的那段会拖住整体)
+        val ranged = probes.filter { it.ranged && it.total == total && it.bps >= best * 0.15 }
+        if (ranged.isNotEmpty() && total > 2 * CHUNK) {
+            try {
+                val t0 = System.nanoTime()
+                multiFetch(ranged.take(4), total, out, want, onProgress)
+                AppLog.i("update", "分段下载完成并校验 ${out.name}(${total / 1024} KB,${(System.nanoTime() - t0) / 1_000_000}ms,源 ${ranged.take(4).joinToString { host(it.url) }})")
+                return
+            } catch (e: Exception) {
+                AppLog.w("update", "分段下载失败,改成逐个源整包下载", e)
+                out.delete()
+            }
+        }
         var lastErr: Exception? = null
-        for (u in ordered.distinct()) {
+        for (u in (probes.map { it.url } + urls).distinct()) {
             try {
                 AppLog.i("update", "下载 $u")
-                fetchTo(u, out, want, onProgress)
+                fetchTo(client, u, out, want, onProgress)
                 AppLog.i("update", "已下载并校验 ${out.name}(${out.length() / 1024} KB)")
-                return@withContext out
+                return
             } catch (e: Exception) {
                 lastErr = e
                 AppLog.w("update", "下载失败,换下一个地址: $u", e)
@@ -212,26 +322,139 @@ object AppUpdater {
         throw lastErr ?: IOException("下载失败")
     }
 
-    private fun fetchTo(url: String, out: File, want: String, onProgress: (Long, Long) -> Unit) {
-        val md = MessageDigest.getInstance("SHA-256")
-        client.newBuilder().readTimeout(120, TimeUnit.SECONDS).build()
-            .newCall(Request.Builder().url(url).header("User-Agent", "LocalBrowse-Updater").build()).execute().use { r ->
-                if (!r.isSuccessful) throw IOException("下载失败 HTTP ${r.code}")
-                val total = r.body.contentLength()
-                var done = 0L
-                r.body.byteStream().use { ins ->
-                    out.outputStream().use { os ->
-                        val buf = ByteArray(128 * 1024)
-                        while (true) {
-                            val n = ins.read(buf)
-                            if (n < 0) break
-                            os.write(buf, 0, n); md.update(buf, 0, n)
-                            done += n
-                            onProgress(done, total)
+    /** 所有源同时下载开头 256KB,按实际速度从快到慢排;返回的不是 APK(开头不是 "PK")的源不算。 */
+    private suspend fun measure(urls: List<String>): List<Probe> = coroutineScope {
+        urls.map { u ->
+            async(Dispatchers.IO) {
+                try {
+                    val t0 = System.nanoTime()
+                    probeClient.newCall(Request.Builder().url(u).header("Range", "bytes=0-${PROBE - 1}").header("User-Agent", UA).build()).awaitResp().use { r ->
+                        if (r.code != 200 && r.code != 206) return@async null
+                        val src = r.body.source()
+                        val buf = ByteArray(32 * 1024)
+                        var n = 0L
+                        var magic = ""
+                        while (n < PROBE) {
+                            val k = src.read(buf, 0, minOf(buf.size.toLong(), PROBE - n).toInt())
+                            if (k < 0) break
+                            if (n == 0L && k >= 2) magic = String(buf, 0, 2, Charsets.ISO_8859_1)
+                            n += k
+                        }
+                        if (magic != "PK") return@async null
+                        val sec = (System.nanoTime() - t0) / 1e9
+                        val total = if (r.code == 206) r.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull() ?: -1L else r.body.contentLength()
+                        Probe(u, n / sec.coerceAtLeast(0.001), r.code == 206, total)
+                    }
+                } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+            }
+        }.awaitAll().filterNotNull().sortedByDescending { it.bps }
+    }
+
+    /**
+     * 多连接分段下载:4 个连接分到 [srcs] 上(源少就同一个源开多个连接 —— 镜像通常是按连接限速的),每段 512KB 从队列里取;
+     * 一段失败(15 秒没数据 / 连接断开)放回队列给别的连接,同一个连接失败两次就不再用;队列空了以后空闲的连接去抢还没下完的段。
+     */
+    private suspend fun multiFetch(srcs: List<Probe>, total: Long, out: File, want: String, onProgress: (Long, Long) -> Unit) = withContext(Dispatchers.IO) {
+        val n = ((total + CHUNK - 1) / CHUNK).toInt()
+        val prog = AtomicLongArray(n)
+        val done = AtomicIntegerArray(n)
+        val running = IntArray(n)
+        val lock = Any()
+        val pending = ArrayDeque((0 until n).toList())
+        fun next(): Int? = synchronized(lock) {
+            pending.removeFirstOrNull()?.also { running[it]++ }
+                ?: (0 until n).filter { done.get(it) == 0 && running[it] == 1 }.minByOrNull { prog.get(it) }?.also { running[it]++ }
+        }
+        var lastReport = 0L
+        fun report() {
+            val now = System.nanoTime()
+            if (now - lastReport < 200_000_000L) return
+            lastReport = now
+            var s = 0L
+            for (i in 0 until n) s += prog.get(i)
+            onProgress(minOf(s, total), total)
+        }
+        RandomAccessFile(out, "rw").use { raf ->
+            raf.setLength(total)
+            val fc = raf.channel
+            coroutineScope {
+                (0 until 4).map { srcs[it % srcs.size] }.forEach { src ->
+                    launch(Dispatchers.IO) {
+                        var fails = 0
+                        while (isActive) {
+                            val i = next() ?: break
+                            val a = i * CHUNK
+                            val b = minOf(total, a + CHUNK) - 1
+                            val ok = try { fetchRange(src.url, a, b, fc, i, prog, done, ::report); true } catch (e: Exception) {
+                                AppLog.i("update", "第 ${i + 1}/$n 段从 ${host(src.url)} 下载失败(${e.javaClass.simpleName}),换个连接重下"); false
+                            }
+                            synchronized(lock) {
+                                running[i]--
+                                if (ok) done.set(i, 1)
+                                else if (done.get(i) == 0 && running[i] == 0) { prog.set(i, 0); pending.addFirst(i) }
+                            }
+                            if (!ok && ++fails >= 2) break
                         }
                     }
                 }
             }
+        }
+        if ((0 until n).any { done.get(it) == 0 }) throw IOException("分段下载没有完成(几个源都失败了)")
+        onProgress(total, total)
+        val got = sha256(out)
+        if (got != want) throw IOException("校验和不一致(下载损坏或被篡改)")
+    }
+
+    private fun fetchRange(url: String, a: Long, b: Long, fc: java.nio.channels.FileChannel, i: Int, prog: AtomicLongArray, done: AtomicIntegerArray, report: () -> Unit) {
+        client.newCall(Request.Builder().url(url).header("Range", "bytes=$a-$b").header("User-Agent", UA).build()).execute().use { r ->
+            if (r.code != 206) throw IOException("不支持分段(HTTP ${r.code})")
+            val cr = r.header("Content-Range").orEmpty()
+            if (!cr.startsWith("bytes $a-")) throw IOException("分段位置不对:$cr")
+            val src = r.body.source()
+            val buf = ByteArray(64 * 1024)
+            val len = b - a + 1
+            var off = 0L
+            while (off < len) {
+                if (done.get(i) == 1) return // 别的连接已经下完这一段(最后几段同时抢的时候)
+                val k = src.read(buf, 0, minOf(buf.size.toLong(), len - off).toInt())
+                if (k < 0) throw IOException("连接提前断开")
+                val bb = java.nio.ByteBuffer.wrap(buf, 0, k)
+                var pos = a + off
+                while (bb.hasRemaining()) pos += fc.write(bb, pos)
+                off += k
+                val o = off
+                prog.accumulateAndGet(i, o) { x, y -> maxOf(x, y) }
+                report()
+            }
+        }
+    }
+
+    private fun sha256(f: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        f.inputStream().use { ins -> val buf = ByteArray(256 * 1024); while (true) { val n = ins.read(buf); if (n < 0) break; md.update(buf, 0, n) } }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /** 整包下载一个地址(15 秒没有数据就算失败,换下一个)。 */
+    private fun fetchTo(http: OkHttpClient, url: String, out: File, want: String, onProgress: (Long, Long) -> Unit) {
+        val md = MessageDigest.getInstance("SHA-256")
+        http.newCall(Request.Builder().url(url).header("User-Agent", UA).build()).execute().use { r ->
+            if (!r.isSuccessful) throw IOException("下载失败 HTTP ${r.code}")
+            val total = r.body.contentLength()
+            var done = 0L
+            r.body.byteStream().use { ins ->
+                out.outputStream().use { os ->
+                    val buf = ByteArray(128 * 1024)
+                    while (true) {
+                        val n = ins.read(buf)
+                        if (n < 0) break
+                        os.write(buf, 0, n); md.update(buf, 0, n)
+                        done += n
+                        onProgress(done, total)
+                    }
+                }
+            }
+        }
         val got = md.digest().joinToString("") { "%02x".format(it) }
         if (got != want) throw IOException("校验和不一致(下载损坏或被篡改)")
     }

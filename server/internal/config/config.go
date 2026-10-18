@@ -81,6 +81,7 @@ type Config struct {
 		IntervalMinutes int      `json:"intervalMinutes"` // 检查间隔,默认 10 分钟
 		Mirror          string   `json:"mirror"`          // 自己指定的加速前缀(排在内置镜像前面),默认空
 		Mirrors         []string `json:"mirrors"`         // 内置的 GitHub 镜像前缀;直连更慢或失败时自动使用。可在配置里改:[] = 不用镜像
+		CacheApp        bool     `json:"cacheApp"`        // 检查更新时顺便把最新的手机端安装包下载到数据目录,手机从服务器下载(局域网速度),默认开启
 	} `json:"update"`
 	// Priority:有客户端连接时给传输和播放让路(见 internal/governor)。默认开启。
 	Priority struct {
@@ -184,6 +185,7 @@ func Default() *Config {
 	c.Update.Enabled = true
 	c.Update.Repo = "ack528/MediaHub"
 	c.Update.IntervalMinutes = 10
+	c.Update.CacheApp = true
 	c.Update.Mirrors = append([]string(nil), DefaultUpdateMirrors...)
 	c.Scan.SkipWithinHours = 12
 	c.Scan.IntervalHours = 24

@@ -133,54 +133,6 @@ fun AppRoot(c: AppContainer) {
     }
 }
 
-/**
- * 聊天 / 搜索页里的"查看器":根页面 → 查看器,缩略图 ↔ 全屏用共享元素(容器转换),
- * 返回手势 = 整页缩小淡出(见 [navMotion] 的预测性规格)。根页面本身是 Activity 的内容,不做进入动画(Activity 转场由系统负责)。
- */
-@Composable
-fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit) -> Unit) {
-    val nav = rememberNavController()
-    DisposableEffect(nav) {
-        val l = androidx.navigation.NavController.OnDestinationChangedListener { _, d, args ->
-            AppLog.i("nav", "进入 ${d.route}" + (args?.getString("index")?.let { " index=$it" } ?: ""))
-        }
-        nav.addOnDestinationChangedListener(l)
-        onDispose { nav.removeOnDestinationChangedListener(l) }
-    }
-    val style = LocalSettings.current.motion
-    val density = androidx.compose.ui.platform.LocalDensity.current.density
-    val m = remember(style, density) { navMotion(style, density) }
-    @OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
-    SharedTransitionLayout {
-        CompositionLocalProvider(LocalSharedTransition provides this) {
-            NavHost(
-                nav, startDestination = "root",
-                enterTransition = m.enter, exitTransition = m.exit, popEnterTransition = m.popEnter, popExitTransition = m.popExit,
-                predictivePopEnterTransition = m.predEnter, predictivePopExitTransition = m.predExit,
-            ) {
-                composable(
-                    "root",
-                    // 进入查看器时根页面原地不动(由共享元素负责过渡),返回时同样
-                    exitTransition = { if (targetState.destination.route?.startsWith("viewer") == true) ExitTransition.KeepUntilTransitionsFinished else m.exit(this) },
-                    popEnterTransition = { if (initialState.destination.route?.startsWith("viewer") == true) EnterTransition.None else m.popEnter(this) },
-                ) {
-                    NavScreen(this) { root { index -> nav.navigate("viewer/$index") } }
-                }
-                composable(
-                    "viewer/{index}",
-                    enterTransition = { viewerIn(style) }, exitTransition = { ExitTransition.None },
-                    popEnterTransition = { EnterTransition.None }, popExitTransition = { viewerOut(style) },
-                ) { entry ->
-                    val index = entry.arguments?.getString("index")?.toIntOrNull() ?: 0
-                    NavScreen(this, Color.Black) {
-                        ViewerScreen(c, startIndex = index, onBack = { nav.popBackStack() })
-                    }
-                }
-            }
-        }
-    }
-}
-
 /** 上次崩溃过:启动时提示,可直接分享 / 复制日志。 */
 @Composable
 private fun CrashNotice() {
@@ -204,36 +156,4 @@ private fun CrashNotice() {
         confirmButton = { TextButton(onClick = { runCatching { AppLog.share(ctx) }; AppLog.dismissPendingCrash(); crash = null }) { Text("分享日志") } },
         dismissButton = { TextButton(onClick = { AppLog.dismissPendingCrash(); crash = null }) { Text("忽略") } },
     )
-}
-
-/** 每个页面铺一层不透明背景,滑动过渡时才不会透出下面的页面。 */
-@Composable
-internal fun NavScreen(scope: AnimatedVisibilityScope, bg: Color? = null, content: @Composable () -> Unit) {
-    CompositionLocalProvider(LocalNavScope provides scope) {
-        val style = LocalSettings.current.motion
-        // 系统风格:离开的页面逐渐变成圆角(系统预测性返回的做法),手势预览时进入的页面带一层随进度变亮的遮罩;
-        // 整屏滑动风格:左边缘投影。
-        val corner by scope.transition.animateDp(transitionSpec = { tween(300, easing = LinearEasing) }, label = "corner") {
-            if (it == EnterExitState.PostExit && style == Motion.SLIDE) 28.dp else 0.dp
-        }
-        val scrim by scope.transition.animateFloat(transitionSpec = { tween(450, easing = LinearEasing) }, label = "scrim") {
-            if (it == EnterExitState.PreEnter && style == Motion.SLIDE && scope.transition.isSeeking) 0.22f else 0f
-        }
-        Box(
-            Modifier.fillMaxSize()
-                .drawWithContent {
-                    drawContent()
-                    if (style == Motion.PARALLAX) {
-                        val w = 14.dp.toPx()
-                        drawRect(
-                            Brush.horizontalGradient(listOf(Color.Transparent, Color(0x2E000000)), startX = -w, endX = 0f),
-                            topLeft = Offset(-w, 0f), size = Size(w, size.height),
-                        )
-                    }
-                }
-                .graphicsLayer { if (corner > 0.dp) { shape = RoundedCornerShape(corner); clip = true } }
-                .background(bg ?: MaterialTheme.colorScheme.background)
-                .drawWithContent { drawContent(); if (scrim > 0f) drawRect(Color.Black.copy(alpha = scrim)) },
-        ) { content() }
-    }
 }
