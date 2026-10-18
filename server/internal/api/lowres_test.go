@@ -41,8 +41,8 @@ func TestThumbLowresKeepsSize(t *testing.T) {
 	}
 }
 
-// 后台为图片生成 ThumbHash 占位数据:JPEG 缩小解码得到 32 像素长边的小图,编码后约 25 字节写进库里,随列表返回(base64)。
-func TestWarmPhotoThumbhash(t *testing.T) {
+// 生成缩略图时顺手把 ThumbHash 占位数据算好写进库里(同一次解码多一路输出),随列表返回(base64)。
+func TestThumbRenderStoresThumbhash(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	dir := filepath.Join(e.lib, "占位")
@@ -50,18 +50,18 @@ func TestWarmPhotoThumbhash(t *testing.T) {
 	writePattern(t, filepath.Join(dir, "ph.jpg"), 1200, 800, 0, 90)
 	rescanAll(t, e)
 	id := idByName(t, e, "ph.jpg")
-	var root int64
-	_ = e.srv.DB.QueryRow(`SELECT root_id FROM media WHERE id=?`, id).Scan(&root)
-	n := e.srv.Poster.WarmPhotos(t.Context(), root)
-	if n < 1 {
-		t.Fatalf("应该处理至少 1 张图片: %d", n)
-	}
 	var th []byte
+	_ = e.srv.DB.QueryRow(`SELECT thumbhash FROM media WHERE id=?`, id).Scan(&th)
+	if len(th) != 0 {
+		t.Fatalf("生成缩略图之前不该有 ThumbHash(不再后台整库补算)")
+	}
+	if resp, _ := e.do("GET", "/api/v1/media/"+itoa(int(id))+"/render?w=240&fmt=webp&v=1", nil, nil); resp.StatusCode != 200 {
+		t.Fatalf("thumb = %d", resp.StatusCode)
+	}
 	_ = e.srv.DB.QueryRow(`SELECT thumbhash FROM media WHERE id=?`, id).Scan(&th)
 	if len(th) < 10 || len(th) > 40 {
 		t.Fatalf("ThumbHash 长度不对: %d", len(th))
 	}
-	// 随列表接口返回
 	var h histResp
 	var dl struct{ Dialogs []Dialog }
 	e.getJSON("/api/v1/dialogs", &dl)

@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -307,85 +306,4 @@ func MediaPath(db *sql.DB, mediaID int64) (string, error) {
 		return "", errors.New("path escapes root")
 	}
 	return winfs.Path(full), nil // 名称带结尾空格 / 点或超长的路径要用扩展路径,否则 Win32 会改写它
-}
-
-// WarmPhotos 后台为某个根下尚无 ThumbHash 的图片生成占位图数据(32 像素长边的 RGBA → 约 25 字节):
-// 手机滑动网格时,缩略图还没到之前先显示模糊的色块轮廓(和 Telegram 一样)。JPEG 用"缩小解码"(-lowres),一张约十几毫秒。
-// 一次只做一张、低优先级、走 governor 让路;失败的置空串,不再重试。返回这次处理的张数。
-func (p *Poster) WarmPhotos(ctx context.Context, rootID int64) int {
-	done := 0
-	for {
-		rows, err := p.db.Query(`SELECT id, ext, COALESCE(w,0), COALESCE(h,0) FROM media
-			WHERE root_id=? AND type=0 AND thumbhash IS NULL AND w>0 AND h>0 AND state=1 ORDER BY id LIMIT 200`, rootID)
-		if err != nil {
-			return done
-		}
-		type row struct {
-			id   int64
-			ext  string
-			w, h int
-		}
-		var rs []row
-		for rows.Next() {
-			var r row
-			if rows.Scan(&r.id, &r.ext, &r.w, &r.h) == nil {
-				rs = append(rs, r)
-			}
-		}
-		rows.Close()
-		if len(rs) == 0 {
-			return done
-		}
-		for _, r := range rs {
-			if ctx.Err() != nil {
-				return done
-			}
-			t0 := time.Now()
-			p.photoHash(ctx, r.id, strings.ToLower(r.ext), r.w, r.h)
-			done++
-			worked := time.Since(t0)
-			if p.Throttle != nil {
-				p.Throttle(ctx, worked)
-			}
-			// 占空比 ≤ 50%:每处理一张至少歇和干活一样长的时间(几十万张的大库第一次补算要几个小时,别让它一直占着 CPU 和进程创建的开销)
-			select {
-			case <-ctx.Done():
-				return done
-			case <-time.After(max(worked, 40*time.Millisecond)):
-			}
-		}
-	}
-}
-
-func (p *Poster) photoHash(ctx context.Context, id int64, ext string, w, h int) {
-	fail := func() { _, _ = p.db.Exec(`UPDATE media SET thumbhash=x'' WHERE id=? AND thumbhash IS NULL`, id) }
-	if !nativeThumbExts[ext] {
-		fail()
-		return
-	}
-	src, err := MediaPath(p.db, id)
-	if err != nil {
-		fail()
-		return
-	}
-	tw, th := 32, 18
-	if w >= h {
-		tw, th = 32, max(1, (32*h+w/2)/w)
-	} else {
-		tw, th = max(1, (32*w+h/2)/h), 32
-	}
-	args := []string{"-hide_banner", "-v", "error"}
-	if k := lowresFor(max(w, h), 32); k > 0 && (ext == "jpg" || ext == "jpeg" || ext == "jpe" || ext == "jfif") {
-		args = append(args, "-lowres", strconv.Itoa(k))
-	}
-	args = append(args, "-i", src, "-frames:v", "1", "-vf", fmt.Sprintf("scale=%d:%d:flags=area,format=rgba", tw, th), "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1")
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	cmd := proc.Background(exec.CommandContext(cctx, p.cfg.Tools.FFmpeg, args...))
-	out, err := cmd.Output()
-	if err != nil || len(out) != tw*th*4 {
-		fail()
-		return
-	}
-	_, _ = p.db.Exec(`UPDATE media SET thumbhash=? WHERE id=? AND thumbhash IS NULL`, thumbhash.Encode(tw, th, out), id)
 }

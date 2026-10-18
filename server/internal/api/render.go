@@ -20,6 +20,7 @@ import (
 	"mediahub/internal/config"
 	"mediahub/internal/governor"
 	"mediahub/internal/proc"
+	"mediahub/internal/thumbhash"
 	"mediahub/internal/winfs"
 )
 
@@ -159,7 +160,8 @@ func (rd *Renderer) RenderThumb(ctx context.Context, mediaID int64, w int) (stri
 	var rootID int64
 	var ext string
 	var typ, sw, sh int
-	if err := rd.db.QueryRow(`SELECT root_id, ext, type, COALESCE(w,0), COALESCE(h,0) FROM media WHERE id=?`, mediaID).Scan(&rootID, &ext, &typ, &sw, &sh); err != nil {
+	var needHash bool
+	if err := rd.db.QueryRow(`SELECT root_id, ext, type, COALESCE(w,0), COALESCE(h,0), thumbhash IS NULL FROM media WHERE id=?`, mediaID).Scan(&rootID, &ext, &typ, &sw, &sh, &needHash); err != nil {
 		return "", err
 	}
 	ext = strings.ToLower(ext)
@@ -191,14 +193,36 @@ func (rd *Renderer) RenderThumb(ctx context.Context, mediaID int64, w int) (stri
 		if k := lowresFor(max(sw, sh), w); k > 0 && (ext == "jpg" || ext == "jpeg" || ext == "jpe" || ext == "jfif") {
 			args = append(args, "-lowres", strconv.Itoa(k))
 		}
+		// ThumbHash(滑动时的模糊占位图)顺手算:同一次解码多输出一路 32 像素的 RGBA,几乎不花时间。
+		// 以前是后台把整个图库逐张补算(每张一个 ffmpeg 进程,几十万张,9 个盘同时跑),概览里什么都没干 CPU 却很高。
+		tw, th := 0, 0
+		if needHash && sw > 0 && sh > 0 {
+			if sw >= sh {
+				tw, th = 32, max(1, (32*sh+sw/2)/sw)
+			} else {
+				tw, th = max(1, (32*sw+sh/2)/sh), 32
+			}
+		}
 		// compression_level 2(原来 4):编码更快,体积差不到 2%
-		args = append(args, "-i", src, "-frames:v", "1", "-vf", vf, "-c:v", "libwebp", "-quality", "76", "-compression_level", "2", "-f", "webp", tmp)
+		webpOpts := []string{"-c:v", "libwebp", "-quality", "76", "-compression_level", "2", "-f", "webp", tmp}
+		if tw > 0 {
+			fc := "[0:v:0]split=2[a][b];[a]" + vf + "[pa];[b]scale=" + strconv.Itoa(tw) + ":" + strconv.Itoa(th) + ":flags=area,format=rgba[pb]"
+			args = append(args, "-i", src, "-filter_complex", fc, "-map", "[pa]", "-frames:v", "1")
+			args = append(args, webpOpts...)
+			args = append(args, "-map", "[pb]", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1")
+		} else {
+			args = append(args, "-i", src, "-frames:v", "1", "-vf", vf)
+			args = append(args, webpOpts...)
+		}
 		cmd := exec.CommandContext(cctx, rd.cfg.Tools.FFmpeg, args...)
 		proc.Hide(cmd)
-		var errb bytes.Buffer
-		cmd.Stderr = &errb
+		var errb, outb bytes.Buffer
+		cmd.Stderr, cmd.Stdout = &errb, &outb
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("ffmpeg 生成缩略图失败: %v: %s", err, strings.TrimSpace(errb.String()))
+		}
+		if tw > 0 && outb.Len() == tw*th*4 {
+			_, _ = rd.db.Exec(`UPDATE media SET thumbhash=? WHERE id=? AND thumbhash IS NULL`, thumbhash.Encode(tw, th, outb.Bytes()), mediaID)
 		}
 		if st, err := os.Stat(tmp); err != nil || st.Size() == 0 {
 			return errors.New("ffmpeg 没有输出缩略图")

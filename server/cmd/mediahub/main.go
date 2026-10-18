@@ -46,7 +46,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "3.2.3"
+const version = "3.2.4"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -328,9 +328,6 @@ func run(args []string, serve bool) int {
 		if n := poster.Warm(ctx, r.ID); n > 0 {
 			log.Info("封面预热完成", "root", r.Path, "videos", n)
 		}
-		if n := poster.WarmPhotos(ctx, r.ID); n > 0 { // 图片的模糊占位图数据(滑动时先显示色块轮廓)
-			log.Info("图片占位图预热完成", "root", r.Path, "photos", n)
-		}
 		return true
 	}
 	// 升级后 / 启动后先把对话计数整理一遍,手机马上看到正确的列表(不用等扫描)
@@ -369,7 +366,6 @@ func run(args []string, serve bool) int {
 						if n := poster.Warm(ctx, rr.ID); n > 0 {
 							log.Debug("增量索引后封面预热", "root", rr.Path, "videos", n)
 						}
-						poster.WarmPhotos(ctx, rr.ID)
 					},
 				})
 				if err != nil {
