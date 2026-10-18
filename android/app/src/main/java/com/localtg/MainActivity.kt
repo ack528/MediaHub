@@ -63,21 +63,9 @@ abstract class TgActivity : ComponentActivity() {
      * 页面转场按 设置 → 外观 → 动画 → 界面动画:Android 14+ 用 overrideActivityTransition(和预测性返回兼容),
      * 更早的系统在打开 / 关闭时 overridePendingTransition。系统风格不覆盖。
      */
-    /** 从列表的某一行点进来的(见 Motion.expandFrom):那一行中心在屏幕高度上的比例;-1 = 不是。 */
-    private val expandCenter: Float get() = intent?.getFloatExtra(com.localtg.ui.EXTRA_EXPAND, -1f) ?: -1f
-
     private fun applyTransitions() {
         if (!customTransitions) return
         val style = container.settings.value.motion
-        val ex = expandCenter
-        if (ex >= 0f && style != com.localtg.ui.Motion.OFF) {
-            // 打开的展开动画由打开它的页面通过 ActivityOptions 指定;返回时朝那一行收起
-            if (android.os.Build.VERSION.SDK_INT >= 34) {
-                clearOverrideActivityTransition(OVERRIDE_TRANSITION_OPEN)
-                overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, com.localtg.R.anim.slide_out_right)
-            }
-            return
-        }
         val a = com.localtg.ui.Motion.activityAnims(style)
         if (android.os.Build.VERSION.SDK_INT >= 34) {
             if (a == null) {
@@ -97,9 +85,7 @@ abstract class TgActivity : ComponentActivity() {
         if (customTransitions && android.os.Build.VERSION.SDK_INT >= 34) applyTransitions()
         super.finish()
         if (customTransitions && android.os.Build.VERSION.SDK_INT < 34) {
-            val style = container.settings.value.motion
-            if (expandCenter >= 0f && style != com.localtg.ui.Motion.OFF) @Suppress("DEPRECATION") overridePendingTransition(0, com.localtg.R.anim.slide_out_right)
-            else com.localtg.ui.Motion.activityAnims(style)?.let { @Suppress("DEPRECATION") overridePendingTransition(it[2], it[3]) }
+            com.localtg.ui.Motion.activityAnims(container.settings.value.motion)?.let { @Suppress("DEPRECATION") overridePendingTransition(it[2], it[3]) }
         }
     }
 
@@ -157,8 +143,12 @@ abstract class TgActivity : ComponentActivity() {
             "light" -> false
             else -> (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
         }
-        window.setBackgroundDrawable(ColorDrawable(if (night) 0xFF18222D.toInt() else 0xFFFFFFFF.toInt()))
+        window.setBackgroundDrawable(windowBackground(night))
     }
+
+    /** 窗口底色:系统转场开头、Compose 第一帧画出来之前看到的就是它,要和页面一致,否则会闪一下。 */
+    protected open fun windowBackground(night: Boolean): android.graphics.drawable.Drawable =
+        ColorDrawable(if (night) 0xFF18222D.toInt() else 0xFFFFFFFF.toInt())
 
     /** 二级页面(聊天 / 设置 / 搜索):登录失效(401)或退出登录后,自己关掉,露出下面的登录页。 */
     @Composable
@@ -183,6 +173,14 @@ class MainActivity : TgActivity() {
 
 /** 聊天页(一个文件夹):返回 = finish(),动画由系统负责;里面的"缩略图 ↔ 查看器"用共享元素。 */
 class ChatActivity : TgActivity() {
+    /** 消息页的底是聊天背景(渐变 / 纯色),窗口底色跟它一样:进入的系统转场里不先闪一下白。 */
+    override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable {
+        val top = if (night) 0xFF0E1621.toInt() else 0xFFD8DDB0.toInt()
+        val bottom = if (night) 0xFF0B121A.toInt() else 0xFF8AB488.toInt()
+        return if (container.settings.value.chatBackground == "plain") ColorDrawable(top)
+        else android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(top, bottom))
+    }
+
     @Composable
     override fun Content() {
         FinishWhenLoggedOut()
@@ -196,11 +194,8 @@ class ChatActivity : TgActivity() {
     companion object {
         private const val EXTRA_ID = "id"
         private const val EXTRA_TITLE = "title"
-        fun start(ctx: Context, dialogId: String, title: String? = null, expand: com.localtg.ui.Expand? = null) {
-            val i = Intent(ctx, ChatActivity::class.java).putExtra(EXTRA_ID, dialogId).putExtra(EXTRA_TITLE, title)
-            if (expand != null) i.putExtra(com.localtg.ui.EXTRA_EXPAND, expand.center)
-            ctx.startActivity(i, expand?.options)
-        }
+        fun start(ctx: Context, dialogId: String, title: String? = null) =
+            ctx.startActivity(Intent(ctx, ChatActivity::class.java).putExtra(EXTRA_ID, dialogId).putExtra(EXTRA_TITLE, title))
     }
 }
 
@@ -234,11 +229,8 @@ class RandomActivity : TgActivity() {
         private const val EXTRA_ROOTS = "roots"
 
         /** label / roots 都为 null = 随机所有盘符;否则只随机这个盘符(roots 是该盘符下根目录的 id,逗号分隔)。 */
-        fun start(ctx: Context, label: String? = null, roots: String? = null, expand: com.localtg.ui.Expand? = null) {
-            val i = Intent(ctx, RandomActivity::class.java).putExtra(EXTRA_LABEL, label).putExtra(EXTRA_ROOTS, roots)
-            if (expand != null) i.putExtra(com.localtg.ui.EXTRA_EXPAND, expand.center)
-            ctx.startActivity(i, expand?.options)
-        }
+        fun start(ctx: Context, label: String? = null, roots: String? = null) =
+            ctx.startActivity(Intent(ctx, RandomActivity::class.java).putExtra(EXTRA_LABEL, label).putExtra(EXTRA_ROOTS, roots))
     }
 }
 

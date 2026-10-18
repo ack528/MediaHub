@@ -110,46 +110,16 @@ fun AppRoot(c: AppContainer) {
             enterTransition = { fadeThroughIn(style) }, exitTransition = { fadeThroughOut(style) },
             popEnterTransition = { fadeThroughIn(style) }, popExitTransition = { fadeThroughOut(style) },
         ) {
-            // 从文件夹(消息页)返回时:消息页正常向右滑出,下面的主界面从 0.92 放大回 1(B 站 / 小红书返回时背景的景深);
-            // 缩小时四周的空隙用临近色(顶部是顶栏色,下面是列表底色)
-            val backdrop = remember { BackdropSpec() }
-            val returnScale = remember { androidx.compose.animation.core.Animatable(1f) }
-            val left = remember { booleanArrayOf(false) } // 刚打开了文件夹 / 随机页
-            val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-            val scope = androidx.compose.runtime.rememberCoroutineScope()
-            DisposableEffect(lifecycle, style) {
-                val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
-                    if (style == Motion.OFF) return@LifecycleEventObserver
-                    when (e) {
-                        androidx.lifecycle.Lifecycle.Event.ON_STOP -> if (left[0]) scope.launch { returnScale.snapTo(0.92f) } // 看不见的时候先缩好
-                        androidx.lifecycle.Lifecycle.Event.ON_RESUME -> if (left[0]) {
-                            left[0] = false
-                            scope.launch { returnScale.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = 1.2f, stiffness = 420f, visibilityThreshold = 0.001f)) }
-                        }
-                        else -> {}
-                    }
-                }
-                lifecycle.addObserver(obs)
-                onDispose { lifecycle.removeObserver(obs) }
-            }
-            val pageBg = MaterialTheme.colorScheme.background
-            Box(
-                Modifier.fillMaxSize()
-                    .drawBehind { drawBackdrop(backdrop, returnScale.value, pageBg) }
-                    .graphicsLayer { val s = returnScale.value; scaleX = s; scaleY = s }
-                    .background(pageBg),
-            ) {
-              CompositionLocalProvider(LocalBackdrop provides backdrop) {
-                val view = androidx.compose.ui.platform.LocalView.current
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                // 进入 / 返回消息页都是系统的 Activity 转场(和 3.0 一样,跟随「界面动画」设置),不做展开和缩放
                 DialogsScreen(
                     c,
-                    onOpen = { d, r -> left[0] = true; ChatActivity.start(ctx, d.id, d.title, expandFrom(view, r, style)) }, // 从点的那一行展开
+                    onOpen = { d, _ -> ChatActivity.start(ctx, d.id, d.title) },
                     onSettings = { SettingsActivity.start(ctx, null) },
                     onSearch = { SearchActivity.start(ctx) },
-                    onRandom = { label, roots, r -> left[0] = true; RandomActivity.start(ctx, label, roots, expandFrom(view, r, style)) },
+                    onRandom = { label, roots, _ -> RandomActivity.start(ctx, label, roots) },
                     onSection = { SettingsActivity.start(ctx, it) },
                 )
-              }
             }
         }
     }

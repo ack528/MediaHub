@@ -50,21 +50,6 @@ object Motion {
     }
 }
 
-/** 点进文件夹:从点的那一行展开。[center] = 那一行的中心在屏幕高度上的比例(返回时朝它收起)。 */
-class Expand(val options: android.os.Bundle, val center: Float)
-
-const val EXTRA_EXPAND = "expandCenter"
-
-/**
- * 打开文件夹(小红书 / B 站式):新页面从点的那一行开始,裁剪区域一路展开到全屏(系统的 clip reveal 转场,内容不变形)。
- * [r] 是那一行在 [view] 里的位置。「界面动画」选「关闭动画」时返回 null(普通打开)。
- */
-fun expandFrom(view: android.view.View, r: androidx.compose.ui.geometry.Rect?, style: String): Expand? {
-    if (r == null || style == Motion.OFF || r.width < 1f || r.height < 1f || view.height <= 0) return null
-    val o = android.app.ActivityOptions.makeClipRevealAnimation(view, r.left.toInt(), r.top.toInt(), r.width.toInt(), r.height.toInt())
-    return Expand(o.toBundle(), (r.center.y / view.height).coerceIn(0f, 1f))
-}
-
 /** fade through:用于互不相关的页面(登录 ↔ 列表)。 */
 fun fadeThroughIn(style: String): EnterTransition = when (style) {
     Motion.OFF -> EnterTransition.None
