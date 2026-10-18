@@ -40,6 +40,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.unit.Constraints
 import kotlin.math.roundToInt
 import androidx.compose.ui.graphics.Color
@@ -113,7 +114,8 @@ class DialogsViewModel(private val c: AppContainer) : ViewModel() {
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun DialogsScreen(
-    c: AppContainer, onOpen: (Dialog) -> Unit, onSettings: () -> Unit, onSearch: () -> Unit, onRandom: (String?, String?) -> Unit, onSection: (String) -> Unit,
+    c: AppContainer, onOpen: (Dialog, androidx.compose.ui.geometry.Rect?) -> Unit, onSettings: () -> Unit, onSearch: () -> Unit,
+    onRandom: (String?, String?, androidx.compose.ui.geometry.Rect?) -> Unit, onSection: (String) -> Unit,
 ) {
     val activeId by c.session.activeId.collectAsState()
     // 每台服务器一个独立的列表(切换服务器 = 换一个 ViewModel,重新加载)
@@ -144,9 +146,6 @@ fun DialogsScreen(
     val pageCount = if (labels.size > 1) labels.size + 1 else 1
     val pager = androidx.compose.foundation.pager.rememberPagerState { pageCount }
     LaunchedEffect(activeId) { pager.scrollToPage(0) } // 换服务器回到"全部"
-    // 第一屏的行依次弹出(springEnter):只在列表第一次出现的前 0.9 秒内组合的行才入场,之后滚动进来的行不再动
-    var intro by remember { mutableStateOf(true) }
-    LaunchedEffect(all.isNotEmpty()) { if (all.isNotEmpty()) { kotlinx.coroutines.delay(900); intro = false } }
     fun listFor(t: Int): List<Dialog> {
         val inTab = if (t == 0 || t > labels.size) all else all.filter { it.rootLabel == labels[t - 1] }
         val f = if (st.dialogMinCount > 0) inTab.filter { it.mediaCount >= st.dialogMinCount } else inTab
@@ -206,10 +205,10 @@ fun DialogsScreen(
                             // 置顶的特殊群组:「全部」页随机所有盘符,各盘符页只随机这个盘符
                             item(key = "random") {
                                 val lb = if (page == 0 || page > labels.size) null else labels[page - 1]
-                                RandomRow(lb) { onRandom(lb, lb?.let { l -> all.filter { it.rootLabel == l }.map { it.rootId }.distinct().joinToString(",") }) }
+                                RandomRow(lb) { r -> onRandom(lb, lb?.let { l -> all.filter { it.rootLabel == l }.map { it.rootId }.distinct().joinToString(",") }, r) }
                             }
                             itemsIndexed(shown, key = { _, d -> d.id }) { i, d ->
-                                Box(Modifier.animateItem().springEnter(i + 1, intro)) { DialogRow(d, c, onClick = { c.chatSiblings = shown.map { it.id }; onOpen(d) }) }
+                                Box(Modifier.animateItem()) { DialogRow(d, c, onClick = { r -> c.chatSiblings = shown.map { it.id }; onOpen(d, r) }) }
                             }
                         }
                     }
@@ -367,9 +366,10 @@ private fun Modifier.reportPlacement(report: (Float, Float) -> Unit): Modifier =
 
 /** 置顶的特殊群组「随机浏览」:不是文件夹,点开后从整个库里随机取图片 / 视频。样式和普通群的行一致。 */
 @Composable
-private fun RandomRow(label: String?, onClick: () -> Unit) {
+private fun RandomRow(label: String?, onClick: (androidx.compose.ui.geometry.Rect?) -> Unit) {
     val tg = LocalTg.current
-    Box(Modifier.fillMaxWidth().height(70.dp).hapticClickable(onClick = onClick)) {
+    val at = remember { arrayOfNulls<androidx.compose.ui.geometry.Rect>(1) } // 这一行的位置:点进去时从这里展开
+    Box(Modifier.fillMaxWidth().height(70.dp).onGloballyPositioned { at[0] = it.boundsInRoot() }.hapticClickable { onClick(at[0]) }) {
         Box(
             Modifier.padding(start = 11.dp, top = 9.dp).size(52.dp).clip(RoundedCornerShape(26.dp)).background(tg.accent),
             contentAlignment = Alignment.Center,
@@ -382,9 +382,10 @@ private fun RandomRow(label: String?, onClick: () -> Unit) {
 }
 
 @Composable
-private fun DialogRow(d: Dialog, c: AppContainer, onClick: () -> Unit) {
+private fun DialogRow(d: Dialog, c: AppContainer, onClick: (androidx.compose.ui.geometry.Rect?) -> Unit) {
     val tg = LocalTg.current
-    Box(Modifier.fillMaxWidth().height(70.dp).hapticClickable(onClick = onClick)) {
+    val at = remember { arrayOfNulls<androidx.compose.ui.geometry.Rect>(1) } // 这一行的位置:点进去时从这里展开
+    Box(Modifier.fillMaxWidth().height(70.dp).onGloballyPositioned { at[0] = it.boundsInRoot() }.hapticClickable { onClick(at[0]) }) {
         Box(Modifier.padding(start = 11.dp, top = 9.dp)) {
             TgAvatar(d.title, d.id, 52.dp, d.last?.toItem(d.id), c.api)
         }

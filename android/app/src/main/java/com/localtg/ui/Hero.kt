@@ -2,6 +2,7 @@ package com.localtg.ui
 
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -29,7 +30,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
@@ -83,6 +86,8 @@ class HeroState {
     val k = Animatable(0f)
     /** 覆盖层整体透明度(交接给查看器时淡掉)。 */
     val overlay = Animatable(1f)
+    /** 查看器已经把这一项画出来了(图片 / 视频封面,见 [LocalViewerReady]):覆盖层这时才淡掉。 */
+    var ready by mutableStateOf(false)
     /** 返回手势的进度 0 ~ 1(查看器跟着缩小)。 */
     var drag by mutableFloatStateOf(0f)
 
@@ -90,6 +95,15 @@ class HeroState {
 }
 
 val LocalHero = staticCompositionLocalOf<HeroState?> { null }
+
+/** 查看器里的图片 / 视频页第一次把内容(哪怕是占位的缩略图)画出来时调用,参数是条目 id。 */
+val LocalViewerReady = staticCompositionLocalOf<(String) -> Unit> { {} }
+
+/**
+ * 打开动画已经交接完(覆盖层没了):顶栏 / 底栏这时才淡入滑入。以前查看器一组合控制栏就直接出现,
+ * 覆盖层淡掉的那一下标题栏"啪"地冒出来(图片有时还没画出来,是一片黑),看起来就是闪一下。
+ */
+val LocalViewerShown = compositionLocalOf { true }
 
 /** 查看器正在退出(返回手势进行中):视频页据此把画面截成位图盖上(SurfaceView 不会跟着缩放)。 */
 val LocalViewerExiting = compositionLocalOf { false }
@@ -105,8 +119,21 @@ fun Modifier.heroSource(id: String, corner: Dp = 0.dp): Modifier {
         .graphicsLayer { alpha = if (h.hiddenId == id) 0f else 1f }
 }
 
+/**
+ * 查看器每一页最底下垫的那张缩略图(和打开动画画的是同一张,从内存缓存同步取出,第一帧就有):
+ * 大图 / 视频封面还在加载、解码时,看到的是它而不是一片黑,打开动画交接时也就不会暗一下再亮起来。
+ * 返回有没有垫上(内存里没有这张缩略图时为 false)。
+ */
+@Composable
+fun ViewerBaseThumb(item: Item, modifier: Modifier = Modifier): Boolean {
+    val ctx = LocalContext.current
+    val img = remember(item.id) { memoryThumb(ctx, item) } ?: return false
+    androidx.compose.foundation.Image(img, null, modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit, filterQuality = FilterQuality.Medium)
+    return true
+}
+
 /** 内存缓存里这一项的缩略图(列表里刚显示过,一般都在)。 */
-private fun memoryThumb(ctx: android.content.Context, item: Item): ImageBitmap? = runCatching {
+internal fun memoryThumb(ctx: android.content.Context, item: Item): ImageBitmap? = runCatching {
     val img = coil3.SingletonImageLoader.get(ctx).memoryCache?.get(coil3.memory.MemoryCache.Key(thumbKey(item)))?.image
     (img as? coil3.BitmapImage)?.bitmap?.asImageBitmap()
 }.getOrNull()
@@ -119,6 +146,20 @@ private fun fitRect(item: Item, img: ImageBitmap?, w: Float, h: Float): Rect {
     if (a > w / h) { rw = w; rh = w / a } else { rh = h; rw = h * a }
     return Rect(Offset((w - rw) / 2, (h - rh) / 2), Size(rw, rh))
 }
+
+/**
+ * 逐帧量 B 站 / 小红书得到的曲线(docs/14):
+ *  - 打开:前 1/3 时间走一半、约 300ms 走完 95%、没有过冲 → 弹簧 ζ≈1.2、刚度≈ω²≈420;
+ *  - 返回:约 25ms 延迟后慢起步、中段近似匀速、再减速,约 340ms → cubic-bezier(0.30, 0.40, 0.40, 0.95)。
+ */
+private val OPEN_SPRING = spring<Float>(dampingRatio = 1.2f, stiffness = 420f, visibilityThreshold = 0.001f)
+private val CLOSE_TWEEN = tween<Float>(durationMillis = 340, delayMillis = 25, easing = CubicBezierEasing(0.30f, 0.40f, 0.40f, 0.95f))
+
+/** 背景(列表)随容器进度 p 退后:缩小到 0.905(以屏幕中心为中心)、模糊到屏宽的 2.6%、压暗 0.235。返回时反着来,都跟着 p 走。 */
+private const val BG_SCALE = 0.095f
+private const val BG_BLUR = 0.026f
+private const val BG_DIM = 0.235f
+private const val CORNER_DP = 22f
 
 private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 private fun lerp(a: Rect, b: Rect, t: Float) = Rect(lerp(a.left, b.left, t), lerp(a.top, b.top, t), lerp(a.right, b.right, t), lerp(a.bottom, b.bottom, t))
@@ -162,15 +203,17 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             hero.from = src?.first ?: Rect(hero.to.center - Offset(hero.to.width * 0.3f, hero.to.height * 0.3f), Size(hero.to.width * 0.6f, hero.to.height * 0.6f))
             hero.cornerFrom = src?.second ?: 0f
             hero.hiddenId = item.id
+            hero.ready = false
             hero.phase = HeroState.Phase.Opening
             index = i
             scope.launch {
                 hero.overlay.snapTo(1f)
                 hero.k.snapTo(0f)
-                hero.k.animateTo(1f, spring(dampingRatio = 0.86f, stiffness = 420f, visibilityThreshold = 0.001f))
-                // 查看器开始组合;覆盖层(和它第一帧一模一样的图)再盖两帧,等它真正画出来再淡掉
+                hero.k.animateTo(1f, OPEN_SPRING)
+                // 查看器开始组合;覆盖层(和它第一帧一样的图)一直盖着,等它报告"已经画出来了"(最多 0.7 秒),再多盖两帧后淡掉
                 hero.phase = HeroState.Phase.Handoff
-                withFrameNanos { }; withFrameNanos { }; withFrameNanos { }
+                kotlinx.coroutines.withTimeoutOrNull(450) { snapshotFlow { hero.ready }.first { it } }
+                withFrameNanos { }; withFrameNanos { }
                 hero.overlay.animateTo(0f, tween(140))
                 hero.phase = HeroState.Phase.Open
             }
@@ -201,13 +244,27 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             scope.launch {
                 hero.overlay.snapTo(1f)
                 hero.k.snapTo(1f)
-                if (dst != null) hero.k.animateTo(0f, spring(dampingRatio = 0.9f, stiffness = 480f, visibilityThreshold = 0.001f))
+                if (dst != null) hero.k.animateTo(0f, CLOSE_TWEEN)
                 else { launch { hero.overlay.animateTo(0f, tween(200)) }; hero.k.animateTo(0f, tween(220)) }
                 finishClose()
             }
         }
 
-        CompositionLocalProvider(LocalHero provides hero) { root(open) }
+        // 背景:打开时列表跟着容器进度 p 退后(缩小 + 模糊 + 压暗),返回时恢复;空闲时 p=0,不留图层效果
+        val pageBg = com.localtg.ui.tg.LocalTg.current.bg
+        Box(
+            Modifier.fillMaxSize().background(pageBg).graphicsLayer {
+                val p = hero.k.value.coerceIn(0f, 1f)
+                if (p > 0f) {
+                    val s = 1f - BG_SCALE * p
+                    scaleX = s; scaleY = s
+                    if (android.os.Build.VERSION.SDK_INT >= 31) {
+                        val sigma = BG_BLUR * size.width * (p / 0.8f).coerceAtMost(1f)
+                        if (sigma > 0.5f) renderEffect = BlurEffect(sigma, sigma, TileMode.Clamp)
+                    }
+                }
+            },
+        ) { CompositionLocalProvider(LocalHero provides hero) { root(open) } }
 
         if (index >= 0) {
             // 返回手势:查看器跟着手指缩小(露出下面的列表),松手缩回列表,取消弹回
@@ -223,7 +280,12 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
             }
             val showViewer = hero.phase == HeroState.Phase.Handoff || hero.phase == HeroState.Phase.Open
             if (showViewer) {
-                CompositionLocalProvider(LocalHero provides null, LocalViewerExiting provides (hero.drag > 0f)) {
+                val cur = current
+                CompositionLocalProvider(
+                    LocalHero provides null, LocalViewerExiting provides (hero.drag > 0f),
+                    LocalViewerShown provides (hero.phase == HeroState.Phase.Open),
+                    LocalViewerReady provides { id -> if (id == cur?.id) hero.ready = true },
+                ) {
                     Box(
                         Modifier.fillMaxSize().graphicsLayer {
                             val s = 1f - 0.15f * hero.drag
@@ -249,11 +311,14 @@ private fun HeroOverlay(h: HeroState) {
     Canvas(Modifier.fillMaxSize()) {
         val k = h.k.value
         val a = h.overlay.value
-        val scrim = if (h.phase == HeroState.Phase.Closing) k.coerceIn(0f, 1f) * (1f - 0.4f * h.drag.coerceAtMost(1f)) else k.coerceIn(0f, 1f)
+        val p = k.coerceIn(0f, 1f)
+        // 打开快结束时(p>0.8)把遮罩过渡到全黑,和黑底的查看器无缝交接;之前一直是 0.235 的压暗
+        val scrim = BG_DIM * p + (1f - BG_DIM) * ((p - 0.8f) / 0.2f).coerceIn(0f, 1f).let { it * it }
         drawRect(Color.Black, alpha = scrim * a)
         val r = lerp(h.from, h.to, k)
         if (r.width <= 1f || r.height <= 1f) return@Canvas
-        val corner = lerp(h.cornerFrom, 0f, k.coerceIn(0f, 1f))
+        val base = lerp(h.cornerFrom, CORNER_DP * density, (p / 0.25f).coerceAtMost(1f))
+        val corner = base * (1f - ((p - 0.88f) / 0.12f).coerceIn(0f, 1f))
         val path = Path().apply { addRoundRect(RoundRect(r, CornerRadius(corner))) }
         clipPath(path) {
             val img = h.image

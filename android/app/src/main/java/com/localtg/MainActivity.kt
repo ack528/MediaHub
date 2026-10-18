@@ -63,9 +63,22 @@ abstract class TgActivity : ComponentActivity() {
      * 页面转场按 设置 → 外观 → 动画 → 界面动画:Android 14+ 用 overrideActivityTransition(和预测性返回兼容),
      * 更早的系统在打开 / 关闭时 overridePendingTransition。系统风格不覆盖。
      */
+    /** 从列表的某一行点进来的(见 Motion.expandFrom):那一行中心在屏幕高度上的比例;-1 = 不是。 */
+    private val expandCenter: Float get() = intent?.getFloatExtra(com.localtg.ui.EXTRA_EXPAND, -1f) ?: -1f
+
     private fun applyTransitions() {
         if (!customTransitions) return
-        val a = com.localtg.ui.Motion.activityAnims(container.settings.value.motion)
+        val style = container.settings.value.motion
+        val ex = expandCenter
+        if (ex >= 0f && style != com.localtg.ui.Motion.OFF) {
+            // 打开的展开动画由打开它的页面通过 ActivityOptions 指定;返回时朝那一行收起
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
+                clearOverrideActivityTransition(OVERRIDE_TRANSITION_OPEN)
+                overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, com.localtg.ui.collapseAnim(ex))
+            }
+            return
+        }
+        val a = com.localtg.ui.Motion.activityAnims(style)
         if (android.os.Build.VERSION.SDK_INT >= 34) {
             if (a == null) {
                 clearOverrideActivityTransition(OVERRIDE_TRANSITION_OPEN)
@@ -84,7 +97,9 @@ abstract class TgActivity : ComponentActivity() {
         if (customTransitions && android.os.Build.VERSION.SDK_INT >= 34) applyTransitions()
         super.finish()
         if (customTransitions && android.os.Build.VERSION.SDK_INT < 34) {
-            com.localtg.ui.Motion.activityAnims(container.settings.value.motion)?.let { @Suppress("DEPRECATION") overridePendingTransition(it[2], it[3]) }
+            val style = container.settings.value.motion
+            if (expandCenter >= 0f && style != com.localtg.ui.Motion.OFF) @Suppress("DEPRECATION") overridePendingTransition(0, com.localtg.ui.collapseAnim(expandCenter))
+            else com.localtg.ui.Motion.activityAnims(style)?.let { @Suppress("DEPRECATION") overridePendingTransition(it[2], it[3]) }
         }
     }
 
@@ -181,8 +196,11 @@ class ChatActivity : TgActivity() {
     companion object {
         private const val EXTRA_ID = "id"
         private const val EXTRA_TITLE = "title"
-        fun start(ctx: Context, dialogId: String, title: String? = null) =
-            ctx.startActivity(Intent(ctx, ChatActivity::class.java).putExtra(EXTRA_ID, dialogId).putExtra(EXTRA_TITLE, title))
+        fun start(ctx: Context, dialogId: String, title: String? = null, expand: com.localtg.ui.Expand? = null) {
+            val i = Intent(ctx, ChatActivity::class.java).putExtra(EXTRA_ID, dialogId).putExtra(EXTRA_TITLE, title)
+            if (expand != null) i.putExtra(com.localtg.ui.EXTRA_EXPAND, expand.center)
+            ctx.startActivity(i, expand?.options)
+        }
     }
 }
 
@@ -216,8 +234,11 @@ class RandomActivity : TgActivity() {
         private const val EXTRA_ROOTS = "roots"
 
         /** label / roots 都为 null = 随机所有盘符;否则只随机这个盘符(roots 是该盘符下根目录的 id,逗号分隔)。 */
-        fun start(ctx: Context, label: String? = null, roots: String? = null) =
-            ctx.startActivity(Intent(ctx, RandomActivity::class.java).putExtra(EXTRA_LABEL, label).putExtra(EXTRA_ROOTS, roots))
+        fun start(ctx: Context, label: String? = null, roots: String? = null, expand: com.localtg.ui.Expand? = null) {
+            val i = Intent(ctx, RandomActivity::class.java).putExtra(EXTRA_LABEL, label).putExtra(EXTRA_ROOTS, roots)
+            if (expand != null) i.putExtra(com.localtg.ui.EXTRA_EXPAND, expand.center)
+            ctx.startActivity(i, expand?.options)
+        }
     }
 }
 

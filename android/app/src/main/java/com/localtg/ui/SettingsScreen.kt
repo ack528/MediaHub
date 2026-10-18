@@ -155,7 +155,7 @@ private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) ->
             "其它风格是应用自己的转场。打开图片 / 视频时都是从点的位置展开到全屏(选「关闭动画」时直接打开)",
     ) { u { copy(motion = it) } }
     SwitchRow(
-        "细节动效", "点按缩略图 / 按钮时轻轻缩小再弹回、文件夹列表第一屏依次弹出、盘符标签的下划线跟着手指滑动、登录页入场。" +
+        "细节动效", "点按缩略图 / 按钮时轻轻缩小再弹回、盘符标签的下划线跟着手指滑动、登录页入场。" +
             "只影响这些小动画,页面之间的转场看上面的「界面动画」;界面动画选关闭时这里也不生效",
         s.fineMotion,
     ) { u { copy(fineMotion = it) } }

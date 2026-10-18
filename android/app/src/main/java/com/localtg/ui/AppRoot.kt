@@ -109,12 +109,13 @@ fun AppRoot(c: AppContainer) {
             popEnterTransition = { fadeThroughIn(style) }, popExitTransition = { fadeThroughOut(style) },
         ) {
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                val view = androidx.compose.ui.platform.LocalView.current
                 DialogsScreen(
                     c,
-                    onOpen = { ChatActivity.start(ctx, it.id, it.title) },
+                    onOpen = { d, r -> ChatActivity.start(ctx, d.id, d.title, expandFrom(view, r, style)) }, // 从点的那一行展开
                     onSettings = { SettingsActivity.start(ctx, null) },
                     onSearch = { SearchActivity.start(ctx) },
-                    onRandom = { label, roots -> RandomActivity.start(ctx, label, roots) },
+                    onRandom = { label, roots, r -> RandomActivity.start(ctx, label, roots, expandFrom(view, r, style)) },
                     onSection = { SettingsActivity.start(ctx, it) },
                 )
             }

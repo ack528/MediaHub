@@ -172,7 +172,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
             var panel by remember { mutableStateOf("") } // 右上角菜单(和视频页同一套):"" 关闭 / main / info
             LaunchedEffect(cur.id) { panel = "" }
             AnimatedVisibility(
-                ui.chrome && !inPip, Modifier.align(Alignment.TopStart),
+                rememberChromeState(ui, ui.chrome && !inPip), Modifier.align(Alignment.TopStart),
                 enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
             ) {
                 Row(
@@ -189,7 +189,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
                 }
             }
             AnimatedVisibility(
-                ui.chrome && !inPip, Modifier.align(Alignment.BottomStart),
+                rememberChromeState(ui, ui.chrome && !inPip), Modifier.align(Alignment.BottomStart),
                 enter = fadeIn() + slideInVertically { it / 2 }, exit = fadeOut() + slideOutVertically { it / 2 },
             ) {
                 Row(
@@ -229,6 +229,18 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
     }
 }
 
+/**
+ * 顶栏 / 底栏的显示状态。打开查看器时先藏着,等打开动画交接完([LocalViewerShown])再淡入滑入;
+ * 之后翻页新出现的页面直接显示(不再每一页都滑一次)。
+ */
+@Composable
+internal fun rememberChromeState(ui: ViewerUi, visible: Boolean): androidx.compose.animation.core.MutableTransitionState<Boolean> {
+    val st = remember { androidx.compose.animation.core.MutableTransitionState(ui.chromeIntroDone) }
+    st.targetState = visible && LocalViewerShown.current
+    if (st.isIdle && st.currentState) ui.chromeIntroDone = true
+    return st
+}
+
 /** 顶栏上的圆形图标按钮(和视频页的控制按钮同尺寸)。 */
 @Composable
 private fun ViewerIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, onClick: () -> Unit) {
@@ -254,21 +266,30 @@ private fun photoInfoRows(item: Item): List<Pair<String, String>> = listOfNotNul
 
 @Composable
 private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean) {
+    val ready = LocalViewerReady.current
     if (!item.canShowNatively()) {
+        LaunchedEffect(item.id) { ready(item.id) }
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("暂不支持预览 ${item.ext.uppercase()} 格式\n(服务端转换将在后续版本提供)", color = Color.White)
         }
         return
     }
     val cfg = LocalSettings.current
+    val zs = me.saket.telephoto.zoomable.rememberZoomableImageState(
+        me.saket.telephoto.zoomable.rememberZoomableState(zoomSpec = me.saket.telephoto.zoomable.ZoomSpec(maxZoomFactor = cfg.maxZoom)),
+    )
+    // 占位的缩略图或原图画出来了:告诉打开动画可以交接了
+    // 最底下先垫上内存里的缩略图(第一帧就有,和打开动画同一张);大图显示出来以后就拿掉
+    val based = if (!zs.isImageDisplayed) ViewerBaseThumb(item) else false
+    // 垫图、占位的缩略图或原图画出来了:告诉打开动画可以交接了
+    val shown = based || zs.isImageDisplayed || zs.isPlaceholderDisplayed
+    LaunchedEffect(shown) { if (shown) ready(item.id) }
     ZoomableAsyncImage(
         model = ImageRequest.Builder(LocalContext.current).data(c.api.imageUrl(item, cfg.viewerImageWidth))
             .placeholderMemoryCacheKey(thumbKey(item)) // 先显示点开前的缩略图,不是一片黑
             .build(),
         contentDescription = item.name,
-        state = me.saket.telephoto.zoomable.rememberZoomableImageState(
-            me.saket.telephoto.zoomable.rememberZoomableState(zoomSpec = me.saket.telephoto.zoomable.ZoomSpec(maxZoomFactor = cfg.maxZoom)),
-        ),
+        state = zs,
         modifier = Modifier.fillMaxSize(),
         onClick = { ui.chrome = !ui.chrome },
     )

@@ -110,6 +110,8 @@ class ViewerUi {
     var autoRotated = false
     /** 睡眠定时:0 = 未设置,-1 = 当前视频播完后停止,>0 = elapsedRealtime 到点停止 */
     var sleepAt by mutableLongStateOf(0L)
+    /** 打开查看器时控制栏的入场已经播过了(之后翻页新出现的页面直接显示) */
+    var chromeIntroDone = false
 }
 
 /** 按设置给字幕上样式:大小、描边 / 阴影 / 黑底、离底部的距离。 */
@@ -689,8 +691,14 @@ fun VideoPage(
                     .size(with(d) { snapRect.width().toDp() }, with(d) { snapRect.height().toDp() }),
             )
         }
+        val ready = LocalViewerReady.current
+        LaunchedEffect(firstFrame) { if (firstFrame) ready(item.id) }
         if (!firstFrame) { // 封面先显示,首帧到达后消失
+            // 封面底下先垫内存里的缩略图(同步拿到):封面还在加载时不是黑的,打开动画可以马上交接
+            if (ViewerBaseThumb(item)) LaunchedEffect(item.id) { ready(item.id) }
             AsyncImage(
+                // 占位的缩略图 / 封面画出来了:告诉打开动画可以交接了
+                onState = { s -> if (s is coil3.compose.AsyncImagePainter.State.Success || (s is coil3.compose.AsyncImagePainter.State.Loading && s.painter != null)) ready(item.id) },
                 model = coil3.request.ImageRequest.Builder(ctx).data(c.api.posterUrl(item))
                     .placeholderMemoryCacheKey(thumbKey(item)) // 点开前的缩略图先顶上,封面解码好前不黑屏
                     .memoryCacheKey(thumbKey(item))
@@ -872,7 +880,7 @@ fun VideoPage(
 
         // ---------------- 顶栏(返回、标题、字幕(有才显示)、更多;其余选项都在「更多」的右上角浮层里)
         AnimatedVisibility(
-            showControls, Modifier.align(Alignment.TopStart),
+            rememberChromeState(ui, showControls), Modifier.align(Alignment.TopStart),
             enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
         ) {
             Row(
@@ -899,7 +907,7 @@ fun VideoPage(
 
         // ---------------- 底部(VLC:进度条 + 锁 / 上一个 / 快退 / 播放 / 快进 / 下一个 / 比例)
         AnimatedVisibility(
-            showControls, Modifier.align(Alignment.BottomStart),
+            rememberChromeState(ui, showControls), Modifier.align(Alignment.BottomStart),
             enter = fadeIn() + slideInVertically { it / 2 }, exit = fadeOut() + slideOutVertically { it / 2 },
         ) {
             Column(
