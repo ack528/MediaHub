@@ -1181,7 +1181,8 @@ func (s *Server) applyJobs(ids []int64, purge bool) applyResult {
 			continue
 		}
 		src := m.full()
-		if st, err := os.Stat(src); err != nil || st.Size() != j.Orig {
+		st0, err := os.Stat(src)
+		if err != nil || st0.Size() != j.Orig {
 			res.Failed = append(res.Failed, m.Name+":原文件已经变化,不能替换")
 			continue
 		}
@@ -1194,6 +1195,11 @@ func (s *Server) applyJobs(ids []int64, purge bool) applyResult {
 		stem := strings.TrimSuffix(m.Name, filepath.Ext(m.Name))
 		finalName := stem + ext
 		finalPath := filepath.Join(m.RootPath, m.DirRel, finalName)
+		// 压缩版沿用原文件的修改时间:列表按日期排序、手机端"默认打开最新的文件"和播放记录都靠它,
+		// 不然替换后它变成"最新"的文件,文件夹里的位置和播放记录就乱了
+		if err := os.Chtimes(winfs.Path(j.OutPath), st0.ModTime(), st0.ModTime()); err != nil {
+			s.Log.Warn("压缩版修改时间设置失败", "file", m.Name, "err", err)
+		}
 		if err := moveToTrash(m, batch, "压缩替换"); err != nil {
 			res.Failed = append(res.Failed, m.Name+":移入回收区失败:"+err.Error())
 			continue
