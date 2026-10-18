@@ -292,6 +292,14 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
         }
     }
 
+    /** 跳转到指定条目(文件夹内搜索选中的结果):以它为锚点重建列表并滚到那里。 */
+    fun jumpToItem(id: String) {
+        anchorId = id; anchorOffset = 0; pos = null; freshOpen = false
+        viewerOpenedId = id
+        reload.value += 1
+        persistSoon()
+    }
+
     /** 查看器翻到已加载内容的末尾时,用它继续取更多(沿用当前的排序 / 方向 / 类型)。 */
     fun moreLoader(): (suspend (String?, String?) -> Pair<List<Item>, String?>)? {
         val q = lastQuery ?: return null
@@ -382,6 +390,9 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
     val ready by vm.ready.collectAsState()
     var menu by remember { mutableStateOf(false) }
     var datePicker by remember { mutableStateOf(false) }
+    var searching by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    androidx.activity.compose.BackHandler(enabled = searching) { searching = false }
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     // 同步状态提示:服务端太旧不支持同步(只提示一次);这次恢复的记录来自另一台设备
@@ -432,7 +443,8 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
     Column(Modifier.fillMaxSize()) {
         // ---- 顶栏:返回 | 群头像 | 标题+副标题 | 右上角 网格/聊天 切换 | 更多 ----
         TgBar {
-            Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (searching) FolderSearchBar(searchQuery, { searchQuery = it }) { searching = false }
+            else Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
                 BarIcon(TgIcons.Back, "返回", onBack)
                 TgAvatar(dialog?.title ?: titleHint ?: "#", dialogId, 40.dp, dialog?.last?.toItem(dialogId), c.api)
                 Column(Modifier.weight(1f).padding(start = 10.dp)) {
@@ -446,6 +458,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                     }.orEmpty().ifEmpty { "$total 项" }
                     Text(sub, color = tg.barSub, fontSize = 13.sp, maxLines = 1)
                 }
+                BarIcon(TgIcons.Search, "搜索") { searchQuery = ""; searching = true }
                 // 右上角:聊天流 → 网格 → 瀑布流 → 聊天流 轮换(图标是下一个视图);切换时保持在当前这一条(强制重建 Pager,锚点才会生效)
                 val next = (mode + 1) % 3
                 BarIcon(when (next) { 1 -> TgIcons.Grid; 2 -> TgIcons.Feed; else -> TgIcons.Chat }, when (next) { 1 -> "网格视图"; 2 -> "瀑布流视图"; else -> "聊天视图" }) {
@@ -558,6 +571,10 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                     )
                     else ChatFeed(lazyItems, c.api, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest, sortKey == "taken", scrollTarget, onScrolled)
                 }
+            }
+            if (searching) FolderSearchPanel(c, dialogId, searchQuery, types.joinToString(",")) { item ->
+                searching = false
+                vm.jumpToItem(item.id)
             }
         }
     }

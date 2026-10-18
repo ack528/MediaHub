@@ -271,9 +271,10 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     }
 
     /** 全局按文件名搜索(types 如 "photo,video");cursor 是偏移量,可连续翻页。 */
-    suspend fun search(q: String, types: String, cursor: String?, limit: Int = 60): HistoryResp {
+    suspend fun search(q: String, types: String, cursor: String?, limit: Int = 60, dialog: String? = null): HistoryResp {
         val url = "$base/api/v1/search".toHttpUrl().newBuilder()
             .addQueryParameter("q", q).addQueryParameter("types", types).addQueryParameter("limit", limit.toString())
+        dialog?.let { url.addQueryParameter("dialog", it) }
         cursor?.let { url.addQueryParameter("cursor", it) }
         return call(Request.Builder().url(url.build()).build())
     }
