@@ -395,7 +395,17 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
     var searching by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var searchJumpGen by remember { mutableStateOf<Int?>(null) } // 选中了一条结果:列表重建定位好之前面板先留着,定位好再淡出
-    androidx.activity.compose.BackHandler(enabled = searching) { searching = false }
+    var searchBack by remember { androidx.compose.runtime.mutableFloatStateOf(0f) } // 预测性返回的进度 0..1(面板缩小 + 变淡跟着它)
+    androidx.activity.compose.PredictiveBackHandler(enabled = searching) { progress ->
+        try {
+            progress.collect { searchBack = it.progress }
+            searching = false; searchJumpGen = null // 面板带着当前的缩小程度淡出(searchBack 留到下次打开才清零)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            val a = androidx.compose.animation.core.Animatable(searchBack)
+            a.animateTo(0f, androidx.compose.animation.core.spring(stiffness = 600f)) { searchBack = value }
+            throw e
+        }
+    }
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     // 同步状态提示:服务端太旧不支持同步(只提示一次);这次恢复的记录来自另一台设备
@@ -468,7 +478,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                     }.orEmpty().ifEmpty { "$total 项" }
                     Text(sub, color = tg.barSub, fontSize = 13.sp, maxLines = 1)
                 }
-                BarIcon(TgIcons.Search, "搜索") { searchQuery = ""; searching = true }
+                BarIcon(TgIcons.Search, "搜索") { searchQuery = ""; searchBack = 0f; searching = true }
                 // 右上角:聊天流 → 网格 → 瀑布流 → 聊天流 轮换(图标是下一个视图);切换时保持在当前这一条(强制重建 Pager,锚点才会生效)
                 val next = (mode + 1) % 3
                 BarIcon(when (next) { 1 -> TgIcons.Grid; 2 -> TgIcons.Feed; else -> TgIcons.Chat }, when (next) { 1 -> "网格视图"; 2 -> "瀑布流视图"; else -> "聊天视图" }) {
@@ -591,7 +601,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                     else androidx.compose.animation.EnterTransition.None togetherWith (fadeOut(tween(200, easing = Motion.Standard)) + slideOutVertically(tween(200, easing = Motion.Standard)) { it / 20 })
                 },
             ) { on ->
-                if (on) FolderSearchPanel(c, dialogId, searchQuery, types.joinToString(","), picking = searchJumpGen != null) { item ->
+                if (on) FolderSearchPanel(c, dialogId, searchQuery, types.joinToString(","), picking = searchJumpGen != null, back = { searchBack }) { item ->
                     searchJumpGen = gen
                     vm.jumpToItem(item.id)
                 }

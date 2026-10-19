@@ -77,7 +77,7 @@ fun FolderSearchBar(query: String, onQuery: (String) -> Unit, onClose: () -> Uni
  * 翻到接近底部自动加载下一页。
  */
 @Composable
-fun FolderSearchPanel(c: AppContainer, dialogId: String, query: String, types: String, picking: Boolean = false, onPick: (Item) -> Unit) {
+fun FolderSearchPanel(c: AppContainer, dialogId: String, query: String, types: String, picking: Boolean = false, back: () -> Float = { 0f }, onPick: (Item) -> Unit) {
     val tg = LocalTg.current
     val fm = LocalFocusManager.current
     var results by remember { mutableStateOf<List<Item>>(emptyList()) }
@@ -97,7 +97,19 @@ fun FolderSearchPanel(c: AppContainer, dialogId: String, query: String, types: S
         loading = false
     }
 
-    Box(Modifier.fillMaxSize().background(tg.bg).imePadding()) {
+    Box(
+        Modifier.fillMaxSize()
+            // 预测性返回:整个面板随手势进度缩小到 90%、变淡、露出圆角(谷歌的设计要点:全屏界面返回时内部区域跟着缩小)
+            .graphicsLayer {
+                val p = back()
+                val s = 1f - 0.1f * p
+                scaleX = s; scaleY = s
+                alpha = 1f - 0.25f * p
+                shape = RoundedCornerShape((28f * p).dp)
+                clip = p > 0f
+            }
+            .background(tg.bg).imePadding(),
+    ) {
         val dim by androidx.compose.animation.core.animateFloatAsState(if (picking) 0.45f else 1f, androidx.compose.animation.core.tween(160), label = "pick-dim")
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = dim }) {
         when {

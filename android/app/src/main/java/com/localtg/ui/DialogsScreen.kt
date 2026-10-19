@@ -138,7 +138,6 @@ fun DialogsScreen(
         }
     }
     var confirmLogout by remember { mutableStateOf(false) }
-    androidx.activity.compose.BackHandler(drawer.isOpen) { scope.launch { drawer.close() } }
 
     // 盘符 = Telegram 的聊天分组标签;主界面左右滑动切换盘符(页 0 = 全部,后面每个盘符一页)
     val labels = remember(all) { all.map { it.rootLabel }.distinct().sorted() }
