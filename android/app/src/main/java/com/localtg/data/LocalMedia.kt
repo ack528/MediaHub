@@ -288,10 +288,10 @@ class LocalMedia(private val ctx: Context) {
         return s to e
     }
 
-    fun search(q: String, types: Set<String>, cursor: String?, limit: Int): HistoryResp {
+    fun search(q: String, types: Set<String>, cursor: String?, limit: Int, dialog: String? = null): HistoryResp {
         ensure()
         val term = q.trim().lowercase()
-        val hits = all.filter { it.type in types && it.name.lowercase().contains(term) }
+        val hits = all.filter { it.type in types && (dialog == null || it.bucketId.toString() == dialog) && it.name.lowercase().contains(term) }
             .sortedWith(compareByDescending<LItem> { it.takenMs }.thenByDescending { it.id })
         val off = cursor?.toIntOrNull() ?: 0
         val lim = limit.coerceIn(1, 200)
@@ -442,7 +442,7 @@ class LocalInterceptor(private val local: LocalMedia) : Interceptor {
                 )
             }
             p == listOf("search") -> json(
-                req, AppJson.encodeToString(local.search(q.queryParameter("q").orEmpty(), types(), q.queryParameter("cursor"), q.queryParameter("limit")?.toIntOrNull() ?: 60)),
+                req, AppJson.encodeToString(local.search(q.queryParameter("q").orEmpty(), types(), q.queryParameter("cursor"), q.queryParameter("limit")?.toIntOrNull() ?: 60, q.queryParameter("dialog"))),
             )
             p == listOf("random", "reset") -> json(req, """{"ok":true}""")
             p == listOf("random") -> json(req, AppJson.encodeToString(local.random(types(), q.queryParameter("limit")?.toIntOrNull() ?: 60, q.queryParameter("seed")?.toLongOrNull() ?: 0L, q.queryParameter("batch")?.toIntOrNull() ?: 0)))

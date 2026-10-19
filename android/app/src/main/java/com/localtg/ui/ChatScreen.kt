@@ -77,6 +77,8 @@ import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
@@ -392,6 +394,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
     var datePicker by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var searchJumpGen by remember { mutableStateOf<Int?>(null) } // 选中了一条结果:列表重建定位好之前面板先留着,定位好再淡出
     androidx.activity.compose.BackHandler(enabled = searching) { searching = false }
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
@@ -443,7 +446,14 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
     Column(Modifier.fillMaxSize()) {
         // ---- 顶栏:返回 | 群头像 | 标题+副标题 | 右上角 网格/聊天 切换 | 更多 ----
         TgBar {
-            if (searching) FolderSearchBar(searchQuery, { searchQuery = it }) { searching = false }
+            androidx.compose.animation.AnimatedContent(
+                targetState = searching, label = "search-bar",
+                transitionSpec = {
+                    if (motionStyle == Motion.OFF) androidx.compose.animation.EnterTransition.None togetherWith androidx.compose.animation.ExitTransition.None
+                    else (fadeIn(tween(200, 70, Motion.Standard)) + androidx.compose.animation.slideInHorizontally(tween(260, easing = Motion.Standard)) { if (targetState) it / 8 else -it / 8 }) togetherWith fadeOut(tween(100))
+                },
+            ) { inSearch ->
+            if (inSearch) FolderSearchBar(searchQuery, { searchQuery = it }) { searching = false; searchJumpGen = null }
             else Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
                 BarIcon(TgIcons.Back, "返回", onBack)
                 TgAvatar(dialog?.title ?: titleHint ?: "#", dialogId, 40.dp, dialog?.last?.toItem(dialogId), c.api)
@@ -498,6 +508,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                         }
                     }
                 }
+            }
             }
         }
 
@@ -572,9 +583,31 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                     else ChatFeed(lazyItems, c.api, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest, sortKey == "taken", scrollTarget, onScrolled)
                 }
             }
-            if (searching) FolderSearchPanel(c, dialogId, searchQuery, types.joinToString(",")) { item ->
-                searching = false
-                vm.jumpToItem(item.id)
+            androidx.compose.animation.AnimatedContent(
+                targetState = searching, modifier = Modifier.fillMaxSize(), label = "search-panel",
+                transitionSpec = {
+                    if (motionStyle == Motion.OFF) androidx.compose.animation.EnterTransition.None togetherWith androidx.compose.animation.ExitTransition.None
+                    else if (targetState) (fadeIn(tween(220, easing = Motion.Standard)) + slideInVertically(tween(300, easing = Motion.Standard)) { it / 14 }) togetherWith androidx.compose.animation.ExitTransition.None
+                    else androidx.compose.animation.EnterTransition.None togetherWith (fadeOut(tween(200, easing = Motion.Standard)) + slideOutVertically(tween(200, easing = Motion.Standard)) { it / 20 })
+                },
+            ) { on ->
+                if (on) FolderSearchPanel(c, dialogId, searchQuery, types.joinToString(","), picking = searchJumpGen != null) { item ->
+                    searchJumpGen = gen
+                    vm.jumpToItem(item.id)
+                }
+                else Box(Modifier.fillMaxSize())
+            }
+            // 选中结果后:等列表按新位置重建、定位完,面板再淡出,看到的是直接落在那条文件上
+            val jg = searchJumpGen
+            LaunchedEffect(jg, gen, lazyItems.loadState.refresh, lazyItems.itemCount) {
+                if (jg == null) return@LaunchedEffect
+                if (gen != jg && lazyItems.loadState.refresh is LoadState.NotLoading && lazyItems.itemCount > 0) {
+                    delay(160) // 给位置恢复留一小段时间
+                    searching = false; searchJumpGen = null
+                } else {
+                    delay(2500)
+                    if (searchJumpGen == jg) { searching = false; searchJumpGen = null }
+                }
             }
         }
     }

@@ -32,6 +32,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
@@ -76,7 +77,7 @@ fun FolderSearchBar(query: String, onQuery: (String) -> Unit, onClose: () -> Uni
  * 翻到接近底部自动加载下一页。
  */
 @Composable
-fun FolderSearchPanel(c: AppContainer, dialogId: String, query: String, types: String, onPick: (Item) -> Unit) {
+fun FolderSearchPanel(c: AppContainer, dialogId: String, query: String, types: String, picking: Boolean = false, onPick: (Item) -> Unit) {
     val tg = LocalTg.current
     val fm = LocalFocusManager.current
     var results by remember { mutableStateOf<List<Item>>(emptyList()) }
@@ -97,6 +98,8 @@ fun FolderSearchPanel(c: AppContainer, dialogId: String, query: String, types: S
     }
 
     Box(Modifier.fillMaxSize().background(tg.bg).imePadding()) {
+        val dim by androidx.compose.animation.core.animateFloatAsState(if (picking) 0.45f else 1f, androidx.compose.animation.core.tween(160), label = "pick-dim")
+        Box(Modifier.fillMaxSize().graphicsLayer { alpha = dim }) {
         when {
             query.isBlank() -> Hint("输入文件名的一部分,点结果直接跳到那条文件", tg.message)
             error != null -> Hint(error!!, tg.danger)
@@ -118,7 +121,7 @@ fun FolderSearchPanel(c: AppContainer, dialogId: String, query: String, types: S
                 LazyColumn(Modifier.fillMaxSize(), state = state) {
                     items(results, key = { it.id }) { item ->
                         Row(
-                            Modifier.fillMaxWidth().hapticClickable(Hap.Tick) { fm.clearFocus(); onPick(item) }.padding(horizontal = 12.dp, vertical = 6.dp),
+                            Modifier.fillMaxWidth().hapticClickable(Hap.Tick) { if (!picking) { fm.clearFocus(); onPick(item) } }.padding(horizontal = 12.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             MediaThumb(item, c.api, modifier = Modifier.size(56.dp).clip(RoundedCornerShape(6.dp)), showName = false)
@@ -131,6 +134,8 @@ fun FolderSearchPanel(c: AppContainer, dialogId: String, query: String, types: S
                 }
             }
         }
+        }
+        if (picking) CircularProgressIndicator(Modifier.align(Alignment.Center).size(32.dp), strokeWidth = 3.dp)
     }
 }
 
