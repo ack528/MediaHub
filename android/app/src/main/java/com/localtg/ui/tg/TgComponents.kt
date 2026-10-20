@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -42,9 +43,12 @@ fun TgBar(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> 
     // 用"忽略可见性"的状态栏高度:从沉浸式的查看器返回时,状态栏还没恢复,顶栏高度也不会跳动
     val bd = com.localtg.ui.LocalBackdrop.current
     val bar = LocalTg.current.bar
+    val tgDark = LocalTg.current.dark
     if (bd != null) androidx.compose.runtime.SideEffect { bd.barColor = bar }
+    val dividerColor = LocalTg.current.divider
     Column(
         modifier.fillMaxWidth().background(bar)
+            .drawBehind { if (!tgDark) drawLine(dividerColor, androidx.compose.ui.geometry.Offset(0f, size.height - 0.5f), androidx.compose.ui.geometry.Offset(size.width, size.height - 0.5f), strokeWidth = 1f) }
             .then(if (bd != null) Modifier.onSizeChanged { bd.barHeight = it.height.toFloat() } else Modifier) // 页面缩小时四周空隙的顶部用顶栏色
             .windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility),
         content = content,

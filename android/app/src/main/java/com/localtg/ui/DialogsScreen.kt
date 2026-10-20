@@ -71,6 +71,8 @@ import com.localtg.ui.tg.BarIcon
 import com.localtg.ui.tg.LocalTg
 import com.localtg.ui.tg.TgAvatar
 import com.localtg.ui.tg.TgBar
+import com.localtg.ui.tg.TgGlassScaffold
+import com.localtg.ui.tg.barContentPadding
 import com.localtg.ui.tg.TgIcons
 import com.localtg.ui.tg.toItem
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -116,6 +118,7 @@ class DialogsViewModel(private val c: AppContainer) : ViewModel() {
 fun DialogsScreen(
     c: AppContainer, onOpen: (Dialog, androidx.compose.ui.geometry.Rect?) -> Unit, onSettings: () -> Unit, onSearch: () -> Unit,
     onRandom: (String?, String?, androidx.compose.ui.geometry.Rect?) -> Unit, onSection: (String) -> Unit,
+    onDrawer: (Boolean) -> Unit = {},
 ) {
     val activeId by c.session.activeId.collectAsState()
     // 每台服务器一个独立的列表(切换服务器 = 换一个 ViewModel,重新加载)
@@ -138,6 +141,10 @@ fun DialogsScreen(
         }
     }
     var confirmLogout by remember { mutableStateOf(false) }
+    // 侧边栏打开时告诉主界面:把悬浮底栏藏起来(不然底栏浮在侧边栏的遮罩上面)
+    val drawerShown = drawer.targetValue == DrawerValue.Open || drawer.currentValue == DrawerValue.Open
+    LaunchedEffect(drawerShown) { onDrawer(drawerShown) }
+    val ptr = androidx.compose.material3.pulltorefresh.rememberPullToRefreshState()
 
     // 盘符 = Telegram 的聊天分组标签;主界面左右滑动切换盘符(页 0 = 全部,后面每个盘符一页)
     val labels = remember(all) { all.map { it.rootLabel }.distinct().sorted() }
@@ -171,19 +178,25 @@ fun DialogsScreen(
             )
         },
     ) {
-        Column(Modifier.fillMaxSize()) {
-            TgBar {
+        TgGlassScaffold(bar = {
                 Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
                     BarIcon(TgIcons.Menu, "菜单") { scope.launch { drawer.open() } }
                     Text("本地浏览", Modifier.weight(1f).padding(start = 8.dp), color = tg.barText, fontSize = 20.sp, fontWeight = FontWeight.Medium)
                     BarIcon(TgIcons.Search, "搜索", onSearch)
                 }
                 if (labels.size > 1) FolderTabs(labels, pager) { scope.launch { pager.animateScrollToPage(it) } }
-            }
+        }) {
 
             // 下拉刷新
             androidx.compose.material3.pulltorefresh.PullToRefreshBox(
-                isRefreshing = loading && all.isNotEmpty(), onRefresh = { hap.perform(Hap.Long); vm.refresh() }, modifier = Modifier.weight(1f).fillMaxWidth(),
+                isRefreshing = loading && all.isNotEmpty(), onRefresh = { hap.perform(Hap.Long); vm.refresh() }, modifier = Modifier.fillMaxSize(), state = ptr,
+                // 下拉刷新的圆圈出现在玻璃顶栏下面,不被它挡住
+                indicator = {
+                    androidx.compose.material3.pulltorefresh.PullToRefreshDefaults.Indicator(
+                        state = ptr, isRefreshing = loading && all.isNotEmpty(),
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = com.localtg.ui.tg.LocalBarInsets.current.calculateTopPadding()),
+                    )
+                },
             ) {
                 androidx.compose.foundation.pager.HorizontalPager(
                     pager, Modifier.fillMaxSize(), userScrollEnabled = st.swipeGroups && pageCount > 1, beyondViewportPageCount = 0,
@@ -200,7 +213,7 @@ fun DialogsScreen(
                         shown.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text("没有可显示的文件夹", color = tg.message)
                         }
-                        else -> LazyColumn(Modifier.fillMaxSize()) {
+                        else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = barContentPadding()) {
                             // 置顶的特殊群组:「全部」页随机所有盘符,各盘符页只随机这个盘符
                             item(key = "random") {
                                 val lb = if (page == 0 || page > labels.size) null else labels[page - 1]
@@ -336,7 +349,7 @@ private fun FolderTabs(labels: List<String>, pager: androidx.compose.foundation.
                         val p = m.measure(Constraints.fixed(w, 3.dp.roundToPx()))
                         layout(x + w, p.height) { p.place(x, 0) }
                     }
-                    .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)).background(tg.barText),
+                    .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)).background(tg.barActive),
             )
         }
     }
@@ -346,7 +359,7 @@ private fun FolderTabs(labels: List<String>, pager: androidx.compose.foundation.
 private fun FolderTab(text: String, selected: Boolean, underline: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val tg = LocalTg.current
     val color by androidx.compose.animation.animateColorAsState(
-        if (selected) tg.barText else tg.barTabIdle, androidx.compose.animation.core.tween(if (fineMotionOn()) 160 else 0), label = "tabColor",
+        if (selected) tg.barActive else tg.barTabIdle, androidx.compose.animation.core.tween(if (fineMotionOn()) 160 else 0), label = "tabColor",
     )
     Column(modifier.height(44.dp).hapticClickable(Hap.Tick, onClick).padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
@@ -354,7 +367,7 @@ private fun FolderTab(text: String, selected: Boolean, underline: Boolean, modif
         }
         Box(
             Modifier.height(3.dp).fillMaxWidth().clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
-                .background(if (underline && selected) tg.barText else Color.Transparent),
+                .background(if (underline && selected) tg.barActive else Color.Transparent),
         )
     }
 }
@@ -415,10 +428,10 @@ private fun DialogRow(d: Dialog, c: AppContainer, onClick: (androidx.compose.ui.
                 } else {
                     Box(Modifier.weight(1f))
                 }
-                // 数量:相当于"已静音群"的灰色计数
+                // 数量:相当于"已静音群"的灰色计数(Telegram 的未读计数:高 23dp、全圆角、13sp 中等粗细)
                 Box(
-                    Modifier.padding(start = 6.dp).defaultMinSize(minWidth = 20.dp, minHeight = 20.dp).clip(RoundedCornerShape(10.dp))
-                        .background(tg.badgeMuted).padding(horizontal = 6.dp),
+                    Modifier.padding(start = 6.dp).defaultMinSize(minWidth = 23.dp, minHeight = 23.dp).clip(RoundedCornerShape(12.dp))
+                        .background(tg.badgeMuted).padding(horizontal = 7.dp),
                     contentAlignment = Alignment.Center,
                 ) { Text("${d.mediaCount}", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium) }
             }

@@ -57,7 +57,8 @@ fun FolderSearchBar(query: String, onQuery: (String) -> Unit, onClose: () -> Uni
     LaunchedEffect(Unit) { focus.requestFocus() }
     Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
         BarIcon(TgIcons.Back, "关闭搜索") { fm.clearFocus(); onClose() }
-        Box(Modifier.weight(1f).padding(end = 4.dp)) {
+        // Telegram 新版的搜索框:顶栏里的圆角胶囊
+                Box(Modifier.weight(1f).padding(end = 8.dp).clip(RoundedCornerShape(50)).background(if (tg.dark) androidx.compose.ui.graphics.Color(0x14FFFFFF) else tg.gray).padding(horizontal = 16.dp, vertical = 9.dp)) {
             if (query.isEmpty()) Text("在这个文件夹里搜索文件名", color = tg.barSub, fontSize = 17.sp)
             BasicTextField(
                 value = query, onValueChange = onQuery, singleLine = true,
@@ -108,7 +109,7 @@ fun FolderSearchPanel(c: AppContainer, dialogId: String, query: String, types: S
                 shape = RoundedCornerShape((28f * p).dp)
                 clip = p > 0f
             }
-            .background(tg.bg).imePadding(),
+            .background(tg.bg).padding(top = com.localtg.ui.tg.LocalBarInsets.current.calculateTopPadding()).imePadding(),
     ) {
         val dim by androidx.compose.animation.core.animateFloatAsState(if (picking) 0.45f else 1f, androidx.compose.animation.core.tween(160), label = "pick-dim")
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = dim }) {

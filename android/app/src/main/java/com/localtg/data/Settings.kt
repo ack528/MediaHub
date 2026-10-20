@@ -26,6 +26,7 @@ data class AppSettings(
     val theme: String = "system",              // system / light / dark
     val chatBackground: String = "gradient",   // gradient / plain
     val motion: String = "slide",              // 界面动画:slide(系统风格,默认) / parallax(整屏滑动+视差) / axis(Material 共享轴) / fade(淡入淡出) / off(关闭)
+    val glass: String = "on",                 // 液态玻璃:on(按设备能力,默认) / frosted(只要毛玻璃) / off(关,只画半透明膜)
     val fineMotion: Boolean = true,            // 细节动效:弹簧按压回弹、列表入场、标签指示条跟手滑动、登录页入场(页面转场不受影响;界面动画选关闭时也一并关闭)
     val fontScale: Float = 1f,                 // 界面文字缩放(在系统字号之上再乘)
     val avatarShape: String = "round",         // 头像形状:round(圆角方形,默认) / circle / square

@@ -14,8 +14,8 @@ android {
         applicationId = "com.localtg"
         minSdk = 26
         targetSdk = 37
-        versionCode = 79
-        versionName = "3.4.0"
+        versionCode = 80
+        versionName = "4.0.0"
         // 发布版只带 arm64(真机,LSFG 原生库),调试版再加 x86_64(模拟器)
         ndk { abiFilters += listOf("arm64-v8a") }
     }
@@ -96,6 +96,8 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-compose:3.6.3")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.6.3")
     implementation("me.saket.telephoto:zoomable-image-coil3:0.19.0")
+    // 液态玻璃(顶栏 / 悬浮底栏 / 按钮):Kyant 的 backdrop 库,Apache-2.0。Convx、Square 底层也是它(它们本身是 GPL,只参考做法)
+    implementation("io.github.kyant0:backdrop:2.0.1")
 
 
     implementation("androidx.media3:media3-exoplayer:1.11.1")

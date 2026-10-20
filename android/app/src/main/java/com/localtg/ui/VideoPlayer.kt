@@ -25,6 +25,7 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -39,6 +40,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import com.localtg.ui.glass.mediaGlass
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -866,7 +868,7 @@ fun VideoPage(
         hud?.let { h ->
             Row(
                 Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 72.dp)
-                    .clip(RoundedCornerShape(24.dp)).background(Color(0xB3000000)).padding(horizontal = 16.dp, vertical = 10.dp),
+                    .mediaGlass(RoundedCornerShape(24.dp), alpha = 0.55f).padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 h.icon?.let { Icon(it, null, tint = Color.White, modifier = Modifier.size(22.dp)); Spacer(Modifier.width(8.dp)) }
@@ -890,13 +892,14 @@ fun VideoPage(
             rememberChromeState(ui, showControls), Modifier.align(Alignment.TopStart),
             enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
         ) {
+            // 顶部:圆形玻璃返回键 + 玻璃胶囊(标题、尺寸 / 大小 / 转码 / 硬解)+ 圆形玻璃按钮
             Row(
-                Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
-                    .statusBarsPadding().padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color(0x59000000), Color.Transparent)))
+                    .statusBarsPadding().padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                CtrlIcon(TgIcons.Back, "返回") { onBack() }
-                Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
+                GlassCircleButton(TgIcons.Back, "返回") { onBack() }
+                Column(Modifier.weight(1f).heightIn(min = 44.dp).mediaGlass(RoundedCornerShape(22.dp)).padding(horizontal = 16.dp, vertical = 5.dp), verticalArrangement = Arrangement.Center) {
                     Text(item.name, color = Color.White, fontSize = 16.sp, maxLines = 1, fontWeight = FontWeight.Medium)
                     Text(
                         listOfNotNull(item.w?.let { "${item.w}×${item.h}" }, sizeLabel(item, transcodeBitrate, player?.duration?.takeIf { it > 0 } ?: 0L, short = true), transcodeBitrate?.let { "转码 ${"%.1f".format(it / 1_000_000f)}M" }, decoderName[0].takeIf { it.isNotEmpty() }?.let { if (it.startsWith("c2.android") || it.startsWith("OMX.google")) "软解" else "硬解" }).joinToString(" · "),
@@ -906,8 +909,8 @@ fun VideoPage(
                 if (!locked) {
                     val accent = com.localtg.ui.tg.LocalTg.current.accent
                     val enhOn = cfg.enhUpscale != "off" || cfg.enhFrc != "off" || cfg.enhHdr != "off"
-                    if (trackOpts(tracks, C.TRACK_TYPE_TEXT).isNotEmpty()) CtrlIcon(TgIcons.Subtitles, "字幕") { panel = "sub" }
-                    CtrlIcon(TgIcons.More, "更多", tint = if (enhOn) accent else Color.White) { panel = if (panel.isEmpty()) "main" else "" }
+                    if (trackOpts(tracks, C.TRACK_TYPE_TEXT).isNotEmpty()) GlassCircleButton(TgIcons.Subtitles, "字幕") { panel = "sub" }
+                    GlassCircleButton(TgIcons.More, "更多", tint = if (enhOn) accent else Color.White) { panel = if (panel.isEmpty()) "main" else "" }
                 }
             }
         }
@@ -917,9 +920,11 @@ fun VideoPage(
             rememberChromeState(ui, showControls), Modifier.align(Alignment.BottomStart),
             enter = fadeIn() + slideInVertically { it / 2 }, exit = fadeOut() + slideOutVertically { it / 2 },
         ) {
+            // 底部:进度条和控制按钮放在一张玻璃卡片里(浮在画面上,四周留边)
             Column(
-                Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))))
-                    .navigationBarsPadding().padding(horizontal = 12.dp).padding(top = 24.dp, bottom = 6.dp),
+                Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x59000000))))
+                    .navigationBarsPadding().padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 8.dp)
+                    .mediaGlass(RoundedCornerShape(26.dp)).padding(horizontal = 8.dp, vertical = 4.dp),
             ) {
                 if (!locked) {
                     pl?.let { SeekBar(it, remaining, backBufferMs(cfg.bufferMode)) { remaining = !remaining } }
@@ -1292,7 +1297,7 @@ private fun TextCtrl(text: String, onClick: () -> Unit) {
 private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Box(
-        modifier.size(size).pressScale(src, 0.1f).clip(CircleShape).background(Color(0x66000000)).hapticClickable(src, onClick = onClick),
+        modifier.size(size).pressScale(src, 0.1f).mediaGlass(CircleShape, alpha = 0.32f).hapticClickable(src, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, desc, tint = Color.White, modifier = Modifier.size(size * 0.55f)) }
 }

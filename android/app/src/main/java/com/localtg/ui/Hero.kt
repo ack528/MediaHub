@@ -405,6 +405,8 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
         }
 
         if (index >= 0) {
+            // 查看器是黑底:打开期间状态栏 / 导航栏图标用浅色;开始收回就换回主题的颜色(白天主题的顶栏是白色,图标要深色)
+            com.localtg.ui.tg.BarIconsEffect(if (hero.phase == HeroState.Phase.Closing) com.localtg.ui.tg.LocalTg.current.barIconsDark else false)
             // 系统的预测性返回(Android 14+、支持的系统才有进度):整个查看器跟着缩小;很多 ROM 只在松手时发返回,这时直接收回
             PredictiveBackHandler(enabled = true) { progress ->
                 try {

@@ -98,6 +98,8 @@ import com.localtg.ui.tg.LocalTg
 import com.localtg.ui.tg.Pill
 import com.localtg.ui.tg.TgAvatar
 import com.localtg.ui.tg.TgBar
+import com.localtg.ui.tg.TgGlassScaffold
+import com.localtg.ui.tg.barContentPadding
 import com.localtg.ui.tg.TgIcons
 import com.localtg.ui.tg.toItem
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -453,9 +455,8 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
     }
     val onScrolled: () -> Unit = { scrollTarget?.let { vm.viewerOpenedId = it }; scrollTarget = null; c.viewerReturn.value = null }
 
-    Column(Modifier.fillMaxSize()) {
-        // ---- 顶栏:返回 | 群头像 | 标题+副标题 | 右上角 网格/聊天 切换 | 更多 ----
-        TgBar {
+    // ---- 顶栏(液态玻璃,浮在聊天背景和缩略图上面):返回 | 群头像 | 标题+副标题 | 搜索 | 网格/聊天 切换 | 更多 ----
+    TgGlassScaffold(bar = {
             androidx.compose.animation.AnimatedContent(
                 targetState = searching, label = "search-bar",
                 transitionSpec = {
@@ -520,8 +521,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                 }
             }
             }
-        }
-
+    }) {
         if (datePicker) {
             val st = rememberDatePickerState()
             DatePickerDialog(
@@ -549,7 +549,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
         }
         androidx.compose.runtime.SideEffect { bdSpec?.below = belowColors }
         Box(
-            Modifier.weight(1f).fillMaxWidth().then(
+            Modifier.fillMaxSize().then(
                 if (mode == 2) Modifier.background(if (tg.dark) Color(0xFF0F1012) else Color(0xFFF3F4F6))
                 else if (grid) Modifier.background(tg.bg)
                 else if (LocalSettings.current.chatBackground == "plain") Modifier.background(tg.chatTop)
@@ -704,7 +704,7 @@ private fun ChatFeed(
         val endReached = items.loadState.append.endOfPaginationReached
         LazyColumn(
             state = state, reverseLayout = true, modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(LocalSettings.current.chatSpacing.dp),
+            contentPadding = barContentPadding(extra = 8.dp), verticalArrangement = Arrangement.spacedBy(LocalSettings.current.chatSpacing.dp),
         ) {
             items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
                 val item = items[index] ?: return@items
@@ -850,7 +850,7 @@ private fun MediaGrid(
     val gridScope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize()) {
     LazyVerticalGrid(
-        state = state, columns = GridCells.Fixed(columns), modifier = Modifier.fillMaxSize(),
+        state = state, columns = GridCells.Fixed(columns), modifier = Modifier.fillMaxSize(), contentPadding = barContentPadding(),
         horizontalArrangement = Arrangement.spacedBy(LocalSettings.current.gridSpacing.dp), verticalArrangement = Arrangement.spacedBy(LocalSettings.current.gridSpacing.dp),
     ) {
         items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
@@ -916,7 +916,7 @@ private fun MediaFeed(
     Box(Modifier.fillMaxSize()) {
         androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid(
             columns = androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells.Fixed(2), state = state, modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalItemSpacing = 6.dp,
+            contentPadding = barContentPadding(extra = 6.dp, horizontal = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalItemSpacing = 6.dp,
         ) {
             items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
                 val item = items[index]

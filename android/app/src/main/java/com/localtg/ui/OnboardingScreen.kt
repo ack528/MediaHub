@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -53,6 +54,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.background
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -98,19 +100,19 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
     }
 
     val tg = LocalTg.current
-    Column(Modifier.fillMaxSize().imePadding()) {
-    // 蓝色头部:和文件夹列表 / 设置的顶栏同一个 TgBar
-    TgBar {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-            androidx.compose.foundation.Image(
-                androidx.compose.ui.res.painterResource(com.localtg.R.drawable.ic_logo), null,
-                Modifier.springEnter(0).size(56.dp).clip(RoundedCornerShape(12.dp)), // 入场:logo → 标题 → 副标题 依次弹出
-            )
-            Column(Modifier.padding(start = 16.dp)) {
-                Text("本地浏览", color = tg.barText, fontSize = 22.sp, fontWeight = FontWeight.Medium, modifier = Modifier.springEnter(1))
-                Text("连接到你自己的媒体服务器", color = tg.barSub, fontSize = 14.sp, modifier = Modifier.springEnter(2).padding(top = 2.dp))
-            }
-        }
+    // Telegram 新版:浅灰页面底,内容放在白色圆角卡片里
+    Column(Modifier.fillMaxSize().background(tg.gray).imePadding()) {
+    // Telegram 欢迎页的样子:居中的大图标、标题、副标题
+    Column(
+        Modifier.fillMaxWidth().statusBarsPadding().padding(top = 28.dp, bottom = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        androidx.compose.foundation.Image(
+            androidx.compose.ui.res.painterResource(com.localtg.R.drawable.ic_logo), null,
+            Modifier.springEnter(0).size(88.dp).clip(RoundedCornerShape(20.dp)), // 入场:logo → 标题 → 副标题 依次弹出
+        )
+        Text("本地浏览", color = tg.name, fontSize = 24.sp, fontWeight = FontWeight.Medium, modifier = Modifier.springEnter(1).padding(top = 14.dp))
+        Text("连接到你自己的媒体服务器", color = tg.message, fontSize = 15.sp, modifier = Modifier.springEnter(2).padding(top = 4.dp))
     }
     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 12.dp)) {
 
@@ -124,7 +126,7 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
                 else androidx.compose.animation.EnterTransition.None togetherWith androidx.compose.animation.ExitTransition.None
             },
         ) { cur ->
-        Column(Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(tg.bg).padding(horizontal = 16.dp, vertical = 14.dp)) {
         if (cur == null && saved.isNotEmpty()) {
             SectionTitle("已保存的服务器")
             saved.forEach { e ->
@@ -256,7 +258,7 @@ fun OnboardingScreen(c: AppContainer, onDone: () -> Unit) {
 /** 小节标题:和设置页的 Header 同样式(15sp、强调色、中等粗细)。 */
 @Composable
 private fun SectionTitle(text: String) {
-    Text(text, color = LocalTg.current.accent, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp, bottom = 6.dp))
+    Text(text, color = LocalTg.current.header, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp, bottom = 6.dp))
 }
 
 /** 输入框:圆角 10dp、强调色焦点、颜色取自主题 —— 不再是 Material 默认的样式。 */
@@ -270,7 +272,7 @@ private fun TgField(
         value = value, onValueChange = onChange, modifier = Modifier.fillMaxWidth(), singleLine = true,
         label = { Text(label) },
         placeholder = { if (placeholderText.isNotEmpty()) Text(placeholderText) },
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(12.dp),
         visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
         colors = OutlinedTextFieldDefaults.colors(
@@ -285,9 +287,9 @@ private fun TgField(
 @Composable
 private fun TgButton(text: String, enabled: Boolean, busy: Boolean = false, outlined: Boolean = false, onClick: () -> Unit) {
     val tg = LocalTg.current
-    val shape = RoundedCornerShape(10.dp)
+    val shape = RoundedCornerShape(14.dp)
     val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    val mod = Modifier.fillMaxWidth().height(48.dp).pressScale(src, 0.03f)
+    val mod = Modifier.fillMaxWidth().height(50.dp).pressScale(src, 0.03f)
     if (outlined) {
         OutlinedButton(
             onClick = onClick, modifier = mod, enabled = enabled, shape = shape, interactionSource = src,

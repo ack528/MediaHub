@@ -92,7 +92,7 @@ abstract class TgActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         applyTransitions()
         super.onCreate(savedInstanceState)
-        // 顶栏是 Telegram 的蓝色/深蓝,状态栏图标用浅色
+        // 状态栏 / 导航栏透明;图标深浅由 TgTheme 按顶栏颜色设置(白天白色顶栏 = 深色图标,夜间深蓝顶栏 = 浅色图标)
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         val c = container
         applyWindowBackground(c.settings.value.theme)
@@ -148,7 +148,7 @@ abstract class TgActivity : ComponentActivity() {
 
     /** 窗口底色:系统转场开头、Compose 第一帧画出来之前看到的就是它,要和页面一致,否则会闪一下。 */
     protected open fun windowBackground(night: Boolean): android.graphics.drawable.Drawable =
-        ColorDrawable(if (night) 0xFF18222D.toInt() else 0xFFFFFFFF.toInt())
+        ColorDrawable(if (night) 0xFF1D2733.toInt() else 0xFFFFFFFF.toInt())
 
     /** 二级页面(聊天 / 设置 / 搜索):登录失效(401)或退出登录后,自己关掉,露出下面的登录页。 */
     @Composable
@@ -236,6 +236,10 @@ class RandomActivity : TgActivity() {
 
 /** 设置:根列表和每个分类页都是各自的 Activity(和 Clash Meta / Shizuku 一样),进入 / 返回都是系统转场。 */
 class SettingsActivity : TgActivity() {
+    /** 设置页的底是灰色(Telegram 设置页的 windowBackgroundGray),窗口底色一样,进入的系统转场开头不闪白。 */
+    override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable =
+        ColorDrawable(if (night) 0xFF151E27.toInt() else 0xFFEFEFF4.toInt())
+
     @Composable
     override fun Content() {
         FinishWhenLoggedOut()

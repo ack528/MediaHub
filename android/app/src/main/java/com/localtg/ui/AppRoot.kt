@@ -110,17 +110,8 @@ fun AppRoot(c: AppContainer) {
             enterTransition = { fadeThroughIn(style) }, exitTransition = { fadeThroughOut(style) },
             popEnterTransition = { fadeThroughIn(style) }, popExitTransition = { fadeThroughOut(style) },
         ) {
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-                // 进入 / 返回消息页都是系统的 Activity 转场(和 3.0 一样,跟随「界面动画」设置),不做展开和缩放
-                DialogsScreen(
-                    c,
-                    onOpen = { d, _ -> ChatActivity.start(ctx, d.id, d.title) },
-                    onSettings = { SettingsActivity.start(ctx, null) },
-                    onSearch = { SearchActivity.start(ctx) },
-                    onRandom = { label, roots, _ -> RandomActivity.start(ctx, label, roots) },
-                    onSection = { SettingsActivity.start(ctx, it) },
-                )
-            }
+            // 主界面:文件夹 / 随机 / 搜索 / 设置 四个标签 + 悬浮的液态玻璃底栏;点进文件夹、设置二级页仍是系统的 Activity 转场
+            MainTabs(c)
         }
     }
 

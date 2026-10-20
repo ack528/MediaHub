@@ -53,15 +53,18 @@ import com.localtg.data.friendlyError
 import com.localtg.ui.tg.BarIcon
 import com.localtg.ui.tg.LocalTg
 import com.localtg.ui.tg.TgBar
+import com.localtg.ui.tg.TgGlassScaffold
+import com.localtg.ui.tg.barContentPadding
+import androidx.compose.foundation.layout.Spacer
 import com.localtg.ui.tg.TgIcons
 import kotlinx.coroutines.delay
 
 /** 全局搜索:按文件名搜图片 / 视频,结果是缩略图网格,点开进查看器,翻到末尾自动加载更多。 */
 @Composable
-fun SearchScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Unit) {
+fun SearchScreen(c: AppContainer, onBack: (() -> Unit)?, onOpenViewer: (Int) -> Unit) {
     val tg = LocalTg.current
-    var query by remember { mutableStateOf("") }
-    var typeTab by remember { mutableIntStateOf(0) } // 0 全部 / 1 照片 / 2 视频
+    var query by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") } // 在底栏标签之间切换后还在
+    var typeTab by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(0) } // 0 全部 / 1 照片 / 2 视频
     var results by remember { mutableStateOf<List<Item>>(emptyList()) }
     var nextCursor by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
@@ -84,11 +87,11 @@ fun SearchScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
         loading = false
     }
 
-    Column(Modifier.fillMaxSize().imePadding()) {
-        TgBar {
+    TgGlassScaffold(bar = {
             Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
-                BarIcon(TgIcons.Back, "返回") { fm.clearFocus(); onBack() }
-                Box(Modifier.weight(1f).padding(end = 4.dp)) {
+                if (onBack != null) BarIcon(TgIcons.Back, "返回") { fm.clearFocus(); onBack() } else Spacer(Modifier.width(16.dp))
+                // Telegram 新版的搜索框:顶栏里的圆角胶囊
+                Box(Modifier.weight(1f).padding(end = 8.dp).clip(RoundedCornerShape(50)).background(if (tg.dark) androidx.compose.ui.graphics.Color(0x14FFFFFF) else tg.gray).padding(horizontal = 16.dp, vertical = 9.dp)) {
                     if (query.isEmpty()) Text("搜索文件名", color = tg.barSub, fontSize = 17.sp)
                     BasicTextField(
                         value = query, onValueChange = { query = it }, singleLine = true,
@@ -105,14 +108,14 @@ fun SearchScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
                 listOf("全部", "照片", "视频").forEachIndexed { i, label ->
                     Box(Modifier.hapticClickable(Hap.Tick) { typeTab = i }.padding(horizontal = 16.dp).height(40.dp), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                            Text(label, color = if (typeTab == i) tg.barText else tg.barTabIdle, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                            Box(Modifier.padding(top = 6.dp).height(3.dp).width(28.dp).clip(RoundedCornerShape(2.dp)).background(if (typeTab == i) tg.barText else Color.Transparent))
+                            Text(label, color = if (typeTab == i) tg.barActive else tg.barTabIdle, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                            Box(Modifier.padding(top = 6.dp).height(3.dp).width(28.dp).clip(RoundedCornerShape(2.dp)).background(if (typeTab == i) tg.barActive else Color.Transparent))
                         }
                     }
                 }
             }
-        }
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+    }) {
+        Box(Modifier.fillMaxSize().imePadding()) {
             when {
                 query.isBlank() -> Hint("输入文件名的一部分,例如 IMG_0398", tg.message)
                 error != null -> Hint(error!!, tg.danger)
@@ -133,7 +136,7 @@ fun SearchScreen(c: AppContainer, onBack: () -> Unit, onOpenViewer: (Int) -> Uni
                         }
                     }
                     LazyVerticalGrid(
-                        state = grid, columns = GridCells.Fixed(3), modifier = Modifier.fillMaxSize(),
+                        state = grid, columns = GridCells.Fixed(3), modifier = Modifier.fillMaxSize(), contentPadding = barContentPadding(),
                         horizontalArrangement = Arrangement.spacedBy(1.dp), verticalArrangement = Arrangement.spacedBy(1.dp),
                     ) {
                         items(results, key = { it.id }) { item ->

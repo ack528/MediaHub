@@ -51,6 +51,15 @@ import kotlinx.serialization.encodeToString
 import com.localtg.ui.tg.BarIcon
 import com.localtg.ui.tg.LocalTg
 import com.localtg.ui.tg.TgBar
+import com.localtg.ui.tg.TgCheckCell
+import com.localtg.ui.tg.TgDetailCell
+import com.localtg.ui.tg.TgHeaderCell
+import com.localtg.ui.tg.TgInfoCell
+import com.localtg.ui.tg.TgCardColumn
+import com.localtg.ui.tg.TgGlassPage
+import com.localtg.ui.tg.TgIconCell
+import com.localtg.ui.tg.TgSectionBreak
+import com.localtg.ui.tg.TgTextCell
 import com.localtg.ui.tg.TgIcons
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -75,7 +84,7 @@ private val SECTIONS = listOf(
 )
 
 @Composable
-fun SettingsScreen(c: AppContainer, section: String?, onBack: () -> Unit, onOpen: (String) -> Unit) {
+fun SettingsScreen(c: AppContainer, section: String?, onBack: (() -> Unit)?, onOpen: (String) -> Unit) {
     val tg = LocalTg.current
     val s by c.settings.state.collectAsState()
     val title = when (section) {
@@ -86,42 +95,70 @@ fun SettingsScreen(c: AppContainer, section: String?, onBack: () -> Unit, onOpen
         "lsfg" -> "LSFG 帧生成"
         else -> SECTIONS.firstOrNull { it.first == section }?.second ?: "设置"
     }
-    Column(Modifier.fillMaxSize()) {
-        TgBar {
-            Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
-                BarIcon(TgIcons.Back, "返回", onBack)
-                Text(title, color = tg.barText, fontSize = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 4.dp))
-            }
-        }
-        val update: (AppSettings.() -> AppSettings) -> Unit = { c.settings.update(it) }
+    // Telegram 新版:浅灰页面底一直铺到顶,顶栏是半透明的液态玻璃,内容从下面滚过;每个小节一张白色圆角卡片
+    val update: (AppSettings.() -> AppSettings) -> Unit = { c.settings.update(it) }
+    TgGlassPage(title, onBack) { top ->
         when (section) {
-            "codecs-info" -> CodecInfoPage()
-            "log-view" -> LogViewPage()
-            else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding()) {
-                when (section) {
-                    null -> SECTIONS.forEach { (id, name, desc) ->
-                        NavRow(name, desc) { onOpen(id) }
+            "codecs-info" -> CodecInfoPage(top)
+            "log-view" -> LogViewPage(top)
+            else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = top, bottom = com.localtg.ui.glass.LocalBottomInset.current).navigationBarsPadding()) {
+                TgCardColumn(dividers = section != null) {
+                    when (section) {
+                        null -> SECTION_GROUPS.forEach { group ->
+                            TgSectionBreak()
+                            group.forEach { id ->
+                                val (_, name, desc) = SECTIONS.first { it.first == id }
+                                val (icon, color) = sectionIcon(id)
+                                TgIconCell(icon, color, name, desc) { onOpen(id) }
+                            }
+                        }
+                        "appearance" -> AppearancePage(s, update)
+                        "folders" -> FoldersPage(s, update)
+                        "browse" -> BrowsePage(s, update)
+                        "viewer" -> ViewerPage(s, update)
+                        "image" -> ImagePage(s, update)
+                        "video" -> VideoPage(s, update)
+                        "codec" -> CodecPage(s, update, onOpenCodecs = { onOpen("codecs-info") })
+                        "enhance" -> EnhancePage(s, update, onOpen)
+                        "enhance-hw" -> HardwarePage(s, update)
+                        "lsfg" -> LsfgPage(s)
+                        "network" -> NetworkPage(c, s, update)
+                        "speedtest" -> SpeedTestPage(c, s, update)
+                        "storage" -> StoragePage(c)
+                        "account" -> AccountPage(c)
+                        "log" -> LogPage(s, update, onOpenView = { onOpen("log-view") })
+                        "about" -> AboutPage(c)
                     }
-                    "appearance" -> AppearancePage(s, update)
-                    "folders" -> FoldersPage(s, update)
-                    "browse" -> BrowsePage(s, update)
-                    "viewer" -> ViewerPage(s, update)
-                    "image" -> ImagePage(s, update)
-                    "video" -> VideoPage(s, update)
-                    "codec" -> CodecPage(s, update, onOpenCodecs = { onOpen("codecs-info") })
-                    "enhance" -> EnhancePage(s, update, onOpen)
-                    "enhance-hw" -> HardwarePage(s, update)
-                    "lsfg" -> LsfgPage(s)
-                    "network" -> NetworkPage(c, s, update)
-                    "speedtest" -> SpeedTestPage(c, s, update)
-                    "storage" -> StoragePage(c)
-                    "account" -> AccountPage(c)
-                    "log" -> LogPage(s, update, onOpenView = { onOpen("log-view") })
-                    "about" -> AboutPage(c)
                 }
             }
         }
     }
+}
+
+/** 设置首页按组分卡片(和 Telegram 新版设置首页一样,组之间没有标题)。 */
+private val SECTION_GROUPS = listOf(
+    listOf("appearance", "folders", "browse", "viewer", "image"),
+    listOf("video", "codec", "enhance"),
+    listOf("network", "speedtest", "storage"),
+    listOf("account", "log", "about"),
+)
+
+/** 设置首页每个分类的彩色方块图标(颜色取自 Telegram 设置首页的那一套)。 */
+private fun sectionIcon(id: String): Pair<androidx.compose.ui.graphics.vector.ImageVector, Color> = when (id) {
+    "appearance" -> TgIcons.Brightness to Color(0xFF9D6AE3)
+    "folders" -> TgIcons.Chat to Color(0xFF3A90E9)
+    "browse" -> TgIcons.Grid to Color(0xFF48C153)
+    "viewer" -> TgIcons.AspectRatio to Color(0xFFF5A33A)
+    "image" -> TgIcons.Hd to Color(0xFF39B5D6)
+    "video" -> TgIcons.Play to Color(0xFFE85A5A)
+    "codec" -> TgIcons.Memory to Color(0xFF5C7CE8)
+    "enhance" -> TgIcons.AutoAwesome to Color(0xFFE5689B)
+    "network" -> TgIcons.Tune to Color(0xFF3AB5A6)
+    "speedtest" -> TgIcons.Speed to Color(0xFFF0814A)
+    "storage" -> TgIcons.Download to Color(0xFF4C9BE8)
+    "account" -> TgIcons.Lock to Color(0xFF4CB06A)
+    "log" -> TgIcons.File to Color(0xFF8E99A4)
+    else -> TgIcons.Info to Color(0xFF3A90E9)
 }
 
 // ---------------------------------------------------------------- 各分类页面
@@ -147,6 +184,11 @@ private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) ->
         "震动反馈", s.hapticLevel, listOf(0 to "关闭", 1 to "轻", 2 to "标准(默认)"),
         desc = "翻页、切换标签、开关、长按、保存完成、已经是第一个 / 最后一个等操作时轻微震动;不受系统「触感反馈」总开关影响,由这里决定",
     ) { u { copy(hapticLevel = it) } }
+    Header("液态玻璃")
+    ChoiceRow(
+        "顶栏、悬浮按钮的玻璃效果", s.glass, listOf("on" to "开(默认)", "frosted" to "只要毛玻璃", "off" to "关"),
+        desc = "浮在内容上面的部件采样下面的内容,做模糊、饱和度和边缘折射。Android 13 起有折射,Android 12 只有模糊,更早的系统和低内存手机只画半透明底色。卡顿时可以改成「只要毛玻璃」或关掉",
+    ) { u { copy(glass = it) } }
     Header("动画")
     ChoiceRow(
         "界面动画", s.motion,
@@ -750,7 +792,7 @@ private fun LogPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit, 
 }
 
 @Composable
-private fun LogViewPage() {
+private fun LogViewPage(top: androidx.compose.ui.unit.Dp) {
     val tg = LocalTg.current
     var lines by remember { mutableStateOf<List<String>?>(null) }
     var onlyWarn by remember { mutableStateOf(false) }
@@ -760,7 +802,7 @@ private fun LogViewPage() {
     val shown = remember(all, onlyWarn) { if (all == null) emptyList() else if (onlyWarn) all.filter { it.contains(" W/") || it.contains(" E/") || it.startsWith(" ") || it.startsWith("	at ") } else all }
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(shown.size) { if (shown.isNotEmpty()) listState.scrollToItem(shown.lastIndex) }
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().padding(top = top)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { onlyWarn = !onlyWarn }) { Text(if (onlyWarn) "仅警告和错误 ✓" else "全部") }
             TextButton(onClick = { tick++ }) { Text("刷新") }
@@ -924,16 +966,17 @@ private fun parseChangelog(ctx: android.content.Context, section: String): List<
 }
 
 @Composable
-private fun CodecInfoPage() {
+private fun CodecInfoPage(top: androidx.compose.ui.unit.Dp) {
     val tg = LocalTg.current
     var groups by remember { mutableStateOf<List<CodecGroup>?>(null) }
     LaunchedEffect(Unit) { groups = withContext(Dispatchers.Default) { probeDeviceCodecs() } }
     val list = groups
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding()) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = top).navigationBarsPadding()) {
         if (list == null) {
             Text("读取中…", color = tg.message, modifier = Modifier.padding(16.dp))
             return@Column
         }
+        TgCardColumn {
         Text(
             "绿色 = 硬件解码,灰色 = 软件解码。没有解码器的格式手机无法直接播放(之后可由服务器转码)。",
             color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(16.dp),
@@ -953,6 +996,7 @@ private fun CodecInfoPage() {
                 }
             }
         }
+        }
     }
 }
 
@@ -960,56 +1004,26 @@ private fun CodecInfoPage() {
 
 @Composable
 private fun Header(text: String) {
-    Text(
-        text, color = LocalTg.current.accent, fontSize = 15.sp, fontWeight = FontWeight.Medium,
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 6.dp),
-    )
+    TgHeaderCell(text) // 开始一张新卡片,第一行是蓝色粗体小节标题
 }
 
 @Composable
 private fun NavRow(title: String, desc: String, onClick: () -> Unit) {
-    val tg = LocalTg.current
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, color = tg.name, fontSize = 16.sp)
-            Text(desc, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
-        }
-        Icon(TgIcons.ChevronRight, null, tint = tg.message, modifier = Modifier.size(22.dp))
-    }
-    HorizontalDivider(Modifier.padding(start = 16.dp), color = tg.divider)
+    TgTextCell(title, subtitle = desc, onClick = onClick)
 }
 
 @Composable
 private fun SwitchRow(title: String, desc: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
-    val tg = LocalTg.current
     val hap = LocalHaptics.current
-    val change: (Boolean) -> Unit = { hap.perform(Hap.Click); onChange(it) }
-    Row(
-        Modifier.fillMaxWidth().clickable { change(!checked) }.padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(title, color = tg.name, fontSize = 16.sp)
-            if (desc != null) Text(desc, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
-        }
-        Switch(checked = checked, onCheckedChange = change)
-    }
+    TgCheckCell(title, desc, checked) { hap.perform(Hap.Click); onChange(it) }
 }
 
 @Composable
 private fun <T> ChoiceRow(title: String, value: T, options: List<Pair<T, String>>, desc: String? = null, onSelect: (T) -> Unit) {
-    val tg = LocalTg.current
     var open by remember { mutableStateOf(false) }
     val hap = LocalHaptics.current
     val label = options.firstOrNull { it.first == value }?.second ?: value.toString()
-    Column(Modifier.fillMaxWidth().clickable { hap.perform(Hap.Click); open = true }.padding(horizontal = 16.dp, vertical = 10.dp)) {
-        Text(title, color = tg.name, fontSize = 16.sp)
-        Text(label, color = tg.accent, fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp))
-        if (desc != null) Text(desc, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
-    }
+    TgTextCell(title, value = label, subtitle = desc, onClick = { hap.perform(Hap.Click); open = true })
     if (open) {
         AlertDialog(
             onDismissRequest = { open = false },
@@ -1037,13 +1051,7 @@ private fun ActionRow(title: String, desc: String, confirm: String? = null, dang
     val tg = LocalTg.current
     val scope = rememberCoroutineScope()
     var ask by remember { mutableStateOf(false) }
-    Column(
-        Modifier.fillMaxWidth().clickable { if (confirm != null) ask = true else scope.launch { action() } }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        Text(title, color = if (danger) tg.danger else tg.name, fontSize = 16.sp)
-        Text(desc, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
-    }
+    TgTextCell(title, subtitle = desc, titleColor = if (danger) tg.danger else tg.name, onClick = { if (confirm != null) ask = true else scope.launch { action() } })
     if (ask) {
         AlertDialog(
             onDismissRequest = { ask = false },
@@ -1056,19 +1064,12 @@ private fun ActionRow(title: String, desc: String, confirm: String? = null, dang
 
 @Composable
 private fun InfoRow(title: String, value: String) {
-    val tg = LocalTg.current
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-        Text(title, color = tg.message, fontSize = 13.sp)
-        Text(value, color = tg.name, fontSize = 16.sp, modifier = Modifier.padding(top = 2.dp))
-    }
+    TgDetailCell(title, value)
 }
 
 @Composable
 private fun RestartNote() {
-    Text(
-        "本页的设置在重启应用后生效。",
-        color = LocalTg.current.message, fontSize = 13.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
-    )
+    TgInfoCell("本页的设置在重启应用后生效。")
 }
 
 @Composable
