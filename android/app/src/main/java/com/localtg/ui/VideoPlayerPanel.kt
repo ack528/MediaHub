@@ -1,7 +1,6 @@
 package com.localtg.ui
 
 import androidx.activity.compose.BackHandler
-import com.localtg.ui.glass.mediaGlass
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -98,7 +97,8 @@ internal fun PlayerMenuHost(
                 Modifier
                     .width(minOf(280.dp, maxWidth - 16.dp))
                     .heightIn(max = maxHeight * 0.78f)
-                    .mediaGlass(RoundedCornerShape(20.dp), alpha = 0.82f) // 和顶栏的玻璃按钮同一套;不透明度高一点,菜单文字看得清
+                    .shadow(12.dp, RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(14.dp)).background(MenuBg)
                     .pointerInput(Unit) { detectTapGestures { } } // 吃掉浮层上的点击,不让它落到遮罩上把浮层关了
                     .pointerInput(Unit) { detectHorizontalDragGestures { c, _ -> c.consume() } },
             ) {

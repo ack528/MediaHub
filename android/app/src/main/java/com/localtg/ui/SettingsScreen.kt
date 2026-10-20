@@ -56,6 +56,10 @@ import com.localtg.ui.tg.TgDetailCell
 import com.localtg.ui.tg.TgHeaderCell
 import com.localtg.ui.tg.TgInfoCell
 import com.localtg.ui.tg.TgCardColumn
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.draw.rotate
+import com.localtg.ui.tg.TgCell
+import androidx.compose.ui.text.style.TextOverflow
 import com.localtg.ui.tg.TgGlassPage
 import com.localtg.ui.tg.TgIconCell
 import com.localtg.ui.tg.TgSectionBreak
@@ -688,66 +692,68 @@ private fun AccountPage(c: AppContainer) {
     val tg = LocalTg.current
 
     Header("已保存的服务器")
+    // 点一台服务器:在它下面直接展开操作(切换 / 重命名 / 退出登录 / 删除),不再弹出对话框;重命名、删除确认也在原地完成
     servers.forEach { e ->
-        Column(Modifier.fillMaxWidth().clickable { sel = e }.padding(horizontal = 16.dp, vertical = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(e.name, color = tg.name, fontSize = 16.sp, modifier = Modifier.weight(1f, fill = false))
+        val open = sel?.id == e.id
+        TgCell({ sel = if (open) null else e; renaming = null; deleting = null }) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(e.name, color = tg.name, fontSize = 15.sp, modifier = Modifier.weight(1f, fill = false))
                 if (e.id == activeId) {
                     Text(
                         "当前", color = Color.White, fontSize = 11.sp,
-                        modifier = Modifier.padding(start = 8.dp).clip(RoundedCornerShape(4.dp)).background(tg.accent).padding(horizontal = 6.dp, vertical = 1.dp),
+                        modifier = Modifier.padding(start = 8.dp).clip(RoundedCornerShape(50)).background(tg.accent).padding(horizontal = 7.dp, vertical = 1.dp),
                     )
                 }
+                Spacer(Modifier.weight(1f))
+                Icon(TgIcons.ChevronRight, null, tint = tg.message, modifier = Modifier.size(20.dp).rotate(if (open) 90f else 0f))
             }
-            Text(e.host, color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
             Text(
-                when {
+                e.host + "  ·  " + when {
                     e.isLocal -> "本地媒体"
-                    e.loggedIn -> "已登录" + (if (e.user.isNotEmpty()) "(${e.user})" else "") + (if (e.baseUrl.startsWith("https://")) " · 加密传输" else " · 未加密")
+                    e.loggedIn -> "已登录" + (if (e.user.isNotEmpty()) "(${e.user})" else "") + (if (e.baseUrl.startsWith("https://")) " · 加密" else " · 未加密")
                     else -> "需要重新登录"
                 },
-                color = if (!e.loggedIn) tg.warn else tg.message, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
+                color = if (!e.loggedIn) tg.warn else tg.message, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 3.dp),
             )
         }
-        HorizontalDivider(Modifier.padding(start = 16.dp), color = tg.divider)
-    }
-    ActionRow("添加服务器", "连接另一台服务器;现有的登录都保留,随时可以在侧边栏顶部点一下切换回来") {
-        c.session.deactivate()
-    }
-
-    sel?.let { e ->
-        AlertDialog(
-            onDismissRequest = { sel = null },
-            title = { Text(e.name) },
-            text = {
-                Column {
-                    if (e.id != activeId) TextButton(onClick = { sel = null; scope.launch { c.session.switchTo(e.id) } }, modifier = Modifier.fillMaxWidth()) { Text(if (e.loggedIn) "切换到这个服务器" else "去登录") }
-                    TextButton(onClick = { sel = null; renaming = e }, modifier = Modifier.fillMaxWidth()) { Text("重命名") }
-                    if (e.loggedIn && !e.isLocal) TextButton(onClick = { sel = null; scope.launch { if (e.id == activeId) c.api.logout(); c.session.forget(e.id) } }, modifier = Modifier.fillMaxWidth()) { Text("退出登录") }
-                    TextButton(onClick = { sel = null; deleting = e }, modifier = Modifier.fillMaxWidth()) { Text("删除", color = tg.danger) }
+        androidx.compose.animation.AnimatedVisibility(
+            visible = open,
+            enter = androidx.compose.animation.expandVertically() + androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut(),
+        ) {
+            Column(Modifier.fillMaxWidth().padding(start = 16.dp)) {
+                if (e.id != activeId) {
+                    TgTextCell(if (e.loggedIn) "切换到这个服务器" else "去登录", titleColor = tg.accent, onClick = { sel = null; scope.launch { c.session.switchTo(e.id) } })
                 }
-            },
-            confirmButton = { TextButton(onClick = { sel = null }) { Text("关闭") } },
-        )
+                if (renaming?.id == e.id) {
+                    var name by remember(e.id) { mutableStateOf(e.name) }
+                    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.OutlinedTextField(
+                            value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp), textStyle = androidx.compose.material3.LocalTextStyle.current.copy(fontSize = 15.sp),
+                        )
+                        TextButton(onClick = { renaming = null; scope.launch { c.session.rename(e.id, name) } }) { Text("保存") }
+                    }
+                } else {
+                    TgTextCell("重命名", titleColor = tg.accent, onClick = { renaming = e; deleting = null })
+                }
+                if (e.loggedIn && !e.isLocal) {
+                    TgTextCell("退出登录", titleColor = tg.accent, onClick = { sel = null; scope.launch { if (e.id == activeId) c.api.logout(); c.session.forget(e.id) } })
+                }
+                if (deleting?.id == e.id) {
+                    TgTextCell(
+                        "确定删除「${e.name}」", subtitle = "只是从这部手机上移除这条记录和它的登录,服务器上的内容不受影响", titleColor = tg.danger,
+                        onClick = { sel = null; deleting = null; scope.launch { c.session.remove(e.id) } },
+                    )
+                } else {
+                    TgTextCell("删除", titleColor = tg.danger, onClick = { deleting = e; renaming = null })
+                }
+            }
+        }
     }
-    renaming?.let { e ->
-        var name by remember(e.id) { mutableStateOf(e.name) }
-        AlertDialog(
-            onDismissRequest = { renaming = null },
-            title = { Text("重命名") },
-            text = { androidx.compose.material3.OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true) },
-            confirmButton = { TextButton(onClick = { renaming = null; scope.launch { c.session.rename(e.id, name) } }) { Text("确定") } },
-            dismissButton = { TextButton(onClick = { renaming = null }) { Text("取消") } },
-        )
-    }
-    deleting?.let { e ->
-        AlertDialog(
-            onDismissRequest = { deleting = null },
-            title = { Text("删除“${e.name}”?") },
-            text = { Text("只是从这部手机上移除这条记录和它的登录,服务器上的内容不受影响。") },
-            confirmButton = { TextButton(onClick = { deleting = null; scope.launch { c.session.remove(e.id) } }) { Text("删除", color = tg.danger) } },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } },
-        )
+    ActionRow("添加服务器", "连接另一台服务器;现有的登录都保留,随时可以在这里切换回来") {
+        c.session.deactivate()
     }
 
     if (local) {

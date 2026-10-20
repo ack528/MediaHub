@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -48,15 +49,16 @@ import com.localtg.ui.tg.TgIcons
 
 /** 底栏的四个标签(对应 Telegram 新版的 聊天 / 联系人 / 设置 / 个人资料)。 */
 private val TABS: List<Pair<ImageVector, String>> by lazy {
-    listOf(TgIcons.Chat to "文件夹", TgIcons.Shuffle to "随机", TgIcons.Search to "搜索", TgIcons.Settings to "设置")
+    listOf(TgIcons.Chat to "文件夹", TgIcons.Shuffle to "随机", TgIcons.Settings to "设置") // 搜索在文件夹页右上角
 }
 
 private val BarH = 56.dp
-private val BarSide = 15.dp
+// 底栏按参考截图(五个标签时每格 61dp、左右内边距 8dp):只留三个标签,每格大小不变,整条底栏缩短后居中;高度、全圆的两端不变
+private val TabW = 61.dp
 private val BarGap = 2.dp // 原版底栏离底部手势条约 16dp
 
 /**
- * 主界面:四个标签共用一个页面,底部是悬浮的液态玻璃底栏(Telegram 新版的样子),玻璃采样正在显示的那个标签的内容。
+ * 主界面:三个标签(文件夹 / 随机 / 设置)共用一个页面,底部是悬浮的液态玻璃底栏(Telegram 新版的样子),玻璃采样正在显示的那个标签的内容。
  * 标签里点进去的页面(文件夹 → 聊天、设置 → 二级页)仍是各自的 Activity,系统转场和预测性返回不变。
  * 图片 / 视频查看器盖在整个主界面上面(包括底栏)。
  */
@@ -64,6 +66,7 @@ private val BarGap = 2.dp // 原版底栏离底部手势条约 16dp
 fun MainTabs(c: AppContainer) {
     val ctx = LocalContext.current
     var tab by rememberSaveable { mutableIntStateOf(0) }
+    if (tab >= TABS.size) tab = 0 // 旧版本记住的是「搜索 / 设置」(第 3、4 个),现在只有三个标签
     var drawerOpen by remember { mutableStateOf(false) }
     val holder = rememberSaveableStateHolder()
     val hap = LocalHaptics.current
@@ -79,14 +82,13 @@ fun MainTabs(c: AppContainer) {
                             0 -> DialogsScreen(
                                 c,
                                 onOpen = { d, _ -> ChatActivity.start(ctx, d.id, d.title) },
-                                onSettings = { tab = 3 },
-                                onSearch = { tab = 2 },
+                                onSettings = { tab = 2 },
+                                onSearch = { com.localtg.SearchActivity.start(ctx) },
                                 onRandom = { label, roots, _ -> RandomActivity.start(ctx, label, roots) },
                                 onSection = { SettingsActivity.start(ctx, it) },
                                 onDrawer = { drawerOpen = it },
                             )
                             1 -> RandomScreen(c, null, null, onBack = null, onOpenViewer = openViewer)
-                            2 -> SearchScreen(c, onBack = null, onOpenViewer = openViewer)
                             else -> SettingsScreen(c, null, onBack = null, onOpen = { SettingsActivity.start(ctx, it) })
                         }
                     }
@@ -95,7 +97,7 @@ fun MainTabs(c: AppContainer) {
             overlay = {
                 if (!(tab == 0 && drawerOpen)) {
                     com.localtg.ui.glass.LiquidTabBar(
-                        TABS, tab, Modifier.align(Alignment.BottomCenter).padding(start = BarSide, end = BarSide, bottom = nav + BarGap),
+                        TABS, tab, Modifier.align(Alignment.BottomCenter).padding(bottom = nav + BarGap).width(TabW * TABS.size + 16.dp),
                     ) { if (it != tab) { hap.perform(Hap.Tick); tab = it } }
                 }
             },

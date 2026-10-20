@@ -27,10 +27,6 @@ import androidx.compose.ui.unit.sp
 import com.localtg.ui.tg.Pill
 import com.localtg.ui.tg.TgIcons
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.shape.RoundedCornerShape
-import com.localtg.ui.glass.mediaGlass
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -179,29 +175,27 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
                 rememberChromeState(ui, ui.chrome && !inPip), Modifier.align(Alignment.TopStart),
                 enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
             ) {
-                // 顶部:圆形玻璃返回键 + 玻璃胶囊里的文件名 + 圆形玻璃「更多」(和播放器同一套)
                 Row(
-                    Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color(0x59000000), Color.Transparent)))
-                        .statusBarsPadding().padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
+                        .statusBarsPadding().padding(horizontal = 4.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    GlassCircleButton(TgIcons.Back, "返回") { onBack() }
-                    Box(Modifier.weight(1f).height(44.dp).mediaGlass(RoundedCornerShape(50)).padding(horizontal = 16.dp), contentAlignment = Alignment.CenterStart) {
-                        Text(cur.name, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    GlassCircleButton(TgIcons.More, "更多") { panel = if (panel.isEmpty()) "main" else "" }
+                    ViewerIcon(TgIcons.Back, "返回") { onBack() }
+                    Text(
+                        cur.name, Modifier.weight(1f).padding(horizontal = 4.dp), color = Color.White, fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    ViewerIcon(TgIcons.More, "更多") { panel = if (panel.isEmpty()) "main" else "" }
                 }
             }
             AnimatedVisibility(
                 rememberChromeState(ui, ui.chrome && !inPip), Modifier.align(Alignment.BottomStart),
                 enter = fadeIn() + slideInVertically { it / 2 }, exit = fadeOut() + slideOutVertically { it / 2 },
             ) {
-                // 底部:一张玻璃卡片(拍摄时间、尺寸大小格式、第几张)
                 Row(
-                    Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x59000000))))
-                        .navigationBarsPadding().padding(start = 12.dp, end = 12.dp, top = 20.dp, bottom = 10.dp)
-                        .mediaGlass(RoundedCornerShape(22.dp)).padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))))
+                        .navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 28.dp, bottom = 12.dp),
+                    verticalAlignment = Alignment.Bottom,
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(formatDateTime(cur.takenAt), color = Color.White, fontSize = 14.sp)

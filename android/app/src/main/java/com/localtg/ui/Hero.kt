@@ -169,13 +169,19 @@ val LocalViewerExiting = compositionLocalOf { false }
 fun Modifier.heroSource(id: String, corner: Dp = 0.dp): Modifier {
     val h = LocalHero.current ?: return this
     val c = with(LocalDensity.current) { corner.toPx() }
+    // 列表铺在半透明的玻璃顶栏 / 底栏下面:被它们盖住的那截不算"看得见",打开动画从顶栏下沿开始展开,不会盖住标题栏
+    val ins = com.localtg.ui.tg.LocalBarInsets.current
+    val barTop = with(LocalDensity.current) { ins.calculateTopPadding().toPx() }
+    val barBottom = with(LocalDensity.current) { ins.calculateBottomPadding().toPx() }
     DisposableEffect(h, id) { onDispose { h.bounds.remove(id) } }
     return this
         .onGloballyPositioned { lc ->
             val sp = h.space
             val ok = sp != null && sp.isAttached && lc.isAttached
             val full = if (ok) sp!!.localBoundingBoxOf(lc, clipBounds = false) else Rect(lc.positionInRoot(), lc.size.toSize())
-            val vis = if (ok) sp!!.localBoundingBoxOf(lc, clipBounds = true) else full
+            val vis0 = if (ok) sp!!.localBoundingBoxOf(lc, clipBounds = true) else full
+            val spaceH = if (ok) sp!!.size.height.toFloat() else Float.MAX_VALUE
+            val vis = vis0.intersect(Rect(vis0.left, barTop, vis0.right, spaceH - barBottom))
             val old = h.bounds[id]
             // 诊断:动画期间正在看的那一格在列表里动了(列表被滚动 / 重新排版)—— "抽动"多半就是这个
             if (old != null && id == h.hiddenId && h.phase != HeroState.Phase.Idle && (kotlin.math.abs(old.full.top - full.top) > 1f || kotlin.math.abs(old.full.left - full.left) > 1f)) {

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -73,9 +74,9 @@ import kotlin.math.abs
 import kotlin.math.sign
 
 private val LocalTabScale = staticCompositionLocalOf { { 1f } }
-// 原版底栏不是全圆胶囊:圆角约为高度的 42%(56dp 高 → 24dp),两端有一小段直边;选中块同样比例(48dp 高 → 20dp)
-private val Capsule = RoundedCornerShape(24.dp)
-private val PuckShape = RoundedCornerShape(20.dp)
+// 底栏和选中块都是两头全圆的胶囊(按参考截图)
+private val Capsule = RoundedCornerShape(50)
+private val PuckShape = RoundedCornerShape(50)
 
 /**
  * 液态玻璃底栏。动效:
@@ -101,7 +102,9 @@ fun LiquidTabBar(tabs: List<Pair<ImageVector, String>>, selected: Int, modifier:
 
     BoxWithConstraints(modifier, contentAlignment = Alignment.CenterStart) {
         val density = LocalDensity.current
-        val tabWidth = with(density) { (constraints.maxWidth.toFloat() - 8f.dp.toPx()) / count }
+        // 按参考截图:底栏左右内边距 8dp,每个标签格子等宽;选中块 46dp 高、比格子宽 6dp(左右各探出 3dp)
+        val tabWidth = with(density) { (constraints.maxWidth.toFloat() - 16f.dp.toPx()) / count }
+        val puckW = with(density) { tabWidth.toDp() + 6.dp }
         val offsetAnimation = remember { Animatable(0f) }
         val panelOffset by remember(density) {
             derivedStateOf {
@@ -159,7 +162,7 @@ fun LiquidTabBar(tabs: List<Pair<ImageVector, String>>, selected: Int, modifier:
                     onDrawSurface = { drawRect(container) },
                 )
                 .then(highlight.modifier)
-                .height(56.dp).fillMaxWidth().padding(4.dp),
+                .height(56.dp).fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) { tabs.forEachIndexed { i, (icon, label) -> TabItem(icon, label, tg.name) { currentIndex = i } } }
 
@@ -180,7 +183,7 @@ fun LiquidTabBar(tabs: List<Pair<ImageVector, String>>, selected: Int, modifier:
                         onDrawSurface = { drawRect(container) },
                     )
                     .then(highlight.modifier)
-                    .height(48.dp).fillMaxWidth().padding(horizontal = 4.dp)
+                    .height(48.dp).fillMaxWidth().padding(horizontal = 8.dp)
                     .graphicsLayer(colorFilter = ColorFilter.tint(accent)),
                 verticalAlignment = Alignment.CenterVertically,
             ) { tabs.forEachIndexed { i, (icon, label) -> TabItem(icon, label, accent, bold = true) { currentIndex = i } } }
@@ -188,12 +191,11 @@ fun LiquidTabBar(tabs: List<Pair<ImageVector, String>>, selected: Int, modifier:
 
         // 选中块:平时是一块浅蓝色胶囊;按住 / 拖动时变成透镜
         Box(
-            Modifier.padding(horizontal = 4.dp)
-                .graphicsLayer { translationX = damped.value * tabWidth + panelOffset }
+            Modifier.padding(horizontal = 8.dp)
+                .graphicsLayer { translationX = damped.value * tabWidth + panelOffset - 3.dp.toPx() }
                 .then(highlight.gestureModifier)
                 .then(damped.modifier)
-                .fillMaxWidth(1f / count).height(48.dp)
-                .padding(horizontal = 4.dp) // 原版的选中块比标签窄一点,左右各留 4dp
+                .width(puckW).height(46.dp)
                 .drawBackdrop(
                     backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop), shape = { PuckShape },
                     effects = {
@@ -231,8 +233,8 @@ private fun RowScope.TabItem(icon: ImageVector, label: String, color: Color, bol
         verticalArrangement = Arrangement.spacedBy(1.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(icon, label, tint = color, modifier = Modifier.size(27.dp))
-        Text(label, color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold) // 截图:标签 12sp 粗体,图标 27dp
+        Icon(icon, label, tint = color, modifier = Modifier.size(24.dp))
+        Text(label, color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold) // 截图:标签 12sp 粗体,图标 24dp
     }
 }
 
@@ -241,10 +243,10 @@ private fun RowScope.TabItem(icon: ImageVector, label: String, color: Color, bol
 private fun SimpleTabBar(tabs: List<Pair<ImageVector, String>>, selected: Int, modifier: Modifier, onSelect: (Int) -> Unit) {
     val tg = LocalTg.current
     val pos by animateFloatAsState(selected.toFloat(), spring(0.7f, 400f), label = "tab")
-    BoxWithConstraints(modifier.height(56.dp).clip(Capsule).background((if (tg.dark) tg.bar else Color.White).copy(alpha = 0.94f)).padding(4.dp)) {
+    BoxWithConstraints(modifier.height(56.dp).clip(Capsule).background((if (tg.dark) tg.bar else Color.White).copy(alpha = 0.94f)).padding(horizontal = 8.dp, vertical = 4.dp)) {
         val w = maxWidth / tabs.size
         Box(
-            Modifier.graphicsLayer { translationX = pos * w.toPx() }.size(w, 48.dp).padding(horizontal = 4.dp).clip(PuckShape)
+            Modifier.align(Alignment.CenterStart).graphicsLayer { translationX = pos * w.toPx() - 3.dp.toPx() }.size(w + 6.dp, 46.dp).clip(PuckShape)
                 .background(tg.accent.copy(alpha = if (tg.dark) 0.22f else 0.13f)),
         )
         Row(Modifier.fillMaxWidth().height(48.dp)) {
