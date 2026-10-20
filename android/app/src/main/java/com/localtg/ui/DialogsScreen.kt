@@ -128,22 +128,8 @@ fun DialogsScreen(
     val error by vm.error.collectAsState()
     val scope = rememberCoroutineScope()
     val tg = LocalTg.current
-    val drawer = rememberDrawerState(DrawerValue.Closed)
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val hap = LocalHaptics.current
-    // 侧边栏「重新生成随机序列」:让服务端清除所有历史随机序列并重新生成,手机端也回到"还没选序列"
-    fun resetRandom() {
-        scope.launch {
-            val msg = if (c.isLocal) "本地媒体没有服务端随机序列" else runCatching { c.api.randomReset() }
-                .fold({ c.settings.update { copy(randomSeed = 0) }; "已让服务器清除所有随机序列并重新生成" }, { if (it is com.localtg.data.ApiException && it.http == 404) "服务端版本太旧,请先更新到 1.8.0 或更新的版本" else "重新生成失败:" + friendlyError(it) })
-            hap.perform(if (msg.startsWith("已让服务器")) Hap.Confirm else Hap.Reject)
-            android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
-        }
-    }
-    var confirmLogout by remember { mutableStateOf(false) }
-    // 侧边栏打开时告诉主界面:把悬浮底栏藏起来(不然底栏浮在侧边栏的遮罩上面)
-    val drawerShown = drawer.targetValue == DrawerValue.Open || drawer.currentValue == DrawerValue.Open
-    LaunchedEffect(drawerShown) { onDrawer(drawerShown) }
     val ptr = androidx.compose.material3.pulltorefresh.rememberPullToRefreshState()
 
     // 盘符 = Telegram 的聊天分组标签;主界面左右滑动切换盘符(页 0 = 全部,后面每个盘符一页)
@@ -163,25 +149,10 @@ fun DialogsScreen(
         }
     }
 
-    fun go(f: () -> Unit) { scope.launch { drawer.close(); f() } }
-    ModalNavigationDrawer(
-        drawerState = drawer,
-        gesturesEnabled = drawer.isOpen || pager.currentPage == 0, // 不在第一页时,横向滑动留给盘符切换;菜单按钮随时可以打开侧边栏
-        drawerContent = {
-            AppDrawer(
-                c, onSearch = { go(onSearch) }, onRandom = { go { resetRandom() } }, onRefresh = { go { vm.refresh() } }, onSettings = { go(onSettings) },
-                onLog = { go { onSection("log") } }, onAbout = { go { onSection("about") } },
-                onLogout = { go { confirmLogout = true } },
-                onSwitch = { id -> go { c.scope.launch { c.session.switchTo(id) } } },
-                onAddServer = { go { c.scope.launch { c.session.deactivate() } } },
-                onManage = { go { onSection("account") } },
-            )
-        },
-    ) {
         TgGlassScaffold(bar = {
-                Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
-                    BarIcon(TgIcons.Menu, "菜单") { scope.launch { drawer.open() } }
-                    Text("本地浏览", Modifier.weight(1f).padding(start = 8.dp), color = tg.barText, fontSize = 20.sp, fontWeight = FontWeight.Medium)
+                Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 64dp(Telegram 新版)
+                    // 左上角不再有菜单键:原来侧边栏里的功能都在「设置」里(服务器管理、随机序列、日志、关于、退出登录)
+                    Text("本地浏览", Modifier.weight(1f).padding(start = 22.dp), color = tg.barText, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                     BarIcon(TgIcons.Search, "搜索", onSearch)
                 }
                 if (labels.size > 1) FolderTabs(labels, pager) { scope.launch { pager.animateScrollToPage(it) } }
@@ -227,97 +198,7 @@ fun DialogsScreen(
                 }
             }
         }
-    }
 
-    if (confirmLogout) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { confirmLogout = false },
-            title = { Text("退出登录") }, text = { Text("退出后需要重新输入账号密码。服务器地址会保留。") },
-            confirmButton = { TextButton(onClick = { confirmLogout = false; scope.launch { c.api.logout(); c.session.clearToken() } }) { Text("退出") } },
-            dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text("取消") } },
-        )
-    }
-}
-
-/** 侧边栏(Telegram 风格):顶部是 logo、应用名和服务器地址,下面是常用入口。 */
-@Composable
-private fun AppDrawer(
-    c: AppContainer, onSearch: () -> Unit, onRandom: () -> Unit, onRefresh: () -> Unit, onSettings: () -> Unit,
-    onLog: () -> Unit, onAbout: () -> Unit, onLogout: () -> Unit,
-    onSwitch: (String) -> Unit, onAddServer: () -> Unit, onManage: () -> Unit,
-) {
-    val tg = LocalTg.current
-    val session by c.session.session.collectAsState()
-    val servers by c.session.servers.collectAsState()
-    val activeId by c.session.activeId.collectAsState()
-    val cur = servers.firstOrNull { it.id == activeId }
-    val host = remember(session, cur) { if (cur?.isLocal == true) "本地媒体" else session?.baseUrl?.substringAfter("://").orEmpty() }
-    var expanded by remember { mutableStateOf(false) }
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val ver = remember { runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull().orEmpty() }
-    ModalDrawerSheet(
-        drawerContainerColor = tg.bg, modifier = Modifier.width(304.dp),
-        windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0), // 状态栏高度由蓝色头部自己处理
-    ) {
-        Column(Modifier.fillMaxWidth().background(tg.bar).statusBarsPadding().clickable { expanded = !expanded }.padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 16.dp)) {
-            androidx.compose.foundation.Image(
-                androidx.compose.ui.res.painterResource(com.localtg.R.drawable.ic_logo), null,
-                Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)),
-            )
-            Text("本地浏览", Modifier.padding(top = 12.dp), color = tg.barText, fontSize = 18.sp, fontWeight = FontWeight.Medium)
-            Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    (cur?.name?.takeIf { servers.size > 1 || cur.isLocal }?.let { "$it · " } ?: "") + host.ifEmpty { "未连接" },
-                    Modifier.weight(1f), color = tg.barSub, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-                Text(if (expanded) "▴" else "▾", color = tg.barSub, fontSize = 14.sp, modifier = Modifier.padding(start = 6.dp))
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        if (expanded) {
-            // 服务器切换:点哪台就切到哪台
-            servers.forEach { e ->
-                Row(
-                    Modifier.fillMaxWidth().hapticClickable { if (e.id != activeId) onSwitch(e.id) else expanded = false }.padding(horizontal = 20.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(Modifier.size(10.dp).clip(RoundedCornerShape(5.dp)).background(if (e.id == activeId) tg.accent else Color.Transparent))
-                    Column(Modifier.weight(1f).padding(start = 18.dp)) {
-                        Text(e.name, color = tg.name, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(
-                            e.host + if (!e.loggedIn) "  ·  需要登录" else "", color = tg.message, fontSize = 12.sp, maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
-            DrawerItem(TgIcons.Refresh, "添加服务器", onAddServer)
-            DrawerItem(TgIcons.Settings, "管理服务器", onManage)
-            Box(Modifier.padding(vertical = 6.dp).fillMaxWidth().height(1.dp).background(tg.divider))
-        }
-        DrawerItem(TgIcons.Search, "搜索", onSearch)
-        DrawerItem(TgIcons.Refresh, "重新生成随机序列", onRandom)
-        DrawerItem(TgIcons.Refresh, "刷新列表", onRefresh)
-        DrawerItem(TgIcons.Settings, "设置", onSettings)
-        DrawerItem(TgIcons.File, "日志与诊断", onLog)
-        DrawerItem(TgIcons.Info, "关于", onAbout)
-        Box(Modifier.padding(vertical = 6.dp).fillMaxWidth().height(1.dp).background(tg.divider))
-        DrawerItem(TgIcons.Logout, "退出登录", onLogout, tint = tg.danger)
-        Spacer(Modifier.weight(1f))
-        Text("版本 $ver", Modifier.padding(18.dp).navigationBarsPadding(), color = tg.message, fontSize = 12.sp)
-    }
-}
-
-@Composable
-private fun DrawerItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit, tint: Color? = null) {
-    val tg = LocalTg.current
-    Row(
-        Modifier.fillMaxWidth().height(50.dp).hapticClickable(onClick = onClick).padding(horizontal = 20.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        androidx.compose.material3.Icon(icon, null, tint = tint ?: tg.message, modifier = Modifier.size(24.dp))
-        Text(label, Modifier.padding(start = 28.dp), color = tint ?: tg.name, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-    }
 }
 
 /**
@@ -382,10 +263,11 @@ private fun RandomRow(label: String?, onClick: (androidx.compose.ui.geometry.Rec
     val tg = LocalTg.current
     val at = remember { arrayOfNulls<androidx.compose.ui.geometry.Rect>(1) } // 这一行的位置:点进去时从这里展开
     Box(Modifier.fillMaxWidth().height(70.dp).onGloballyPositioned { at[0] = it.boundsInRoot() }.hapticClickable { onClick(at[0]) }) {
-        Box(
-            Modifier.padding(start = 11.dp, top = 9.dp).size(52.dp).clip(RoundedCornerShape(26.dp)).background(tg.accent),
-            contentAlignment = Alignment.Center,
-        ) { Text("🎲", fontSize = 26.sp) }
+        // 随机浏览的头像:紫色渐变圆 + 白色随机图标(和设置首页的彩色图标、底栏的「随机」图标同一套)
+        androidx.compose.foundation.Image(
+            androidx.compose.ui.res.painterResource(com.localtg.R.drawable.ic_random), null,
+            Modifier.padding(start = 11.dp, top = 9.dp).size(52.dp),
+        )
         Column(Modifier.fillMaxSize().padding(start = 72.dp, end = 12.dp, top = 10.dp)) {
             Text(if (label != null) "随机浏览 · $label" else "随机浏览", color = tg.name, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1)
             Text(if (label != null) "只随机 $label 里的图片或视频" else "随机所有盘符里的图片或视频", Modifier.padding(top = 3.dp), color = tg.message, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)

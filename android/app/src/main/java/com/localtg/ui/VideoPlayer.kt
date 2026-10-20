@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import com.localtg.ui.glass.mediaGlass
+import com.localtg.ui.glass.liquidPress
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -1296,8 +1297,10 @@ private fun TextCtrl(text: String, onClick: () -> Unit) {
 @Composable
 private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val h = remember(scope) { com.localtg.ui.glass.InteractiveHighlight(scope) }
     Box(
-        modifier.size(size).pressScale(src, 0.1f).mediaGlass(CircleShape, alpha = 0.32f).hapticClickable(src, onClick = onClick),
+        modifier.size(size).liquidPress(h).mediaGlass(CircleShape, alpha = 0.32f).hapticClickable(src, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, desc, tint = Color.White, modifier = Modifier.size(size * 0.55f)) }
 }

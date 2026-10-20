@@ -23,9 +23,11 @@ private val Context.playbackDataStore by preferencesDataStore(name = "playback_p
 @Serializable
 data class AppSettings(
     // ---- 外观
-    val theme: String = "system",              // system / light / dark
+    val theme: String = "dark",                // dark(默认)/ light / system
     val chatBackground: String = "gradient",   // gradient / plain
     val motion: String = "slide",              // 界面动画:slide(系统风格,默认) / parallax(整屏滑动+视差) / axis(Material 共享轴) / fade(淡入淡出) / off(关闭)
+    val darkDefaultApplied: Boolean = false,   // 4.0.0 起默认深色:老用户原来的"跟随系统"(当时的默认值)升级时改成深色,只做一次
+    val font: String = "harmony",             // 界面字体:harmony(HarmonyOS Sans,默认) / system(系统字体)
     val glass: String = "on",                 // 液态玻璃:on(按设备能力,默认) / frosted(只要毛玻璃) / off(关,只画半透明膜)
     val fineMotion: Boolean = true,            // 细节动效:弹簧按压回弹、列表入场、标签指示条跟手滑动、登录页入场(页面转场不受影响;界面动画选关闭时也一并关闭)
     val fontScale: Float = 1f,                 // 界面文字缩放(在系统字号之上再乘)
@@ -153,7 +155,10 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
         // 补帧只保留 LSFG:旧版本的 blend / mc* / flow 等值一律回到"关闭"
         // 非高通处理器不支持补帧:一律关闭
         if (s.enhFrc in setOf("off", "lsfg", "lsfg_low") && (s.enhFrc == "off" || com.localtg.render.Lsfg.deviceSupported)) s else s.copy(enhFrc = "off")
-    } ?: AppSettings()
+    }?.let { s ->
+        // 4.0.0 起默认深色主题:以前的默认值是"跟随系统",没改过的老用户升级后也换成深色(只做一次,之后用户自己改回跟随系统不受影响)
+        if (!s.darkDefaultApplied) s.copy(theme = if (s.theme == "system") "dark" else s.theme, darkDefaultApplied = true) else s
+    } ?: AppSettings(darkDefaultApplied = true)
 
     val value: AppSettings get() = state.value
 

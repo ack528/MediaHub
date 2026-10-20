@@ -55,14 +55,14 @@ fun FolderSearchBar(query: String, onQuery: (String) -> Unit, onClose: () -> Uni
     val focus = remember { FocusRequester() }
     val fm = LocalFocusManager.current
     LaunchedEffect(Unit) { focus.requestFocus() }
-    Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 64dp(Telegram 新版)
         BarIcon(TgIcons.Back, "关闭搜索") { fm.clearFocus(); onClose() }
         // Telegram 新版的搜索框:顶栏里的圆角胶囊
                 Box(Modifier.weight(1f).padding(end = 8.dp).clip(RoundedCornerShape(50)).background(if (tg.dark) androidx.compose.ui.graphics.Color(0x14FFFFFF) else tg.gray).padding(horizontal = 16.dp, vertical = 9.dp)) {
             if (query.isEmpty()) Text("在这个文件夹里搜索文件名", color = tg.barSub, fontSize = 17.sp)
             BasicTextField(
                 value = query, onValueChange = onQuery, singleLine = true,
-                textStyle = TextStyle(color = tg.barText, fontSize = 17.sp),
+                textStyle = androidx.compose.material3.LocalTextStyle.current.merge(TextStyle(color = tg.barText, fontSize = 17.sp)),
                 cursorBrush = SolidColor(tg.barText),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { fm.clearFocus() }),

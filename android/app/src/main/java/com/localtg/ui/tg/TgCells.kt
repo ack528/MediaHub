@@ -56,8 +56,10 @@ private const val SlotOutside = "tg-outside"
 
 private val CardPad = 14.dp
 private val CardGap = 14.dp
-private val CardRadius = 18.dp
-private val CellPad = 18.dp
+// 尺寸按 Telegram 新版截图量出(411dp 宽):卡片圆角 16dp、左右留 14dp;卡片内文字起点 22dp;
+// 正文 18sp、说明 15sp、小节标题 15sp 粗体;单行 57dp、两行约 73dp;首页图标 32dp,图标左 20dp、到文字 22dp
+private val CardRadius = 16.dp
+private val CellPad = 22.dp
 
 private class CardGeometry {
     val cards = ArrayList<FloatArray>() // top, bottom
@@ -132,7 +134,7 @@ fun TgHeaderCell(text: String) {
     val tg = LocalTg.current
     Text(
         text, color = tg.header, fontSize = 15.sp, fontWeight = FontWeight.Bold,
-        modifier = Modifier.layoutId(SlotStart).fillMaxWidth().padding(start = CellPad, end = CellPad, top = 14.dp, bottom = 4.dp),
+        modifier = Modifier.layoutId(SlotStart).fillMaxWidth().padding(start = CellPad, end = CellPad, top = 18.dp, bottom = 6.dp),
     )
 }
 
@@ -148,7 +150,7 @@ fun TgCell(onClick: (() -> Unit)?, content: @Composable ColumnScope.() -> Unit) 
     Column(
         Modifier.fillMaxWidth()
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .heightIn(min = 54.dp).padding(horizontal = CellPad, vertical = 10.dp),
+            .heightIn(min = 57.dp).padding(horizontal = CellPad, vertical = 13.dp),
         verticalArrangement = Arrangement.Center,
         content = content,
     )
@@ -160,15 +162,15 @@ fun TgTextCell(title: String, value: String? = null, subtitle: String? = null, t
     val tg = LocalTg.current
     TgCell(onClick) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, color = if (titleColor == Color.Unspecified) tg.name else titleColor, fontSize = 17.sp, modifier = Modifier.weight(1f))
+            Text(title, color = if (titleColor == Color.Unspecified) tg.name else titleColor, fontSize = 18.sp, modifier = Modifier.weight(1f))
             if (value != null) {
                 Text(
-                    value, color = tg.accent, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    value, color = tg.accent, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(start = 12.dp).widthIn(max = 190.dp),
                 )
             }
         }
-        if (subtitle != null) Text(subtitle, color = tg.message, fontSize = 14.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 3.dp))
+        if (subtitle != null) Text(subtitle, color = tg.message, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp))
     }
 }
 
@@ -179,8 +181,8 @@ fun TgCheckCell(title: String, subtitle: String?, checked: Boolean, onChange: (B
     TgCell({ onChange(!checked) }) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text(title, color = tg.name, fontSize = 17.sp)
-                if (subtitle != null) Text(subtitle, color = tg.message, fontSize = 14.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 3.dp))
+                Text(title, color = tg.name, fontSize = 18.sp)
+                if (subtitle != null) Text(subtitle, color = tg.message, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp))
             }
             TgSwitch(checked)
         }
@@ -192,8 +194,8 @@ fun TgCheckCell(title: String, subtitle: String?, checked: Boolean, onChange: (B
 fun TgDetailCell(title: String, value: String) {
     val tg = LocalTg.current
     TgCell(null) {
-        Text(title, color = tg.message, fontSize = 14.sp)
-        Text(value, color = tg.name, fontSize = 17.sp, modifier = Modifier.padding(top = 2.dp))
+        Text(title, color = tg.message, fontSize = 15.sp)
+        Text(value, color = tg.name, fontSize = 18.sp, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
@@ -202,15 +204,15 @@ fun TgDetailCell(title: String, value: String) {
 fun TgIconCell(icon: ImageVector, iconColor: Color, title: String, subtitle: String?, onClick: () -> Unit) {
     val tg = LocalTg.current
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).heightIn(min = 60.dp).padding(horizontal = 16.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).heightIn(min = 57.dp).padding(horizontal = 20.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(32.dp).clip(RoundedCornerShape(9.dp)).background(iconColor), contentAlignment = Alignment.Center) {
             Icon(icon, null, tint = Color.White, modifier = Modifier.size(20.dp))
         }
-        Column(Modifier.weight(1f).padding(start = 18.dp)) {
-            Text(title, color = tg.name, fontSize = 17.sp)
-            if (subtitle != null) Text(subtitle, color = tg.message, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+        Column(Modifier.weight(1f).padding(start = 22.dp)) {
+            Text(title, color = tg.name, fontSize = 18.sp)
+            if (subtitle != null) Text(subtitle, color = tg.message, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
         }
     }
 }
@@ -220,7 +222,7 @@ fun TgIconCell(icon: ImageVector, iconColor: Color, title: String, subtitle: Str
 fun TgInfoCell(text: String) {
     val tg = LocalTg.current
     Text(
-        text, color = tg.message, fontSize = 13.sp, lineHeight = 18.sp,
+        text, color = tg.message, fontSize = 14.sp,
         modifier = Modifier.layoutId(SlotOutside).fillMaxWidth().padding(start = CardPad + CellPad, end = CardPad + CellPad, top = 7.dp),
     )
 }
@@ -238,18 +240,27 @@ fun TgSectionGap(height: Dp = 12.dp) {
 @Composable
 fun TgSwitch(checked: Boolean, modifier: Modifier = Modifier) {
     val tg = LocalTg.current
-    val p by animateFloatAsState(if (checked) 1f else 0f, tween(if (com.localtg.ui.fineMotionOn()) 180 else 0), label = "switch")
+    // 液态的手感:滑块用弹簧移动(到位时轻微过冲),移动途中被拉长成胶囊、到位后缩回圆形
+    val p by animateFloatAsState(
+        if (checked) 1f else 0f,
+        if (com.localtg.ui.fineMotionOn()) androidx.compose.animation.core.spring(dampingRatio = 0.55f, stiffness = 500f) else tween(0),
+        label = "switch",
+    )
     Canvas(modifier.size(width = 46.dp, height = 26.dp)) {
         val trackW = 40.dp.toPx()
         val trackH = 18.dp.toPx()
         val left = (size.width - trackW) / 2f
         val top = (size.height - trackH) / 2f
-        val track = lerp(tg.switchOff, tg.switchOn, p)
+        val pc = p.coerceIn(0f, 1f)
+        val track = lerp(tg.switchOff, tg.switchOn, pc)
         drawRoundRect(track, Offset(left, top), Size(trackW, trackH), CornerRadius(trackH / 2f))
-        val r = 11.dp.toPx()
-        val cx = left + r - 2.dp.toPx() + (trackW - 2 * r + 4.dp.toPx()) * p
+        val r = 11.dp.toPx() - 1.dp.toPx()
+        val cx = left + r - 1.dp.toPx() + (trackW - 2 * r + 2.dp.toPx()) * p
         val cy = size.height / 2f
-        drawCircle(Color.White, r - 1.dp.toPx(), Offset(cx, cy))
-        drawCircle(track, r - 1.dp.toPx(), Offset(cx, cy), style = Stroke(2.dp.toPx()))
+        val stretch = r * 0.55f * kotlin.math.sin(Math.PI.toFloat() * pc) // 途中拉长
+        val tl = Offset(cx - r - stretch / 2f, cy - r)
+        val sz = Size(2 * r + stretch, 2 * r)
+        drawRoundRect(Color.White, tl, sz, CornerRadius(r))
+        drawRoundRect(track, tl, sz, CornerRadius(r), style = Stroke(2.dp.toPx()))
     }
 }

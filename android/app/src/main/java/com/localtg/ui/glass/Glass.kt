@@ -72,8 +72,9 @@ fun Modifier.glass(shape: CornerBasedShape, kind: GlassKind, tint: Color, fallba
         shape = { shape },
         effects = {
             vibrancy()
-            blur((if (kind == GlassKind.Bar) 26f else 6f).dp.toPx())
-            if (kind == GlassKind.Pill && level == GlassLevel.Liquid) lens(14f.dp.toPx(), 22f.dp.toPx())
+            blur((if (kind == GlassKind.Bar) 20f else 6f).dp.toPx())
+            // 透镜折射:小部件边缘明显弯折;通栏顶栏只在底边轻轻弯一下(液态玻璃的边缘感)
+            if (level == GlassLevel.Liquid) { if (kind == GlassKind.Pill) lens(12f.dp.toPx(), 16f.dp.toPx()) else lens(8f.dp.toPx(), 10f.dp.toPx()) }
         },
         highlight = if (kind == GlassKind.Pill) ({ Highlight(width = 0.8f.dp, alpha = 0.55f) }) else null,
         shadow = if (kind == GlassKind.Pill) ({ Shadow(radius = 18f.dp, color = Color.Black.copy(alpha = 0.10f)) }) else null,
@@ -101,11 +102,11 @@ fun GlassHost(
  * 查看器 / 播放器里浮在画面上的玻璃(深色):不采样 —— 视频画在 SurfaceView 上,图层录不到,采样出来是一块黑把画面挡住;
  * 改成半透明的深色膜 + 上亮下暗的一圈细描边(玻璃的边缘高光)+ 柔和阴影,照片和视频上看起来一致,也不额外耗电。
  */
-fun Modifier.mediaGlass(shape: androidx.compose.ui.graphics.Shape, alpha: Float = 0.40f): Modifier =
+fun Modifier.mediaGlass(shape: androidx.compose.ui.graphics.Shape, alpha: Float = 0.34f): Modifier =
     this.shadow(10.dp, shape, ambientColor = Color.Black.copy(alpha = 0.25f), spotColor = Color.Black.copy(alpha = 0.25f))
         .clip(shape)
         .background(Color(0xFF16181C).copy(alpha = alpha), shape)
-        .border(0.8.dp, androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.32f), Color.White.copy(alpha = 0.06f))), shape)
+        .border(0.8.dp, androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.42f), Color.White.copy(alpha = 0.08f))), shape)
 
 /** 页面底部被悬浮玻璃底栏盖住的高度(含导航栏);没有底栏的页面是 0。列表据此在底部留白,最后一项能滚到底栏上面。 */
 val LocalBottomInset = androidx.compose.runtime.compositionLocalOf { 0.dp }

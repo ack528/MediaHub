@@ -42,10 +42,10 @@ data class TgPalette(
 
 val TgLight = TgPalette(
     dark = false,
-    bar = Color.White, barText = Color(0xFF1A1D21), barSub = Color(0xFF79817E), barTabIdle = Color(0xFF777C7F),
-    bg = Color.White, name = Color(0xFF1A1D21), message = Color(0xFF75787A), date = Color(0xFF848688), divider = Color(0xFFD9D9D9),
+    bar = Color(0xFFF7F7FA), barText = Color(0xFF1A1D21), barSub = Color(0xFF79817E), barTabIdle = Color(0xFF777C7F),
+    bg = Color.White, name = Color(0xFF1A1D21), message = Color(0xFF75787A), date = Color(0xFF848688), divider = Color(0xFFDCDCE2),
     badge = Color(0xFF229AF0), badgeMuted = Color(0xFFBEC3C7), accent = Color(0xFF298ACF), attach = Color(0xFF3C7EB0),
-    chatTop = Color(0xFFD8DDB0), chatBottom = Color(0xFF8AB488), bubbleIn = Color.White, bubbleText = Color(0xFF000000),
+    chatTop = Color.White, chatBottom = Color.White, bubbleIn = Color(0xFFF1F1F4), bubbleText = Color(0xFF000000),
     pill = Color(0x66000000), sheet = Color.White,
     danger = Color(0xFFCC4747), ok = Color(0xFF37A818),
     gray = Color(0xFFEFEFF4), barActive = Color(0xFF298ACF), header = Color(0xFF298ACF), barIconsDark = true,
@@ -63,13 +63,37 @@ val TgDark = TgPalette(
     switchOff = Color(0xFF5D7484), switchOn = Color(0xFF61A3D7),
 )
 
-/** 全应用统一的字号:弹窗标题 18sp、小节标题 16sp、正文 16 / 14sp(以前各页各写各的,弹窗标题用的是 Material 默认的 24sp)。 */
-private val TgTypography = Typography().let { t ->
-    t.copy(
-        titleLarge = t.titleLarge.copy(fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.Medium),
-        titleMedium = t.titleMedium.copy(fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.Medium),
-        titleSmall = t.titleSmall.copy(fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium),
-        headlineSmall = t.headlineSmall.copy(fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.Medium),
+/**
+ * 界面字体:HarmonyOS Sans SC(华为,按《HarmonyOS Sans 字体许可协议》免费使用,未做任何修改,许可文本在 assets/HarmonyOS_Sans_LICENSE.txt,
+ * 「关于」页有说明)。Apple 的 SF Pro 许可只允许在苹果平台上使用,不能放进安卓应用。字体里没有的字自动用系统字体补。
+ */
+val HarmonySans = androidx.compose.ui.text.font.FontFamily(
+    androidx.compose.ui.text.font.Font(com.localtg.R.font.harmonyos_sans_sc_regular, FontWeight.Normal),
+    androidx.compose.ui.text.font.Font(com.localtg.R.font.harmonyos_sans_sc_medium, FontWeight.Medium),
+    androidx.compose.ui.text.font.Font(com.localtg.R.font.harmonyos_sans_sc_bold, FontWeight.Bold),
+)
+
+/**
+ * 全应用统一的字号和字体:弹窗标题 18sp、小节标题 16sp、正文 16 / 14sp。
+ * 行高不再固定成 Material 默认的 24sp(13sp 的小字配 24sp 行高,上下空得很多、和图标对不齐),改成跟随字体本身的行距,
+ * 并去掉安卓额外加的字体上下留白(includeFontPadding),文字在行里垂直居中,和图标、开关对齐。
+ */
+private fun tgTypography(family: androidx.compose.ui.text.font.FontFamily?): Typography {
+    val base = Typography()
+    fun androidx.compose.ui.text.TextStyle.fix(size: androidx.compose.ui.unit.TextUnit? = null, weight: FontWeight? = null) = copy(
+        fontFamily = family ?: fontFamily, fontSize = size ?: fontSize, fontWeight = weight ?: fontWeight,
+        lineHeight = androidx.compose.ui.unit.TextUnit.Unspecified, letterSpacing = 0.sp,
+        platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
+        lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
+            androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center, androidx.compose.ui.text.style.LineHeightStyle.Trim.None,
+        ),
+    )
+    return base.copy(
+        displayLarge = base.displayLarge.fix(), displayMedium = base.displayMedium.fix(), displaySmall = base.displaySmall.fix(),
+        headlineLarge = base.headlineLarge.fix(), headlineMedium = base.headlineMedium.fix(), headlineSmall = base.headlineSmall.fix(18.sp, FontWeight.Medium),
+        titleLarge = base.titleLarge.fix(20.sp, FontWeight.Medium), titleMedium = base.titleMedium.fix(16.sp, FontWeight.Medium), titleSmall = base.titleSmall.fix(15.sp, FontWeight.Medium),
+        bodyLarge = base.bodyLarge.fix(), bodyMedium = base.bodyMedium.fix(), bodySmall = base.bodySmall.fix(),
+        labelLarge = base.labelLarge.fix(), labelMedium = base.labelMedium.fix(), labelSmall = base.labelSmall.fix(),
     )
 }
 
@@ -85,7 +109,7 @@ val LocalTg = staticCompositionLocalOf { TgLight }
 val LocalSettings = staticCompositionLocalOf { com.localtg.data.AppSettings() }
 
 @Composable
-fun TgTheme(mode: String = "system", content: @Composable () -> Unit) {
+fun TgTheme(mode: String = "dark", font: String = "harmony", content: @Composable () -> Unit) {
     val dark = when (mode) { "dark" -> true; "light" -> false; else -> isSystemInDarkTheme() }
     val p = if (dark) TgDark else TgLight
     val scheme = if (p.dark) {
@@ -99,7 +123,8 @@ fun TgTheme(mode: String = "system", content: @Composable () -> Unit) {
     }
     BarIconsEffect(p.barIconsDark) // 白色顶栏(白天)状态栏 / 导航栏图标用深色,深蓝顶栏(夜间)用浅色
     CompositionLocalProvider(LocalTg provides p) {
-        MaterialTheme(colorScheme = scheme, typography = TgTypography, shapes = TgShapes) {
+        val typography = androidx.compose.runtime.remember(font) { tgTypography(if (font == "system") null else HarmonySans) }
+        MaterialTheme(colorScheme = scheme, typography = typography, shapes = TgShapes) {
             Surface(Modifier.fillMaxSize(), color = p.bg, content = content)
         }
     }

@@ -77,7 +77,7 @@ private val SECTIONS = listOf(
     Triple("enhance", "画质增强(实验)", "实时超分、补帧(倍率 / 光流)、SDR 转 HDR、硬件检测"),
     Triple("network", "网络", "连接与读取超时"),
     Triple("speedtest", "网络测速", "服务器延迟、下载 / 上传速度(至少测 15 秒)"),
-    Triple("storage", "存储与缓存", "清理缓存、记录,恢复默认设置"),
+    Triple("storage", "存储与缓存", "清理缓存和记录、重新生成随机序列、恢复默认设置"),
     Triple("account", "服务器管理", "已保存的服务器、切换、添加、退出登录"),
     Triple("log", "日志与诊断", "日志级别、查看、复制、分享给开发者"),
     Triple("about", "关于", "版本信息"),
@@ -166,8 +166,12 @@ private fun sectionIcon(id: String): Pair<androidx.compose.ui.graphics.vector.Im
 @Composable
 private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit) {
     Header("主题")
-    ChoiceRow("颜色主题", s.theme, listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色")) { u { copy(theme = it) } }
+    ChoiceRow("颜色主题", s.theme, listOf("dark" to "深色(默认)", "light" to "浅色", "system" to "跟随系统")) { u { copy(theme = it) } }
     Header("文字与头像")
+    ChoiceRow(
+        "界面字体", s.font, listOf("harmony" to "HarmonyOS Sans(默认)", "system" to "系统字体"),
+        desc = "HarmonyOS Sans 是华为的界面字体(免费使用),中英文和数字更统一;字体里没有的生僻字自动用系统字体显示",
+    ) { u { copy(font = it) } }
     ChoiceRow(
         "界面文字大小", s.fontScale, listOf(0.85f, 1f, 1.15f, 1.3f, 1.5f).map { it to "${(it * 100).toInt()}%" + if (it == 1f) "(默认)" else "" },
         desc = "在系统字号的基础上再缩放,只影响本应用",
@@ -658,6 +662,16 @@ private fun StoragePage(c: AppContainer) {
         if (!c.isLocal) runCatching { c.api.clearSyncedPlayback() }
         msg = "播放进度已清除"
     }
+    Header("随机浏览")
+    ActionRow(
+        "重新生成随机序列", "让服务器清除所有历史随机序列并重新生成;手机端下次进随机浏览时用新的序列(原来在主界面侧边栏里)",
+        confirm = "清除服务器上所有的随机序列并重新生成?",
+    ) {
+        msg = if (c.isLocal) "本地媒体没有服务端随机序列" else runCatching { c.api.randomReset() }.fold(
+            { c.settings.update { copy(randomSeed = 0) }; "已让服务器清除所有随机序列并重新生成" },
+            { if (it is com.localtg.data.ApiException && it.http == 404) "服务端版本太旧,请先更新到 1.8.0 或更新的版本" else "重新生成失败:" + com.localtg.data.friendlyError(it) },
+        )
+    }
     Header("设置")
     ActionRow("恢复默认设置", "不影响登录状态和浏览记录", confirm = "把所有设置恢复为默认值?", danger = true) {
         c.settings.reset(); msg = "已恢复默认设置"
@@ -839,9 +853,27 @@ private fun AboutPage(c: AppContainer) {
     InfoRow("服务端", server)
     InfoRow("系统", "Android ${android.os.Build.VERSION.RELEASE}(API ${android.os.Build.VERSION.SDK_INT})")
     InfoRow("设备", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+    FontNotice()
     UpdateSection(ver, c)
     MirrorSection(c.settings.value) { c.settings.update(it) }
     ChangelogSection(ver)
+}
+
+/** 字体许可要求的显著说明:本应用使用了 HarmonyOS Sans 字体;点一下看完整的许可协议。 */
+@Composable
+private fun FontNotice() {
+    val ctx = LocalContext.current
+    var show by remember { mutableStateOf(false) }
+    TgTextCell("字体", value = "HarmonyOS Sans", subtitle = "本应用使用了华为 HarmonyOS Sans 字体(版权所有 © 2021 Huawei Device Co., Ltd.),点按查看许可协议", onClick = { show = true })
+    if (show) {
+        val text = remember { runCatching { ctx.assets.open("HarmonyOS_Sans_LICENSE.txt").bufferedReader().use { it.readText() } }.getOrDefault("") }
+        AlertDialog(
+            onDismissRequest = { show = false },
+            title = { Text("HarmonyOS Sans 字体许可") },
+            text = { Column(Modifier.verticalScroll(rememberScrollState())) { Text(text, fontSize = 12.sp) } },
+            confirmButton = { TextButton(onClick = { show = false }) { Text("关闭") } },
+        )
+    }
 }
 
 /**

@@ -94,37 +94,12 @@ fun MainTabs(c: AppContainer) {
             },
             overlay = {
                 if (!(tab == 0 && drawerOpen)) {
-                    GlassTabBar(
-                        tab, Modifier.align(Alignment.BottomCenter).padding(start = BarSide, end = BarSide, bottom = nav + BarGap),
-                    ) { if (it != tab) { hap.perform(Hap.Tick); if (it != 0) drawerOpen = false; tab = it } }
+                    com.localtg.ui.glass.LiquidTabBar(
+                        TABS, tab, Modifier.align(Alignment.BottomCenter).padding(start = BarSide, end = BarSide, bottom = nav + BarGap),
+                    ) { if (it != tab) { hap.perform(Hap.Tick); tab = it } }
                 }
             },
         )
     }
 }
 
-/** 悬浮的液态玻璃底栏:胶囊形,四个"图标 + 文字"标签,选中的标签垫一块浅蓝色胶囊。 */
-@Composable
-private fun GlassTabBar(selected: Int, modifier: Modifier, onSelect: (Int) -> Unit) {
-    val tg = LocalTg.current
-    val shape = RoundedCornerShape(50)
-    val tint = (if (tg.dark) tg.bar else Color.White).copy(alpha = 0.66f)
-    Row(
-        modifier.fillMaxWidth().height(BarH).glass(shape, GlassKind.Pill, tint = tint).padding(5.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        TABS.forEachIndexed { i, (icon, label) ->
-            val sel = i == selected
-            val color = if (sel) tg.accent else tg.name
-            Column(
-                Modifier.weight(1f).fillMaxHeight().clip(shape)
-                    .background(if (sel) tg.accent.copy(alpha = if (tg.dark) 0.20f else 0.12f) else Color.Transparent)
-                    .clickable { onSelect(i) },
-                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
-            ) {
-                Icon(icon, label, tint = color, modifier = Modifier.size(24.dp))
-                Text(label, color = color, fontSize = 12.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, modifier = Modifier.padding(top = 1.dp))
-            }
-        }
-    }
-}

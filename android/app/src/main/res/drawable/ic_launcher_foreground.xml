@@ -1,21 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 与桌面端 / app-icon.svg 同一个 logo:相框(山与太阳)+ 服务器底座。内容缩到自适应图标的安全区内。 -->
+<!-- 自适应图标的前景:和 ic_logo 同一个图案,缩到安全区内 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="1024" android:viewportHeight="1024">
-    <group android:pivotX="512" android:pivotY="544" android:scaleX="0.72" android:scaleY="0.72" android:translateY="-32">
-        <path
-            android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="44"
-            android:pathData="M288,268 H736 A56,56 0 0 1 792,324 V652 A56,56 0 0 1 736,708 H288 A56,56 0 0 1 232,652 V324 A56,56 0 0 1 288,268 Z" />
-        <path android:fillColor="#FFFFFF"
-            android:pathData="M352,408 A48,48 0 1 0 448,408 A48,48 0 1 0 352,408 Z" />
-        <path android:fillColor="#FFFFFF"
-            android:pathData="M262,676 L452,500 L560,600 L640,524 L762,676 Z" />
-        <path android:fillColor="#EBF3FF"
-            android:pathData="M358,768 H666 A26,26 0 0 1 666,820 H358 A26,26 0 0 1 358,768 Z" />
-        <path android:fillColor="#1B6FE0"
-            android:pathData="M381,794 A11,11 0 1 0 403,794 A11,11 0 1 0 381,794 Z" />
-        <path android:fillColor="#1B6FE0"
-            android:pathData="M425,794 A11,11 0 1 0 447,794 A11,11 0 1 0 425,794 Z" />
+    <group android:pivotX="530" android:pivotY="540" android:scaleX="0.70" android:scaleY="0.70">
+        <!-- 后面那张斜放的半透明照片(玻璃感) -->
+        <group android:pivotX="512" android:pivotY="500" android:rotation="-11">
+            <path android:fillColor="#4DFFFFFF" android:pathData="M352,292 H690 A56,56 0 0 1 746,348 V612 A56,56 0 0 1 690,668 H352 A56,56 0 0 1 296,612 V348 A56,56 0 0 1 352,292 Z" />
+        </group>
+        <!-- 前面的照片:白底 + 山和太阳 -->
+        <path android:fillColor="#FFFFFF" android:pathData="M322,352 H702 A60,60 0 0 1 762,412 V672 A60,60 0 0 1 702,732 H322 A60,60 0 0 1 262,672 V412 A60,60 0 0 1 322,352 Z" />
+        <path android:fillColor="#7CCBFF" android:pathData="M344,454 A40,40 0 1 0 424,454 A40,40 0 1 0 344,454 Z" />
+        <path android:pathData="M300,690 L456,530 L556,632 L628,560 L724,690 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient android:type="linear" android:startX="512" android:startY="530" android:endX="512" android:endY="690">
+                    <item android:offset="0" android:color="#3CA8FF" />
+                    <item android:offset="1" android:color="#1C78EC" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <!-- 右下角的播放角标(视频) -->
+        <path android:fillColor="#FFFFFF" android:pathData="M598,724 A118,118 0 1 0 834,724 A118,118 0 1 0 598,724 Z" />
+        <path android:pathData="M618,724 A98,98 0 1 0 814,724 A98,98 0 1 0 618,724 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient android:type="linear" android:startX="640" android:startY="640" android:endX="800" android:endY="810">
+                    <item android:offset="0" android:color="#3CA8FF" />
+                    <item android:offset="1" android:color="#1666DA" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <path android:fillColor="#FFFFFF" android:pathData="M690,672 L690,776 L778,724 Z" />
     </group>
 </vector>

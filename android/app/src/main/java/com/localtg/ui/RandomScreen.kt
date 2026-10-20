@@ -157,9 +157,9 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: (() ->
 
     // 玻璃顶栏浮在网格上面,网格一直铺到顶(onBack = null:在主界面底栏的「随机」标签里,不显示返回键)
     TgGlassScaffold(bar = {
-            Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 64dp(Telegram 新版)
                 if (onBack != null) BarIcon(TgIcons.Back, "返回", onBack) else Spacer(Modifier.width(12.dp))
-                Text(if (label != null) "随机浏览 · $label" else "随机浏览", Modifier.weight(1f).padding(start = 4.dp), color = tg.barText, fontSize = 20.sp, fontWeight = FontWeight.Medium)
+                Text(if (label != null) "随机浏览 · $label" else "随机浏览", Modifier.weight(1f).padding(start = if (onBack != null) 14.dp else 10.dp), color = tg.barText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                 BarIcon(TgIcons.Refresh, "重新洗牌") { c.settings.update { copy(randomSeed = newRandomSeed(randomSeed)) } }
             }
             Row(Modifier.fillMaxWidth()) {

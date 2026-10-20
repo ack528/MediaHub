@@ -106,7 +106,7 @@ abstract class TgActivity : ComponentActivity() {
             LaunchedEffect(st.forceHighRefresh) { applyHighRefresh() }
             val base = androidx.compose.ui.platform.LocalDensity.current
             val density = remember(base, st.fontScale) { androidx.compose.ui.unit.Density(base.density, base.fontScale * st.fontScale) }
-            TgTheme(st.theme) {
+            TgTheme(st.theme, st.font) {
                 CompositionLocalProvider(
                     LocalSettings provides st,
                     com.localtg.ui.LocalHaptics provides c.haptics,
@@ -175,8 +175,8 @@ class MainActivity : TgActivity() {
 class ChatActivity : TgActivity() {
     /** 消息页的底是聊天背景(渐变 / 纯色),窗口底色跟它一样:进入的系统转场里不先闪一下白。 */
     override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable {
-        val top = if (night) 0xFF0E1621.toInt() else 0xFFD8DDB0.toInt()
-        val bottom = if (night) 0xFF0B121A.toInt() else 0xFF8AB488.toInt()
+        val top = if (night) 0xFF0E1621.toInt() else 0xFFFFFFFF.toInt()
+        val bottom = if (night) 0xFF0B121A.toInt() else 0xFFFFFFFF.toInt()
         return if (container.settings.value.chatBackground == "plain") ColorDrawable(top)
         else android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(top, bottom))
     }

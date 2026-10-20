@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.localtg.ui.glass.mediaGlass
+import com.localtg.ui.glass.liquidPress
 
 /**
  * 查看器 / 播放器统一的玻璃按钮:圆形的深色玻璃(见 [mediaGlass]),白色图标。
@@ -22,10 +23,12 @@ import com.localtg.ui.glass.mediaGlass
  */
 @Composable
 fun GlassCircleButton(icon: ImageVector, desc: String, size: Dp = 44.dp, enabled: Boolean = true, tint: Color = Color.White, onClick: () -> Unit) {
-    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    // 液态玻璃的按压动效:按下放大一点、跟着手指被"拉"过去、按压处亮起一团柔光,松手弹回(见 glass/GlassMotion.kt)
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val h = remember(scope) { com.localtg.ui.glass.InteractiveHighlight(scope) }
     Box(
-        Modifier.size(size).pressScale(src, 0.12f).mediaGlass(CircleShape)
-            .clickable(interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current, enabled = enabled, onClick = onClick),
+        Modifier.size(size).liquidPress(h).mediaGlass(CircleShape)
+            .clickable(interactionSource = null, indication = null, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, desc, tint = tint, modifier = Modifier.size(size * 0.52f).alpha(if (enabled) 1f else 0.4f))
