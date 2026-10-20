@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"mediahub/internal/proc"
@@ -63,6 +64,94 @@ type compressState struct {
 	once   sync.Once
 
 	lastRetry, lastPurge time.Time // compressHousekeeping 的计时(只在 worker 协程里读写)
+
+	hwdecFails    int       // 连续几个任务里"核显硬件解码失败、换软件解码才成功"
+	hwdecOffUntil time.Time // 在这之前不再尝试核显硬件解码(连续失败太多次,说明这台机器 / 驱动上它不能用)
+}
+
+// compressStallLimit ffmpeg 这么久没有任何进度(不含被挂起 / 电脑睡眠的时间)就当它卡死了,杀掉换下一种编码方式;compressStallTick 是检查间隔。
+// 以前没有这个:一个卡住的 ffmpeg 会让整个队列停十几个小时(日志里 12 小时没有任何动静),直到手动重启服务。(var 只是为了测试能改小)
+var (
+	compressStallLimit = 10 * time.Minute
+	compressStallTick  = 30 * time.Second
+)
+
+const (
+	// 连续 hwdecFailLimit 个任务的核显硬解都失败(随后软解成功),就在 hwdecOffFor 内跳过硬解,不再每个任务白白浪费 20~90 秒。
+	hwdecFailLimit = 2
+	hwdecOffFor    = 6 * time.Hour
+)
+
+// hwdecAllowed 现在该不该先试核显硬解。
+func (s *Server) hwdecAllowed() bool {
+	c := &s.opt.cp
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !time.Now().Before(c.hwdecOffUntil)
+}
+
+// noteHwdec 记录一个任务里核显硬解的结果(ok = 硬解成功;!ok = 硬解失败但后面换软解成功了)。
+func (s *Server) noteHwdec(ok bool) {
+	c := &s.opt.cp
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ok {
+		c.hwdecFails = 0
+		return
+	}
+	c.hwdecFails++
+	if c.hwdecFails >= hwdecFailLimit {
+		c.hwdecOffUntil = time.Now().Add(hwdecOffFor)
+		c.hwdecFails = 0
+		s.Log.Warn("核显硬件解码连续失败,暂时改用软件解码(编码仍用核显)", "for", hwdecOffFor.String())
+	}
+}
+
+var ffAddr = regexp.MustCompile(`@ [0-9a-fA-F]{8,16}`)
+
+// condenseFFmpegErr 把 ffmpeg 的错误输出压短:去掉被缓冲区从中间截断的半截首行、
+// 同一句话(忽略 @ 后面的内存地址)只留一条并标出重复次数,总长限制在 1200 个字符。
+// 以前一次失败的日志有几千字,同一句 "Decoding error: Cannot allocate memory" 重复几十遍。
+func condenseFFmpegErr(msg string) string {
+	lines := strings.Split(strings.ReplaceAll(msg, "\r\n", "\n"), "\n")
+	if len(msg) >= 4000 && len(lines) > 1 {
+		lines = lines[1:]
+	}
+	type ent struct {
+		text string
+		n    int
+	}
+	var out []ent
+	idx := map[string]int{}
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		key := ffAddr.ReplaceAllString(l, "@")
+		if i, ok := idx[key]; ok {
+			out[i].n++
+			continue
+		}
+		idx[key] = len(out)
+		out = append(out, ent{key, 1})
+	}
+	if len(out) > 8 { // 只留前 3 条和后 5 条
+		out = append(out[:3:3], out[len(out)-5:]...)
+	}
+	parts := make([]string, 0, len(out))
+	for _, e := range out {
+		if e.n > 1 {
+			parts = append(parts, fmt.Sprintf("%s (×%d)", e.text, e.n))
+		} else {
+			parts = append(parts, e.text)
+		}
+	}
+	r := []rune(strings.Join(parts, " | "))
+	if len(r) > 1200 {
+		r = append(r[:1200:1200], '…')
+	}
+	return string(r)
 }
 
 var compressPresets = map[string]bool{"veryfast": true, "faster": true, "fast": true, "medium": true, "slow": true, "slower": true, "veryslow": true}
@@ -295,7 +384,9 @@ func (s *Server) compressArgs(src, out string, j optJob, enc string, hw bool, si
 	threads := strconv.Itoa(s.compressThreads())
 	a := []string{"-hide_banner", "-nostdin", "-y", "-v", "error", "-progress", "pipe:1", "-nostats"}
 	if hwdec { // 核显硬件解码:解码是压缩时 CPU 占用的大头(软件解码 1080p / 4K 要占好几个核),交给 QSV 后 CPU 基本空闲
-		a = append(a, "-hwaccel", "qsv", "-hwaccel_output_format", "qsv")
+		// extra_hw_frames:多留一些显存帧。日志里几乎每个任务的第一次尝试都死在 "get_buffer() failed: Cannot allocate memory"
+		// (解码器的帧池被编码器的 look_ahead / 滤镜占满)
+		a = append(a, "-hwaccel", "qsv", "-hwaccel_output_format", "qsv", "-extra_hw_frames", "24")
 	}
 	a = append(a, "-threads", threads, "-i", src, // 软件解码 / 软件编码时最多用这么多线程(默认 CPU 核数的一半),别把整台机器吃满
 		"-map", "0:V:0", "-map", "0:a?") // 0:V = 不含封面图 / 附件图片的视频流(mp4 / mkv 常带封面,0:v:0 可能选到它)
@@ -402,7 +493,7 @@ func (s *Server) compressAttempts(codec string, m mediaInfo) []encAttempt {
 	enc, hw := s.encoderFor(codec)
 	var out []encAttempt
 	// 第一选择:核显硬件解码 + 硬件编码(CPU 几乎不占)。要求宽高是偶数、视频编码 QSV 能解;失败了自动退到下面的方式
-	if hw && m.W > 0 && m.H > 0 && m.W%2 == 0 && m.H%2 == 0 && qsvDecodable[strings.ToLower(m.Vcodec)] {
+	if hw && m.W > 0 && m.H > 0 && m.W%2 == 0 && m.H%2 == 0 && qsvDecodable[strings.ToLower(m.Vcodec)] && s.hwdecAllowed() {
 		out = append(out, encAttempt{enc, true, false, true})
 	}
 	out = append(out, encAttempt{enc, hw, false, false})
@@ -474,6 +565,7 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 	s.jobSet(id, map[string]any{"state": "running", "progress": 0.0, "out_path": out, "orig_size": m.Size, "err": ""})
 	s.Log.Info("压缩开始", "id", id, "media", m.Name, "codec", attempts[0].enc, "kbps", j.Kbps, "preset", j.Preset)
 
+	lastStalled := false // 最近一次 run 是因为卡死被终止的
 	run := func(at encAttempt, aac bool) (string, error) {
 		cmd := proc.Background(exec.CommandContext(jctx, s.Cfg.Tools.FFmpeg, s.compressArgs(src, winfs.Path(out), j, at.enc, at.hw, si, aac, at.simple, at.hwdec)...)) // 较低的 CPU 优先级
 		errBuf := &tailBuf{}
@@ -490,6 +582,34 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 		pid := cmd.Process.Pid
 		stopMon := make(chan struct{})
 		defer close(stopMon)
+		var lastAdv atomic.Int64 // 进度最近一次前进的时间(UnixNano)
+		var held, stalled atomic.Bool
+		lastAdv.Store(time.Now().UnixNano())
+		lastStalled = false
+		go func() { // 看门狗:太久没有进度就杀掉 ffmpeg(被挂起期间、电脑睡眠醒来后重新计时)
+			tk := time.NewTicker(compressStallTick)
+			defer tk.Stop()
+			prev := time.Now()
+			for {
+				select {
+				case <-stopMon:
+					return
+				case now := <-tk.C:
+					gap := now.Sub(prev)
+					prev = now
+					if gap > 3*time.Minute || held.Load() {
+						lastAdv.Store(now.UnixNano())
+						continue
+					}
+					if now.Sub(time.Unix(0, lastAdv.Load())) > compressStallLimit {
+						stalled.Store(true)
+						s.Log.Warn("压缩卡住了(长时间没有进度),终止 ffmpeg", "id", id, "limit", compressStallLimit.String())
+						_ = cmd.Process.Kill()
+						return
+					}
+				}
+			}
+		}()
 		go func() {
 			t := time.NewTicker(2 * time.Second)
 			defer t.Stop()
@@ -507,12 +627,15 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 					if want && !suspended {
 						if proc.Suspend(pid) == nil {
 							suspended = true
+							held.Store(true)
 							s.Log.Info("压缩已暂停", "id", id, "reason", reason)
 							s.jobSet(id, map[string]any{"err": "⏸ " + reason + ",已暂停;条件解除后自动继续"})
 						}
 					} else if !want && suspended {
 						if proc.Resume(pid) == nil {
 							suspended = false
+							lastAdv.Store(time.Now().UnixNano())
+							held.Store(false)
 							s.Log.Info("压缩已继续", "id", id)
 							s.jobSet(id, map[string]any{"err": ""})
 						}
@@ -521,25 +644,39 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 			}
 		}()
 		sc := bufio.NewScanner(stdout)
-		last := time.Now()
+		last, lastLog, lastUs, runStart := time.Now(), time.Now(), int64(0), time.Now()
 		for sc.Scan() {
 			line := sc.Text()
 			if v, ok := strings.CutPrefix(line, "out_time_us="); ok {
-				if us, err := strconv.ParseInt(v, 10, 64); err == nil && us > 0 && time.Since(last) > 2*time.Second {
+				us, perr := strconv.ParseInt(v, 10, 64)
+				if perr == nil && us > lastUs {
+					lastUs = us
+					lastAdv.Store(time.Now().UnixNano())
+				}
+				if perr == nil && us > 0 && time.Since(last) > 2*time.Second {
 					last = time.Now()
 					p := float64(us) / 1000 / float64(durMs)
 					if p > 0.999 {
 						p = 0.999
 					}
 					s.jobSet(id, map[string]any{"progress": p})
+					if time.Since(lastLog) > 10*time.Minute { // 长任务每 10 分钟留一条进度,日志里能看出是在跑还是卡了
+						lastLog = time.Now()
+						s.Log.Info("压缩进行中", "id", id, "progress", fmt.Sprintf("%.1f%%", p*100), "min", int(time.Since(runStart).Minutes()), "encoder", at.enc, "hwdec", at.hwdec)
+					}
 				}
 			}
 		}
 		err = cmd.Wait()
-		return errBuf.String(), err
+		if stalled.Load() {
+			lastStalled = true
+			return fmt.Sprintf("ffmpeg 超过 %s 没有进度(疑似卡死),已终止并换一种方式重试", compressStallLimit.Round(time.Second)), fmt.Errorf("stalled")
+		}
+		return condenseFFmpegErr(errBuf.String()), err
 	}
 	var msg string
 	used := attempts[0]
+	hwdecFailed := false
 	for ai, at := range attempts {
 		used = at
 		t0 := time.Now()
@@ -552,12 +689,22 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 			break
 		}
 		_ = os.Remove(winfs.Path(out))
-		s.Log.Warn("压缩编码失败", "id", id, "media", m.Name, "encoder", at.enc, "simple", at.simple, "err", msg)
-		// 跑了很久才失败(磁盘满、驱动中途崩了…)不再重试,免得白白再等几个小时
-		if ai == len(attempts)-1 || time.Since(t0) > 5*time.Minute {
+		if at.hwdec {
+			hwdecFailed = true
+		}
+		s.Log.Warn("压缩编码失败", "id", id, "media", m.Name, "encoder", at.enc, "simple", at.simple, "hwdec", at.hwdec, "err", msg)
+		// 跑了很久才失败(磁盘满、驱动中途崩了…)不再重试,免得白白再等几个小时;卡死被终止的例外(换一种方式往往就好了)
+		if ai == len(attempts)-1 || (time.Since(t0) > 5*time.Minute && !lastStalled) {
 			break
 		}
 		s.jobSet(id, map[string]any{"err": "这种编码方式失败,换一种重试…", "progress": 0.0})
+	}
+	if err == nil { // 核显硬解的结果:硬解失败、后面软解才成功 = 这台机器上硬解有问题(连续几次就不再试了)
+		if hwdecFailed && !used.hwdec {
+			s.noteHwdec(false)
+		} else if used.hwdec {
+			s.noteHwdec(true)
+		}
 	}
 	if jctx.Err() != nil {
 		_ = os.Remove(winfs.Path(out))
