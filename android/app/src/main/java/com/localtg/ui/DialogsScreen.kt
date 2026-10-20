@@ -150,9 +150,9 @@ fun DialogsScreen(
     }
 
         TgGlassScaffold(bar = {
-                Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 64dp(Telegram 新版)
+                Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 56dp(Telegram)
                     // 左上角不再有菜单键:原来侧边栏里的功能都在「设置」里(服务器管理、随机序列、日志、关于、退出登录)
-                    Text("本地浏览", Modifier.weight(1f).padding(start = 22.dp), color = tg.barText, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Text("本地浏览", Modifier.weight(1f).padding(start = 20.dp), color = tg.barText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                     BarIcon(TgIcons.Search, "搜索", onSearch)
                 }
                 if (labels.size > 1) FolderTabs(labels, pager) { scope.launch { pager.animateScrollToPage(it) } }

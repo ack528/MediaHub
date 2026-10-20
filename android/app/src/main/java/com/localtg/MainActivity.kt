@@ -106,7 +106,7 @@ abstract class TgActivity : ComponentActivity() {
             LaunchedEffect(st.forceHighRefresh) { applyHighRefresh() }
             val base = androidx.compose.ui.platform.LocalDensity.current
             val density = remember(base, st.fontScale) { androidx.compose.ui.unit.Density(base.density, base.fontScale * st.fontScale) }
-            TgTheme(st.theme, st.font) {
+            TgTheme(st.theme) {
                 CompositionLocalProvider(
                     LocalSettings provides st,
                     com.localtg.ui.LocalHaptics provides c.haptics,

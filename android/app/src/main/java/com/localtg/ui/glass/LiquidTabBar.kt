@@ -73,7 +73,9 @@ import kotlin.math.abs
 import kotlin.math.sign
 
 private val LocalTabScale = staticCompositionLocalOf { { 1f } }
-private val Capsule = RoundedCornerShape(50)
+// 原版底栏不是全圆胶囊:圆角约为高度的 42%(56dp 高 → 24dp),两端有一小段直边;选中块同样比例(48dp 高 → 20dp)
+private val Capsule = RoundedCornerShape(24.dp)
+private val PuckShape = RoundedCornerShape(20.dp)
 
 /**
  * 液态玻璃底栏。动效:
@@ -157,7 +159,7 @@ fun LiquidTabBar(tabs: List<Pair<ImageVector, String>>, selected: Int, modifier:
                     onDrawSurface = { drawRect(container) },
                 )
                 .then(highlight.modifier)
-                .height(64.dp).fillMaxWidth().padding(4.dp),
+                .height(56.dp).fillMaxWidth().padding(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) { tabs.forEachIndexed { i, (icon, label) -> TabItem(icon, label, tg.name) { currentIndex = i } } }
 
@@ -178,7 +180,7 @@ fun LiquidTabBar(tabs: List<Pair<ImageVector, String>>, selected: Int, modifier:
                         onDrawSurface = { drawRect(container) },
                     )
                     .then(highlight.modifier)
-                    .height(56.dp).fillMaxWidth().padding(horizontal = 4.dp)
+                    .height(48.dp).fillMaxWidth().padding(horizontal = 4.dp)
                     .graphicsLayer(colorFilter = ColorFilter.tint(accent)),
                 verticalAlignment = Alignment.CenterVertically,
             ) { tabs.forEachIndexed { i, (icon, label) -> TabItem(icon, label, accent, bold = true) { currentIndex = i } } }
@@ -190,8 +192,10 @@ fun LiquidTabBar(tabs: List<Pair<ImageVector, String>>, selected: Int, modifier:
                 .graphicsLayer { translationX = damped.value * tabWidth + panelOffset }
                 .then(highlight.gestureModifier)
                 .then(damped.modifier)
+                .fillMaxWidth(1f / count).height(48.dp)
+                .padding(horizontal = 4.dp) // 原版的选中块比标签窄一点,左右各留 4dp
                 .drawBackdrop(
-                    backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop), shape = { Capsule },
+                    backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop), shape = { PuckShape },
                     effects = {
                         val p = damped.pressProgress
                         // 不开色散:选中块放大后边缘会采到底栏外面,色散把那一圈拉成黄 / 青色的彩带
@@ -212,8 +216,7 @@ fun LiquidTabBar(tabs: List<Pair<ImageVector, String>>, selected: Int, modifier:
                         drawRect(accent.copy(alpha = if (tg.dark) 0.22f else 0.13f), alpha = 1f - p)
                         drawRect(Color.Black.copy(alpha = 0.03f * p))
                     },
-                )
-                .height(56.dp).fillMaxWidth(1f / count),
+                ),
         )
     }
 }
@@ -225,11 +228,11 @@ private fun RowScope.TabItem(icon: ImageVector, label: String, color: Color, bol
         Modifier.clip(Capsule).clickable(interactionSource = null, indication = null, role = Role.Tab, onClick = onClick)
             .fillMaxHeight().weight(1f)
             .graphicsLayer { val s = scale(); scaleX = s; scaleY = s },
-        verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+        verticalArrangement = Arrangement.spacedBy(1.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(icon, label, tint = color, modifier = Modifier.size(26.dp))
-        Text(label, color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold) // 截图:标签 14sp 粗体,图标 26dp
+        Icon(icon, label, tint = color, modifier = Modifier.size(27.dp))
+        Text(label, color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold) // 截图:标签 12sp 粗体,图标 27dp
     }
 }
 
@@ -238,13 +241,13 @@ private fun RowScope.TabItem(icon: ImageVector, label: String, color: Color, bol
 private fun SimpleTabBar(tabs: List<Pair<ImageVector, String>>, selected: Int, modifier: Modifier, onSelect: (Int) -> Unit) {
     val tg = LocalTg.current
     val pos by animateFloatAsState(selected.toFloat(), spring(0.7f, 400f), label = "tab")
-    BoxWithConstraints(modifier.height(64.dp).clip(Capsule).background((if (tg.dark) tg.bar else Color.White).copy(alpha = 0.94f)).padding(4.dp)) {
+    BoxWithConstraints(modifier.height(56.dp).clip(Capsule).background((if (tg.dark) tg.bar else Color.White).copy(alpha = 0.94f)).padding(4.dp)) {
         val w = maxWidth / tabs.size
         Box(
-            Modifier.graphicsLayer { translationX = pos * w.toPx() }.size(w, 56.dp).clip(Capsule)
+            Modifier.graphicsLayer { translationX = pos * w.toPx() }.size(w, 48.dp).padding(horizontal = 4.dp).clip(PuckShape)
                 .background(tg.accent.copy(alpha = if (tg.dark) 0.22f else 0.13f)),
         )
-        Row(Modifier.fillMaxWidth().height(56.dp)) {
+        Row(Modifier.fillMaxWidth().height(48.dp)) {
             tabs.forEachIndexed { i, (icon, label) ->
                 TabItem(icon, label, if (i == selected) tg.accent else tg.name, bold = i == selected) { onSelect(i) }
             }

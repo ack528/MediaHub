@@ -169,10 +169,6 @@ private fun AppearancePage(s: AppSettings, u: (AppSettings.() -> AppSettings) ->
     ChoiceRow("颜色主题", s.theme, listOf("dark" to "深色(默认)", "light" to "浅色", "system" to "跟随系统")) { u { copy(theme = it) } }
     Header("文字与头像")
     ChoiceRow(
-        "界面字体", s.font, listOf("harmony" to "HarmonyOS Sans(默认)", "system" to "系统字体"),
-        desc = "HarmonyOS Sans 是华为的界面字体(免费使用),中英文和数字更统一;字体里没有的生僻字自动用系统字体显示",
-    ) { u { copy(font = it) } }
-    ChoiceRow(
         "界面文字大小", s.fontScale, listOf(0.85f, 1f, 1.15f, 1.3f, 1.5f).map { it to "${(it * 100).toInt()}%" + if (it == 1f) "(默认)" else "" },
         desc = "在系统字号的基础上再缩放,只影响本应用",
     ) { u { copy(fontScale = it) } }
@@ -853,27 +849,9 @@ private fun AboutPage(c: AppContainer) {
     InfoRow("服务端", server)
     InfoRow("系统", "Android ${android.os.Build.VERSION.RELEASE}(API ${android.os.Build.VERSION.SDK_INT})")
     InfoRow("设备", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-    FontNotice()
     UpdateSection(ver, c)
     MirrorSection(c.settings.value) { c.settings.update(it) }
     ChangelogSection(ver)
-}
-
-/** 字体许可要求的显著说明:本应用使用了 HarmonyOS Sans 字体;点一下看完整的许可协议。 */
-@Composable
-private fun FontNotice() {
-    val ctx = LocalContext.current
-    var show by remember { mutableStateOf(false) }
-    TgTextCell("字体", value = "HarmonyOS Sans", subtitle = "本应用使用了华为 HarmonyOS Sans 字体(版权所有 © 2021 Huawei Device Co., Ltd.),点按查看许可协议", onClick = { show = true })
-    if (show) {
-        val text = remember { runCatching { ctx.assets.open("HarmonyOS_Sans_LICENSE.txt").bufferedReader().use { it.readText() } }.getOrDefault("") }
-        AlertDialog(
-            onDismissRequest = { show = false },
-            title = { Text("HarmonyOS Sans 字体许可") },
-            text = { Column(Modifier.verticalScroll(rememberScrollState())) { Text(text, fontSize = 12.sp) } },
-            confirmButton = { TextButton(onClick = { show = false }) { Text("关闭") } },
-        )
-    }
 }
 
 /**

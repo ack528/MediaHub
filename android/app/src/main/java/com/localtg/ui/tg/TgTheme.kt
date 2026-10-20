@@ -9,6 +9,7 @@ import androidx.compose.material3.Typography
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.em
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -64,25 +65,15 @@ val TgDark = TgPalette(
 )
 
 /**
- * 界面字体:HarmonyOS Sans SC(华为,按《HarmonyOS Sans 字体许可协议》免费使用,未做任何修改,许可文本在 assets/HarmonyOS_Sans_LICENSE.txt,
- * 「关于」页有说明)。Apple 的 SF Pro 许可只允许在苹果平台上使用,不能放进安卓应用。字体里没有的字自动用系统字体补。
- */
-val HarmonySans = androidx.compose.ui.text.font.FontFamily(
-    androidx.compose.ui.text.font.Font(com.localtg.R.font.harmonyos_sans_sc_regular, FontWeight.Normal),
-    androidx.compose.ui.text.font.Font(com.localtg.R.font.harmonyos_sans_sc_medium, FontWeight.Medium),
-    androidx.compose.ui.text.font.Font(com.localtg.R.font.harmonyos_sans_sc_bold, FontWeight.Bold),
-)
-
-/**
  * 全应用统一的字号和字体:弹窗标题 18sp、小节标题 16sp、正文 16 / 14sp。
- * 行高不再固定成 Material 默认的 24sp(13sp 的小字配 24sp 行高,上下空得很多、和图标对不齐),改成跟随字体本身的行距,
+ * 行高不再固定成 Material 默认的 24sp(13sp 的小字配 24sp 行高,上下空得很多、和图标对不齐),改成字号的 1.3 倍,
  * 并去掉安卓额外加的字体上下留白(includeFontPadding),文字在行里垂直居中,和图标、开关对齐。
  */
 private fun tgTypography(family: androidx.compose.ui.text.font.FontFamily?): Typography {
     val base = Typography()
     fun androidx.compose.ui.text.TextStyle.fix(size: androidx.compose.ui.unit.TextUnit? = null, weight: FontWeight? = null) = copy(
         fontFamily = family ?: fontFamily, fontSize = size ?: fontSize, fontWeight = weight ?: fontWeight,
-        lineHeight = androidx.compose.ui.unit.TextUnit.Unspecified, letterSpacing = 0.sp,
+        lineHeight = 1.3.em, letterSpacing = 0.sp, // 行高 = 字号 × 1.3:系统的中文字体(思源黑体)默认行距很大,行会比 Telegram 高一截
         platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
         lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
             androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center, androidx.compose.ui.text.style.LineHeightStyle.Trim.None,
@@ -109,7 +100,7 @@ val LocalTg = staticCompositionLocalOf { TgLight }
 val LocalSettings = staticCompositionLocalOf { com.localtg.data.AppSettings() }
 
 @Composable
-fun TgTheme(mode: String = "dark", font: String = "harmony", content: @Composable () -> Unit) {
+fun TgTheme(mode: String = "dark", content: @Composable () -> Unit) {
     val dark = when (mode) { "dark" -> true; "light" -> false; else -> isSystemInDarkTheme() }
     val p = if (dark) TgDark else TgLight
     val scheme = if (p.dark) {
@@ -123,7 +114,7 @@ fun TgTheme(mode: String = "dark", font: String = "harmony", content: @Composabl
     }
     BarIconsEffect(p.barIconsDark) // 白色顶栏(白天)状态栏 / 导航栏图标用深色,深蓝顶栏(夜间)用浅色
     CompositionLocalProvider(LocalTg provides p) {
-        val typography = androidx.compose.runtime.remember(font) { tgTypography(if (font == "system") null else HarmonySans) }
+        val typography = androidx.compose.runtime.remember { tgTypography(null) } // 系统字体(和 Telegram 一样跟随手机)
         MaterialTheme(colorScheme = scheme, typography = typography, shapes = TgShapes) {
             Surface(Modifier.fillMaxSize(), color = p.bg, content = content)
         }

@@ -40,7 +40,7 @@ import com.localtg.ui.glass.LocalBottomInset
 import com.localtg.ui.glass.glass
 
 /** 玻璃顶栏的高度(不含状态栏)。 */
-val GlassBarHeight = 64.dp
+val GlassBarHeight = 56.dp
 
 /** 玻璃顶栏膜的不透明度:能看出下面的内容在滚动,又不影响标题的阅读(液态玻璃强度"适度")。 */
 const val GlassBarAlpha = 0.70f
@@ -108,14 +108,14 @@ fun TgGlassPage(
             Row(
                 Modifier.fillMaxWidth().height(top)
                     .glass(RoundedCornerShape(0.dp), GlassKind.Bar, tint = tg.gray.copy(alpha = GlassBarAlpha))
-                    .padding(top = status, start = if (onBack != null) 10.dp else 22.dp, end = 8.dp),
+                    .padding(top = status, start = if (onBack != null) 6.dp else 20.dp, end = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (onBack != null) BarIcon(TgIcons.Back, "返回", onBack) // 图标色 = barText,和标题同色
                 Text(
-                    title, color = tg.name, fontSize = 24.sp, fontWeight = FontWeight.Bold, // 截图:大标题 24sp 粗体,有没有返回键都一样
+                    title, color = tg.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, // 截图:大标题 20sp 粗体,有没有返回键都一样
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(start = if (onBack != null) 24.dp else 0.dp),
+                    modifier = Modifier.weight(1f).padding(start = if (onBack != null) 20.dp else 0.dp),
                 )
                 actions()
             }

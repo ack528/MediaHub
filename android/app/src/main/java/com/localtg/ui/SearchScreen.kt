@@ -88,7 +88,7 @@ fun SearchScreen(c: AppContainer, onBack: (() -> Unit)?, onOpenViewer: (Int) -> 
     }
 
     TgGlassScaffold(bar = {
-            Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 64dp(Telegram 新版)
+            Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 56dp(Telegram)
                 if (onBack != null) BarIcon(TgIcons.Back, "返回") { fm.clearFocus(); onBack() } else Spacer(Modifier.width(16.dp))
                 // Telegram 新版的搜索框:顶栏里的圆角胶囊
                 Box(Modifier.weight(1f).padding(end = 8.dp).clip(RoundedCornerShape(50)).background(if (tg.dark) androidx.compose.ui.graphics.Color(0x14FFFFFF) else tg.gray).padding(horizontal = 16.dp, vertical = 9.dp)) {

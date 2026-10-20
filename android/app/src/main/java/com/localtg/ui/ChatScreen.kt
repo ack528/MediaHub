@@ -465,11 +465,11 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                 },
             ) { inSearch ->
             if (inSearch) FolderSearchBar(searchQuery, { searchQuery = it }) { searching = false; searchJumpGen = null }
-            else Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 64dp(Telegram 新版)
+            else Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 56dp(Telegram)
                 BarIcon(TgIcons.Back, "返回", onBack)
                 TgAvatar(dialog?.title ?: titleHint ?: "#", dialogId, 40.dp, dialog?.last?.toItem(dialogId), c.api)
                 Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                    Text(dialog?.title ?: titleHint ?: "文件夹", color = tg.barText, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(dialog?.title ?: titleHint ?: "文件夹", color = tg.barText, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val sub = dialog?.counts?.let { k ->
                         listOfNotNull(
                             k.photo.takeIf { it > 0 }?.let { "$it 张照片" },

@@ -55,7 +55,7 @@ fun FolderSearchBar(query: String, onQuery: (String) -> Unit, onClose: () -> Uni
     val focus = remember { FocusRequester() }
     val fm = LocalFocusManager.current
     LaunchedEffect(Unit) { focus.requestFocus() }
-    Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 64dp(Telegram 新版)
+    Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 56dp(Telegram)
         BarIcon(TgIcons.Back, "关闭搜索") { fm.clearFocus(); onClose() }
         // Telegram 新版的搜索框:顶栏里的圆角胶囊
                 Box(Modifier.weight(1f).padding(end = 8.dp).clip(RoundedCornerShape(50)).background(if (tg.dark) androidx.compose.ui.graphics.Color(0x14FFFFFF) else tg.gray).padding(horizontal = 16.dp, vertical = 9.dp)) {

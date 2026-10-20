@@ -11,6 +11,11 @@ $RelDir = Join-Path $Dist 'release'
 $dll = Join-Path $Root 'android\app\src\main\assets\lsfg\Lossless.dll'
 $dllHold = Join-Path $Dist 'Lossless.dll.hold'
 $apk = Join-Path $Root 'android\app\build\outputs\apk\release\app-release.apk'
+# 上次打发布版时被中断(Ctrl+C / 关窗口),Lossless.dll 还留在 dist 里没放回:先放回去,不然自用版会缺它
+if ((Test-Path -LiteralPath $dllHold) -and -not (Test-Path -LiteralPath $dll)) {
+  Move-Item -LiteralPath $dllHold -Destination $dll -Force
+  '上次构建被中断,已把 Lossless.dll 放回 assets\lsfg'
+}
 function Build {
   & powershell -NoProfile -File (Join-Path $PSScriptRoot 'build-android.ps1') ':app:assembleRelease'
   if ($LASTEXITCODE -ne 0) { throw 'Android 构建失败' }

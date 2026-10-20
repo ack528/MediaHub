@@ -51,9 +51,9 @@ private val TABS: List<Pair<ImageVector, String>> by lazy {
     listOf(TgIcons.Chat to "文件夹", TgIcons.Shuffle to "随机", TgIcons.Search to "搜索", TgIcons.Settings to "设置")
 }
 
-private val BarH = 64.dp
-private val BarSide = 18.dp
-private val BarGap = 10.dp
+private val BarH = 56.dp
+private val BarSide = 15.dp
+private val BarGap = 2.dp // 原版底栏离底部手势条约 16dp
 
 /**
  * 主界面:四个标签共用一个页面,底部是悬浮的液态玻璃底栏(Telegram 新版的样子),玻璃采样正在显示的那个标签的内容。
