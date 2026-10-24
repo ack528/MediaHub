@@ -56,7 +56,6 @@ import com.localtg.ui.tg.TgDetailCell
 import com.localtg.ui.tg.TgHeaderCell
 import com.localtg.ui.tg.TgInfoCell
 import com.localtg.ui.tg.TgCardColumn
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.ui.draw.rotate
 import com.localtg.ui.tg.TgCell
 import androidx.compose.ui.text.style.TextOverflow
@@ -692,62 +691,85 @@ private fun AccountPage(c: AppContainer) {
     val tg = LocalTg.current
 
     Header("已保存的服务器")
-    // 点一台服务器:在它下面直接展开操作(切换 / 重命名 / 退出登录 / 删除),不再弹出对话框;重命名、删除确认也在原地完成
+    // 每台服务器是一组完整的设置行;展开内容与设置页共用卡片底色、行高、边距和分隔线。
     servers.forEach { e ->
-        val open = sel?.id == e.id
-        TgCell({ sel = if (open) null else e; renaming = null; deleting = null }) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(e.name, color = tg.name, fontSize = 15.sp, modifier = Modifier.weight(1f, fill = false))
-                if (e.id == activeId) {
-                    Text(
-                        "当前", color = Color.White, fontSize = 11.sp,
-                        modifier = Modifier.padding(start = 8.dp).clip(RoundedCornerShape(50)).background(tg.accent).padding(horizontal = 7.dp, vertical = 1.dp),
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                Icon(TgIcons.ChevronRight, null, tint = tg.message, modifier = Modifier.size(20.dp).rotate(if (open) 90f else 0f))
-            }
-            Text(
-                e.host + "  ·  " + when {
-                    e.isLocal -> "本地媒体"
-                    e.loggedIn -> "已登录" + (if (e.user.isNotEmpty()) "(${e.user})" else "") + (if (e.baseUrl.startsWith("https://")) " · 加密" else " · 未加密")
-                    else -> "需要重新登录"
-                },
-                color = if (!e.loggedIn) tg.warn else tg.message, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 3.dp),
-            )
-        }
-        androidx.compose.animation.AnimatedVisibility(
-            visible = open,
-            enter = androidx.compose.animation.expandVertically() + androidx.compose.animation.fadeIn(),
-            exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut(),
-        ) {
-            Column(Modifier.fillMaxWidth().padding(start = 16.dp)) {
-                if (e.id != activeId) {
-                    TgTextCell(if (e.loggedIn) "切换到这个服务器" else "去登录", titleColor = tg.accent, onClick = { sel = null; scope.launch { c.session.switchTo(e.id) } })
-                }
-                if (renaming?.id == e.id) {
-                    var name by remember(e.id) { mutableStateOf(e.name) }
-                    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        androidx.compose.material3.OutlinedTextField(
-                            value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp), textStyle = androidx.compose.material3.LocalTextStyle.current.copy(fontSize = 15.sp),
+        androidx.compose.runtime.key(e.id) {
+            val open = sel?.id == e.id
+            Column(Modifier.fillMaxWidth()) {
+                TgCell({ sel = if (open) null else e; renaming = null; deleting = null }) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(e.name, color = tg.name, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                if (e.id == activeId) {
+                                    Text(
+                                        "当前", color = Color.White, fontSize = 11.sp,
+                                        modifier = Modifier.padding(start = 8.dp).clip(RoundedCornerShape(50)).background(tg.accent).padding(horizontal = 7.dp, vertical = 1.dp),
+                                    )
+                                }
+                            }
+                            Text(
+                                e.host + "  ·  " + when {
+                                    e.isLocal -> "本地媒体"
+                                    e.loggedIn -> "已登录" + (if (e.user.isNotEmpty()) "(${e.user})" else "") + (if (e.baseUrl.startsWith("https://")) " · 加密" else " · 未加密")
+                                    else -> "需要重新登录"
+                                },
+                                color = if (!e.loggedIn) tg.warn else tg.message, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 3.dp),
+                            )
+                        }
+                        Icon(
+                            TgIcons.ChevronRight, if (open) "收起服务器操作" else "展开服务器操作", tint = tg.message,
+                            modifier = Modifier.padding(start = 12.dp).size(20.dp).rotate(if (open) 90f else 0f),
                         )
-                        TextButton(onClick = { renaming = null; scope.launch { c.session.rename(e.id, name) } }) { Text("保存") }
                     }
-                } else {
-                    TgTextCell("重命名", titleColor = tg.accent, onClick = { renaming = e; deleting = null })
                 }
-                if (e.loggedIn && !e.isLocal) {
-                    TgTextCell("退出登录", titleColor = tg.accent, onClick = { sel = null; scope.launch { if (e.id == activeId) c.api.logout(); c.session.forget(e.id) } })
-                }
-                if (deleting?.id == e.id) {
-                    TgTextCell(
-                        "确定删除「${e.name}」", subtitle = "只是从这部手机上移除这条记录和它的登录,服务器上的内容不受影响", titleColor = tg.danger,
-                        onClick = { sel = null; deleting = null; scope.launch { c.session.remove(e.id) } },
-                    )
-                } else {
-                    TgTextCell("删除", titleColor = tg.danger, onClick = { deleting = e; renaming = null })
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = open,
+                    enter = androidx.compose.animation.expandVertically() + androidx.compose.animation.fadeIn(),
+                    exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut(),
+                ) {
+                    Column(Modifier.fillMaxWidth()) {
+                        if (e.id != activeId) {
+                            ServerActionRow(if (e.loggedIn) "切换到这个服务器" else "去登录", color = tg.accent) {
+                                sel = null; scope.launch { c.session.switchTo(e.id) }
+                            }
+                        }
+                        if (renaming?.id == e.id) {
+                            var name by remember(e.id) { mutableStateOf(e.name) }
+                            ServerActionDivider()
+                            TgCell(null) {
+                                Text("服务器名称", color = tg.header, fontSize = 12.5.sp, modifier = Modifier.padding(bottom = 6.dp))
+                                androidx.compose.foundation.text.BasicTextField(
+                                    value = name, onValueChange = { name = it }, singleLine = true,
+                                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(tg.gray).padding(horizontal = 12.dp, vertical = 10.dp),
+                                    textStyle = androidx.compose.material3.LocalTextStyle.current.copy(color = tg.name, fontSize = 15.sp),
+                                    cursorBrush = androidx.compose.ui.graphics.SolidColor(tg.accent),
+                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = {
+                                        renaming = null; scope.launch { c.session.rename(e.id, name) }
+                                    }),
+                                )
+                            }
+                            ServerActionRow("保存名称", color = tg.accent) { renaming = null; scope.launch { c.session.rename(e.id, name) } }
+                            ServerActionRow("取消重命名") { renaming = null }
+                        } else {
+                            ServerActionRow("重命名") { renaming = e; deleting = null }
+                        }
+                        if (e.loggedIn && !e.isLocal) {
+                            ServerActionRow("退出登录", color = tg.danger) {
+                                sel = null; scope.launch { if (e.id == activeId) c.api.logout(); c.session.forget(e.id) }
+                            }
+                        }
+                        if (deleting?.id == e.id) {
+                            ServerActionRow(
+                                "确定删除「${e.name}」", subtitle = "只是从这部手机上移除这条记录和它的登录,服务器上的内容不受影响", color = tg.danger,
+                            ) { sel = null; deleting = null; scope.launch { c.session.remove(e.id) } }
+                            ServerActionRow("取消删除") { deleting = null }
+                        } else {
+                            ServerActionRow("删除", color = tg.danger) { deleting = e; renaming = null }
+                        }
+                    }
                 }
             }
         }
@@ -775,6 +797,18 @@ private fun AccountPage(c: AppContainer) {
     ActionRow("退出登录", "清除这台服务器在这部手机上的登录令牌,服务器记录会保留", confirm = "退出登录?", danger = true) {
         scope.launch { c.api.logout(); c.session.clearToken() }
     }
+}
+
+/** 展开区沿用设置单元格的 20dp 文字边距,不再额外向右缩进。 */
+@Composable
+private fun ServerActionDivider() {
+    HorizontalDivider(Modifier.fillMaxWidth().padding(start = 20.dp), thickness = 0.5.dp, color = LocalTg.current.divider)
+}
+
+@Composable
+private fun ServerActionRow(title: String, subtitle: String? = null, color: Color = Color.Unspecified, onClick: () -> Unit) {
+    ServerActionDivider()
+    TgTextCell(title, subtitle = subtitle, titleColor = color, onClick = onClick)
 }
 
 @Composable
