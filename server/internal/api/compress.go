@@ -927,12 +927,13 @@ type compressReq struct {
 }
 
 type compressPlan struct {
-	Count     int      `json:"count"`
-	Orig      int64    `json:"origBytes"`
-	Est       int64    `json:"estBytes"`
-	Skipped   []string `json:"skipped,omitempty"`
-	jobs      []optJob
-	mediaList []mediaInfo
+	SkippedCount int      `json:"skippedCount"`
+	Count        int      `json:"count"`
+	Orig         int64    `json:"origBytes"`
+	Est          int64    `json:"estBytes"`
+	Skipped      []string `json:"skipped,omitempty"`
+	jobs         []optJob
+	mediaList    []mediaInfo
 }
 
 func (s *Server) planCompress(in compressReq) (compressPlan, error) {
@@ -1071,6 +1072,7 @@ func (s *Server) adminCompressEnqueue(w http.ResponseWriter, r *http.Request) {
 		}
 		s.compressKick()
 	}
+	plan.SkippedCount = len(plan.Skipped)
 	if len(plan.Skipped) > 30 {
 		plan.Skipped = append(plan.Skipped[:30], fmt.Sprintf("……还有 %d 个", len(plan.Skipped)-30))
 	}

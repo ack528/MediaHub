@@ -174,7 +174,7 @@ function Compress() {
   const [minMB, setMinMB] = useState(500);
   const [skip265, setSkip265] = useState(true);
   const [nameLike, setNameLike] = useState("");
-  const [plan, setPlan] = useState<{ count: number; origBytes: number; estBytes: number; skipped?: string[] } | null>(null);
+  const [plan, setPlan] = useState<{ count: number; origBytes: number; estBytes: number; skippedCount?: number; skipped?: string[] } | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [saved, setSaved] = useState(0);
@@ -287,7 +287,7 @@ function Compress() {
           <input value={nameLike} onChange={(e) => setNameLike(e.target.value)} placeholder="例如:S01" style={{ width: 200, padding: "6px 10px", border: "1px solid var(--border-2)", borderRadius: 8 }} />
         </Row>
         <Row icon="database" title="预估与加入队列"
-             desc={plan ? `符合条件 ${plan.count} 个视频 · 原大小 ${fmtBytes(plan.origBytes)} → 预计 ${fmtBytes(plan.estBytes)},可省约 ${fmtBytes(Math.max(0, plan.origBytes - plan.estBytes))}${plan.skipped?.length ? `(另有 ${plan.skipped.length} 个被跳过:${plan.skipped[0]})` : ""}` : "先点「预估」看看能省多少空间(不会开始压缩)。压缩只写到 .mediahub\\optimize,原文件完全不动,你确认后才替换。"}>
+             desc={plan ? `符合条件 ${plan.count} 个视频 · 原大小 ${fmtBytes(plan.origBytes)} → 预计 ${fmtBytes(plan.estBytes)},可省约 ${fmtBytes(Math.max(0, plan.origBytes - plan.estBytes))}${plan.skipped?.length ? `(另有 ${plan.skippedCount ?? plan.skipped.length} 个被跳过:${plan.skipped[0]})` : ""}` : "先点「预估」看看能省多少空间(不会开始压缩)。压缩只写到 .mediahub\\optimize,原文件完全不动,你确认后才替换。"}>
           <div className="btn-group">
             <Btn icon="gauge" disabled={busy} onClick={estimate}>预估节省</Btn>
             <Btn kind="primary" icon="play" disabled={busy || (plan != null && plan.count === 0)} onClick={enqueue}>加入压缩队列</Btn>
