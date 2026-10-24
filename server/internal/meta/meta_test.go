@@ -61,12 +61,15 @@ func TestExifBatchChineseNames(t *testing.T) {
 	f2 := filepath.Join(d, "b.jpg")
 	os.WriteFile(f1, b, 0o644)
 	os.WriteFile(f2, b, 0o644)
-	m, err := ExifBatch(context.Background(), exiftool, []string{f1, f2})
+	m, err := ExifBatch(context.Background(), exiftool, []string{f1, f2, filepath.Join(d, "missing.jpg")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m) != 2 {
+	if len(m) < 2 {
 		t.Fatalf("got %d results: %+v", len(m), m)
+	}
+	if p := m[filepath.Join(d, "missing.jpg")]; p != nil && p.Error == "" {
+		t.Fatal("missing photo must not be reported as successful")
 	}
 	if p := m[f1]; p == nil || p.W != 4000 || p.H != 3000 {
 		t.Fatalf("中文文件名元数据不对: %+v", p)

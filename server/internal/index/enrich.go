@@ -181,9 +181,19 @@ func nullStr(s string) any {
 }
 
 func (ix *Indexer) enrichPhotos(ctx context.Context, ps []pending) {
-	paths := make([]string, len(ps))
-	for i, pe := range ps {
-		paths[i] = pe.path
+	paths := make([]string, 0, len(ps))
+	valid := make([]pending, 0, len(ps))
+	for _, pe := range ps {
+		if _, err := winfs.Stat(pe.path); err != nil {
+			ix.markDone(pe, 2, failReason(pe.path))
+			continue
+		}
+		paths = append(paths, pe.path)
+		valid = append(valid, pe)
+	}
+	ps = valid
+	if len(ps) == 0 {
+		return
 	}
 	res, err := meta.ExifBatch(ctx, ix.Cfg.Tools.ExifTool, paths)
 	if err != nil {
@@ -196,6 +206,10 @@ func (ix *Indexer) enrichPhotos(ctx context.Context, ps []pending) {
 	now := time.Now().Add(24 * time.Hour)
 	for _, pe := range ps {
 		m := res[pe.path]
+		if m != nil && m.Error != "" {
+			ix.markDone(pe, 2, m.Error)
+			continue
+		}
 		if m == nil {
 			ix.markDone(pe, 1, "") // 没有 EXIF 的格式(例如 SVG),保持用文件时间
 			continue

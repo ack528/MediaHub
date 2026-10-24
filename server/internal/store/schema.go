@@ -106,6 +106,18 @@ CREATE TABLE opt_job(
   progress REAL NOT NULL DEFAULT 0, err TEXT NOT NULL DEFAULT '', trash_path TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, updated INTEGER NOT NULL);
 CREATE INDEX ix_oj_state ON opt_job(state);
 `,
+	// v10: incremental directory lookups must not scan an entire drive.
+	`CREATE INDEX ix_m_dir ON media(root_id, dir_rel);`,
+	// v11: compression history must survive the original media's removal.
+	`ALTER TABLE opt_job ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE opt_job ADD COLUMN display_dir TEXT NOT NULL DEFAULT '';
+ALTER TABLE opt_job ADD COLUMN display_root TEXT NOT NULL DEFAULT '';
+ALTER TABLE opt_job ADD COLUMN display_root_path TEXT NOT NULL DEFAULT '';
+UPDATE opt_job SET display_name=COALESCE((SELECT name FROM media WHERE id=media_id),''),
+display_dir=COALESCE((SELECT dir_rel FROM media WHERE id=media_id),''),
+display_root=COALESCE((SELECT r.label FROM media m JOIN roots r ON r.id=m.root_id WHERE m.id=media_id),''),
+display_root_path=COALESCE((SELECT r.path FROM media m JOIN roots r ON r.id=m.root_id WHERE m.id=media_id),'');
+CREATE INDEX ix_oj_media ON opt_job(media_id, state);`,
 }
 
 // Migrate 把数据库升级到最新模式。

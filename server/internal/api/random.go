@@ -18,14 +18,15 @@ import (
 // 随机浏览(手机端「随机浏览」)。
 //
 // 数据怎么准备:
-//   - 每个根目录(盘符)里媒体 id 的范围([Server.refreshRanges]):带条件的 MIN / MAX 要扫整张表,大库上要几秒甚至几十秒,所以启动时就算好,之后每 10 分钟刷新;
+//   - 每个根目录(盘符)里媒体 id 的范围([Server.refreshRanges]):带条件的 MIN / MAX 要扫整张表,大库上要几秒甚至几十秒,所以启动时就算好,之后每 6 小时刷新;
 //   - 「随机序列」:[randSlots] 份固定的序列(槽位),每份 [seqLen] 个条目 id。范围(全部 / 每个根目录)× 类型(全部 / 图片 / 视频)× 槽位,
 //     启动时就在后台全部预先生成好([Server.WarmRandom]),请求只是切片 + 按 id 取行,不做随机查找。序列由(范围、类型、槽位)确定性生成,
 //     重启、重新生成后只要库里的文件没变就是同一份;只有这个范围的 id 区间变了(扫进了新文件)才会重新生成。
 //   - 手机端「重新洗牌」= 换一个槽位;不点就一直用同一个槽位,序列不变。超过 [seqLen] 的批次实时按同样的规则确定性生成。
 const (
-	randSlots = 12  // 每个范围 × 类型预先准备几份序列
-	seqLen    = 600 // 每份序列预先生成多少个条目(10 批 × 60)
+	randSlots          = 12  // 每个范围 × 类型预先准备几份序列
+	seqLen             = 600 // 每份序列预先生成多少个条目(10 批 × 60)
+	randomWarmInterval = 6 * time.Hour
 )
 
 type randomState struct {
@@ -251,7 +252,7 @@ func (s *Server) sequence(ctx context.Context, types []int, roots []int64, slot 
 }
 
 // WarmRandom 预热随机浏览:启动时在后台先算好各根目录的 id 范围,再把「全部」和每个根目录(盘符)× 三种类型(全部 / 图片 / 视频)× [randSlots] 份序列全部生成好,
-// 之后每 10 分钟刷新范围并补齐变化了的序列。立即返回,在 ctx 结束时停止。
+// 之后每 6 小时刷新范围并补齐变化了的序列。立即返回,在 ctx 结束时停止。
 func (s *Server) WarmRandom(ctx context.Context) {
 	s.rnd.Lock()
 	if s.rnd.kick == nil {
@@ -260,6 +261,7 @@ func (s *Server) WarmRandom(ctx context.Context) {
 	kick := s.rnd.kick
 	s.rnd.Unlock()
 	go func() {
+		first := true
 		for {
 			t0 := time.Now()
 			if err := s.refreshRanges(ctx); err != nil {
@@ -290,12 +292,17 @@ func (s *Server) WarmRandom(ctx context.Context) {
 						}
 					}
 				}
-				s.Log.Info("随机浏览已预热", "范围", len(scopes), "序列", n, "ms", time.Since(t0).Milliseconds())
+				if first {
+					s.Log.Info("随机浏览已预热", "范围", len(scopes), "序列", n, "ms", time.Since(t0).Milliseconds())
+					first = false
+				} else {
+					s.Log.Debug("随机浏览预热检查完成", "范围", len(scopes), "序列", n, "ms", time.Since(t0).Milliseconds())
+				}
 			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(10 * time.Minute):
+			case <-time.After(randomWarmInterval):
 			case <-kick: // 手机端点了「重新生成随机序列」
 			}
 		}

@@ -7,7 +7,7 @@
 # 桌面端(Rust)、Android、Go 三条编译互不依赖,会同时跑;Android 的第二套(带 DLL)只重新打包,不重新编译 Kotlin。
 # 前提:已运行过 tools\setup.ps1(便携工具链),signing\ 下有 Android 发布密钥(没有则用调试签名)。
 param(
-  [string]$Version = '1.3.0',          # 手机端(APK)版本号
+  [string]$Version = '4.0.1',          # 手机端(APK)版本号
   [string]$ServerVersion = '',        # 服务端 / 管理程序版本号;留空 = 取 desktop\package.json 里的 version
   [switch]$SkipAndroid,
   [switch]$SkipDesktop,

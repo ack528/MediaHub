@@ -131,9 +131,22 @@ func moveToTrash(m mediaInfo, batch, reason string) error {
 
 // forgetMedia 从索引里去掉已经移走的文件(不等重新扫描,界面马上不再显示)。
 func (s *Server) forgetMedia(ids ...int64) {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		s.Log.Error("清理已移走媒体失败", "err", err)
+		return
+	}
+	defer tx.Rollback()
 	for _, id := range ids {
-		_, _ = s.DB.Exec(`DELETE FROM media WHERE id=?`, id)
-		_, _ = s.DB.Exec(`DELETE FROM media_hash WHERE media_id=?`, id)
+		for _, q := range []string{`DELETE FROM media_fts WHERE rowid=?`, `DELETE FROM media WHERE id=?`, `DELETE FROM media_hash WHERE media_id=?`} {
+			if _, err := tx.Exec(q, id); err != nil {
+				s.Log.Error("清理已移走媒体失败", "id", id, "err", err)
+				return
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		s.Log.Error("清理已移走媒体失败", "err", err)
 	}
 }
 

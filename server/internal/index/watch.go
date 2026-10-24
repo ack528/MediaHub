@@ -47,6 +47,8 @@ func (ix *Indexer) Watch(ctx context.Context, r Root, lock func() func(), opt Wa
 	overflow := false
 	var first, last time.Time // 这一批第一次 / 最近一次收到事件的时间
 	var lastRun time.Time
+	var retryAt time.Time
+	retryDelay := time.Duration(0)
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -70,6 +72,9 @@ func (ix *Indexer) Watch(ctx context.Context, r Root, lock func() func(), opt Wa
 				pending[filepath.Clean(p)] = true
 			}
 		case <-tick.C:
+			if time.Now().Before(retryAt) {
+				continue
+			}
 			if first.IsZero() {
 				continue
 			}
@@ -103,9 +108,23 @@ func (ix *Indexer) Watch(ctx context.Context, r Root, lock func() func(), opt Wa
 			changed, err := ix.RescanDirs(ctx, r, dirs)
 			unlock()
 			if err != nil {
+				if retryDelay == 0 {
+					retryDelay = 30 * time.Second
+				} else {
+					retryDelay *= 2
+				}
+				if retryDelay > 5*time.Minute {
+					retryDelay = 5 * time.Minute
+				}
+				retryAt = time.Now().Add(retryDelay)
+				for _, d := range dirs {
+					pending[d] = true
+				}
+				first, last = time.Now(), time.Now()
 				ix.Log.Warn("增量扫描失败,等下一次整盘扫描", "root", r.Path, "err", err)
 				continue
 			}
+			retryAt, retryDelay = time.Time{}, 0
 			if changed {
 				ix.Log.Info("增量索引", "root", r.Path, "dirs", len(dirs), "ms", time.Since(t0).Milliseconds())
 			}

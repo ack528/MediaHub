@@ -181,16 +181,21 @@ function Compress() {
   const [pick, setPick] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   // 队列很长(几千个排队)时,失败的任务排在后面看不到:可以只看失败的;顶部汇总失败原因
-  const [onlyFailed, setOnlyFailed] = useState(false);
+  const [stateFilter, setStateFilter] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [pendingSaved, setPendingSaved] = useState(0);
+  const onlyFailed = stateFilter === "failed";
   const [reasons, setReasons] = useState<{ reason: string; count: number }[]>([]);
 
   const load = useCallback(async () => {
     try {
-      const r = await bridge.admin<{ jobs: Job[]; counts: Record<string, number>; savedBytes: number; failReasons?: { reason: string; count: number }[] }>("GET", "/api/v1/admin/compress/jobs?limit=100" + (onlyFailed ? "&state=failed" : ""));
+      const r = await bridge.admin<{ jobs: Job[]; counts: Record<string, number>; savedBytes: number; pendingSavedBytes?: number; total?: number; failReasons?: { reason: string; count: number }[] }>("GET", `/api/v1/admin/compress/jobs?limit=100&offset=${offset}&state=${stateFilter}`);
+      setTotal(r.total ?? Object.values(r.counts ?? {}).reduce((a, b) => a + b, 0)); setPendingSaved(r.pendingSavedBytes ?? 0);
       setJobs(r.jobs ?? []); setCounts(r.counts ?? {}); setSaved(r.savedBytes ?? 0); setReasons(r.failReasons ?? []);
       setCaps(await bridge.admin("GET", "/api/v1/admin/compress/caps"));
     } catch { /* 服务没运行 */ }
-  }, [onlyFailed]);
+  }, [stateFilter, offset]);
   const retryFailed = async () => {
     setBusy(true);
     try {
@@ -290,16 +295,16 @@ function Compress() {
         </Row>
       </Card>
 
-      <Card icon="film" title="压缩队列" count={jobs.length}
+      <Card icon="film" title="压缩队列" count={total}
             extra={<div className="btn-group">
               {caps?.paused ? <Btn icon="play" onClick={async () => { await act("resume", []); load(); }}>继续</Btn> : <Btn icon="stop" onClick={async () => { await act("pause", []); load(); }}>暂停</Btn>}
               <Btn icon="trash" onClick={async () => { const ids = jobs.filter((j) => ["failed", "cancelled"].includes(j.state)).map((j) => j.id); if (ids.length) { await act("remove", ids); load(); } }}>清除失败 / 取消的</Btn>
               <Btn kind="danger" icon="trash" disabled={busy || jobs.length === 0} onClick={clearQueue}>一键清除队列</Btn>
             </div>}>
-        <Row icon={caps?.paused ? "alert" : "info"} title={`${caps?.paused ? "【已暂停】" : ""}排队 ${counts.queued ?? 0} · 压缩中 ${counts.running ?? 0} · 待替换 ${counts.done ?? 0} · 已替换 ${counts.applied ?? 0} · 失败 ${counts.failed ?? 0}`}
-             desc={`累计已省下 ${fmtBytes(saved)}(含待替换的)。同一时间只压缩一个;有人正在看转码视频时会自动让一让。`}>
+        <Row icon={caps?.paused ? "alert" : "info"} title={`${caps?.paused ? "【已暂停】" : ""}排队 ${counts.queued ?? 0} · 压缩中 ${counts.running ?? 0} · 待替换 ${counts.done ?? 0} · 已替换 ${counts.applied ?? 0} · 失败 ${counts.failed ?? 0} · 已取消 ${counts.cancelled ?? 0}`}
+             desc={`已替换视频体积减少 ${fmtBytes(saved)};待替换预计减少 ${fmtBytes(pendingSaved)}。原文件保留在回收区时仍占空间。没有每日数量限制;同一时间压缩一个,客户端活动或不在允许时段会暂停。`}>
           <div className="btn-group">
-            <Btn icon="check" disabled={busy || done.length === 0} onClick={() => setPick(new Set(done.map((j) => j.id)))}>全选待替换</Btn>
+            <Btn icon="check" disabled={busy || done.length === 0} onClick={() => setPick(new Set(done.map((j) => j.id)))}>全选本页待替换</Btn>
             <Btn kind="primary" icon="zap" disabled={busy || pick.size === 0} onClick={() => apply(false)}>替换选中(原文件进回收区)</Btn>
             <Btn kind="danger" icon="trash" disabled={busy || pick.size === 0} onClick={() => apply(true)}>替换并永久删除原文件</Btn>
           </div>
@@ -309,11 +314,18 @@ function Compress() {
                desc={<div style={{ display: "grid", gap: 2, marginTop: 4 }}>{reasons.map((x) => <div key={x.reason}><b>{x.count}</b> × {x.reason}</div>)}</div>}>
             <div className="btn-group">
               <Btn icon="refresh" disabled={busy} onClick={retryFailed}>重试全部失败项</Btn>
-              <Btn icon="search" onClick={() => setOnlyFailed((v) => !v)}>{onlyFailed ? "显示全部" : "只看失败的"}</Btn>
+              <Btn icon="search" onClick={() => { setStateFilter(onlyFailed ? "" : "failed"); setOffset(0); }}>{onlyFailed ? "显示全部" : "只看失败的"}</Btn>
             </div>
           </Row>
         )}
-        {jobs.length === 0 && <Row icon="check" title="队列是空的" />}
+        <Row icon="list" title={`当前显示 ${jobs.length ? offset + 1 : 0}～${offset + jobs.length} / ${total} 个任务`} desc="每页最多 100 条;全选和清除失败按钮作用于当前页。">
+          <div className="btn-group">
+            <SelectField value={stateFilter} options={[{ value: "", label: "全部状态" }, ...Object.entries(STATE_TEXT).map(([value, [label]]) => ({ value, label }))]} onChange={(v) => { setStateFilter(v); setOffset(0); setPick(new Set()); }} />
+            <Btn disabled={offset === 0} onClick={() => { setOffset(Math.max(0, offset - 100)); setPick(new Set()); }}>上一页</Btn>
+            <Btn disabled={offset + jobs.length >= total} onClick={() => { setOffset(offset + 100); setPick(new Set()); }}>下一页</Btn>
+          </div>
+        </Row>
+        {jobs.length === 0 && <Row icon="check" title="当前页没有任务" />}
         {jobs.map((j) => {
           const [label, tone] = STATE_TEXT[j.state] ?? [j.state, "gray" as const];
           return (

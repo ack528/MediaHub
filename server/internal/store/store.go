@@ -31,5 +31,9 @@ func OpenMigrated(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := EnsureSearchIndex(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
 }

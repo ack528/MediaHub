@@ -56,12 +56,14 @@ type optJob struct {
 }
 
 type compressState struct {
-	mu     sync.Mutex
-	paused bool
-	cur    int64 // 正在编码的任务 id
-	cancel context.CancelFunc
-	wake   chan struct{}
-	once   sync.Once
+	enqueueMu sync.Mutex
+	applyMu   sync.Mutex // automatic and manual replacement must not move the same file twice
+	mu        sync.Mutex
+	paused    bool
+	cur       int64 // 正在编码的任务 id
+	cancel    context.CancelFunc
+	wake      chan struct{}
+	once      sync.Once
 
 	lastRetry, lastPurge time.Time // compressHousekeeping 的计时(只在 worker 协程里读写)
 
@@ -127,6 +129,9 @@ func condenseFFmpegErr(msg string) string {
 		l = strings.TrimSpace(l)
 		if l == "" {
 			continue
+		}
+		if strings.HasPrefix(l, "src: ") || strings.HasPrefix(l, "dst: ") || l == "Pixel formats:" {
+			continue // Huge format lists otherwise hide the actual filter/decoder failure.
 		}
 		key := ffAddr.ReplaceAllString(l, "@")
 		if i, ok := idx[key]; ok {
@@ -306,7 +311,7 @@ func (h *HLS) activeRuns() int {
 	return n
 }
 
-func (s *Server) jobSet(id int64, kv map[string]any) {
+func (s *Server) jobSet(id int64, kv map[string]any) error {
 	kv["updated"] = time.Now().Unix()
 	var cols []string
 	var args []any
@@ -315,7 +320,11 @@ func (s *Server) jobSet(id int64, kv map[string]any) {
 		args = append(args, v)
 	}
 	args = append(args, id)
-	_, _ = s.DB.Exec(`UPDATE opt_job SET `+strings.Join(cols, ",")+` WHERE id=?`, args...)
+	_, err := s.DB.Exec(`UPDATE opt_job SET `+strings.Join(cols, ",")+` WHERE id=?`, args...)
+	if err != nil {
+		s.Log.Error("压缩任务状态保存失败", "id", id, "err", err)
+	}
+	return err
 }
 
 func (s *Server) loadJob(id int64) (optJob, error) {
@@ -342,7 +351,21 @@ func (s *Server) encoderFor(codec string) (string, bool) {
 	return "libx264", false
 }
 
-type streamInfo struct{ tenBit, hasSub bool }
+type streamInfo struct {
+	tenBit, hasSub bool
+	pixelFormat    string
+}
+
+func qsvPixelFormat(codec, pix string) bool {
+	switch pix {
+	case "", "yuv420p", "nv12":
+		return true
+	case "yuv420p10le", "p010le":
+		return strings.EqualFold(codec, "hevc")
+	default:
+		return false
+	}
+}
 
 func (s *Server) probeStreams(path string) streamInfo {
 	var si streamInfo
@@ -352,6 +375,9 @@ func (s *Server) probeStreams(path string) streamInfo {
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "video,") && si.pixelFormat == "" {
+			si.pixelFormat = strings.TrimSpace(strings.Split(line, ",")[1])
+		}
 		if strings.Contains(line, "subtitle") {
 			si.hasSub = true
 		}
@@ -552,6 +578,9 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 	}
 	out := filepath.Join(outDir, fmt.Sprintf("%d-%d%s", m.ID, j.ID, outExtFor(m.Ext, si.hasSub)))
 	attempts := s.compressAttempts(j.Codec, m)
+	if len(attempts) > 1 && attempts[0].hwdec && !qsvPixelFormat(m.Vcodec, si.pixelFormat) {
+		attempts = attempts[1:] // Unsupported chroma/bit depth: keep QSV encoding, decode in software.
+	}
 	jctx, cancel := context.WithCancel(ctx)
 	c.mu.Lock()
 	c.cur, c.cancel = id, cancel
@@ -562,7 +591,9 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 		c.cur, c.cancel = 0, nil
 		c.mu.Unlock()
 	}()
-	s.jobSet(id, map[string]any{"state": "running", "progress": 0.0, "out_path": out, "orig_size": m.Size, "err": ""})
+	if err := s.jobSet(id, map[string]any{"state": "running", "progress": 0.0, "out_path": out, "orig_size": m.Size, "err": ""}); err != nil {
+		return
+	}
 	s.Log.Info("压缩开始", "id", id, "media", m.Name, "codec", attempts[0].enc, "kbps", j.Kbps, "preset", j.Preset)
 
 	lastStalled := false // 最近一次 run 是因为卡死被终止的
@@ -729,7 +760,9 @@ func (s *Server) compressOne(ctx context.Context, id int64) {
 		return
 	}
 	ost, _ := os.Stat(winfs.Path(out))
-	s.jobSet(id, map[string]any{"state": "done", "progress": 1.0, "new_size": ost.Size()})
+	if err := s.jobSet(id, map[string]any{"state": "done", "progress": 1.0, "new_size": ost.Size()}); err != nil {
+		return // Keep verified output; never replace without a recorded completed job.
+	}
 	s.Log.Info("压缩完成", "id", id, "media", m.Name, "from", m.Size, "to", ost.Size(), "encoder", used.enc)
 	// 校验通过(时长对、流齐全、开头 / 中间 / 结尾都能完整解码)= 能正常播放:按设置直接替换原文件(原文件进回收区,默认保留 7 天)
 	if s.Cfg.Optimize.AutoReplace {
@@ -949,7 +982,7 @@ func (s *Server) planCompress(in compressReq) (compressPlan, error) {
 			q += ` AND m.name LIKE ? ESCAPE '\'`
 			args = append(args, "%"+strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(f.NameLike)+"%")
 		}
-		q += ` ORDER BY m.size DESC LIMIT 5000`
+		q += ` ORDER BY m.size DESC`
 		rows, err := s.DB.Query(q, args...)
 		if err != nil {
 			return p, err
@@ -1004,6 +1037,8 @@ func (s *Server) planCompress(in compressReq) (compressPlan, error) {
 }
 
 func (s *Server) adminCompressEnqueue(w http.ResponseWriter, r *http.Request) {
+	s.opt.cp.enqueueMu.Lock()
+	defer s.opt.cp.enqueueMu.Unlock()
 	var in compressReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&in); err != nil {
 		writeErr(w, 400, "bad.request", "请求格式错误")
@@ -1016,9 +1051,23 @@ func (s *Server) adminCompressEnqueue(w http.ResponseWriter, r *http.Request) {
 	}
 	if !in.DryRun {
 		now := time.Now().Unix()
-		for _, j := range plan.jobs {
-			_, _ = s.DB.Exec(`INSERT INTO opt_job(media_id, state, codec, bitrate_kbps, preset, created, updated) VALUES(?, 'queued', ?, ?, ?, ?, ?)`,
-				j.MediaID, j.Codec, j.Kbps, j.Preset, now, now)
+		tx, err := s.DB.Begin()
+		if err != nil {
+			writeErr(w, 500, "internal", err.Error())
+			return
+		}
+		defer tx.Rollback()
+		for i, j := range plan.jobs {
+			m := plan.mediaList[i]
+			if _, err := tx.Exec(`INSERT INTO opt_job(media_id, state, codec, bitrate_kbps, preset, created, updated, display_name, display_dir, display_root, display_root_path) VALUES(?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				j.MediaID, j.Codec, j.Kbps, j.Preset, now, now, m.Name, m.DirRel, m.RootName, m.RootPath); err != nil {
+				writeErr(w, 500, "internal", err.Error())
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			writeErr(w, 500, "internal", err.Error())
+			return
 		}
 		s.compressKick()
 	}
@@ -1044,9 +1093,12 @@ func (s *Server) adminCompressCaps(w http.ResponseWriter, r *http.Request) {
 func (s *Server) adminCompressJobs(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	off, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if off < 0 {
+		off = 0
+	}
 	lim := limitParam(r, 50, 200)
 	q := `SELECT j.id, j.media_id, j.state, j.codec, j.bitrate_kbps, j.preset, j.orig_size, j.new_size, j.progress, j.err, j.trash_path, j.created, j.updated,
-		COALESCE(m.name,''), COALESCE(m.dir_rel,''), COALESCE(ro.label,''), COALESCE(ro.path,'')
+		COALESCE(m.name,j.display_name), COALESCE(m.dir_rel,j.display_dir), COALESCE(ro.label,j.display_root), COALESCE(ro.path,j.display_root_path)
 		FROM opt_job j LEFT JOIN media m ON m.id=j.media_id LEFT JOIN roots ro ON ro.id=m.root_id`
 	var args []any
 	if state != "" {
@@ -1074,15 +1126,17 @@ func (s *Server) adminCompressJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	sum := map[string]int64{}
 	rs, _ := s.DB.Query(`SELECT state, COUNT(*), COALESCE(SUM(CASE WHEN new_size>0 THEN orig_size-new_size ELSE 0 END),0) FROM opt_job GROUP BY state`)
-	var saved int64
+	var saved, pending int64
 	if rs != nil {
 		for rs.Next() {
 			var st string
 			var n, sv int64
 			if rs.Scan(&st, &n, &sv) == nil {
 				sum[st] = n
-				if st == "done" || st == "applied" {
+				if st == "applied" {
 					saved += sv
+				} else if st == "done" {
+					pending += sv
 				}
 			}
 		}
@@ -1111,7 +1165,13 @@ func (s *Server) adminCompressJobs(w http.ResponseWriter, r *http.Request) {
 	if len(fail) > 10 {
 		fail = fail[:10]
 	}
-	writeJSON(w, 200, map[string]any{"jobs": jobs, "counts": sum, "savedBytes": saved, "failReasons": fail})
+	var total int64
+	for st, n := range sum {
+		if state == "" || st == state {
+			total += n
+		}
+	}
+	writeJSON(w, 200, map[string]any{"jobs": jobs, "counts": sum, "total": total, "savedBytes": saved, "pendingSavedBytes": pending, "failReasons": fail})
 }
 
 var digitsRe = regexp.MustCompile(`\d+`)
@@ -1312,12 +1372,17 @@ type applyResult struct {
 
 // applyJobs 用压缩版替换原文件:原文件【移进回收区】(可还原),压缩版放到原来的位置;purge=true 时替换成功后立刻永久删除原文件。
 func (s *Server) applyJobs(ids []int64, purge bool) applyResult {
+	s.opt.cp.applyMu.Lock()
+	defer s.opt.cp.applyMu.Unlock()
 	batch := "compress-" + time.Now().Format("20060102-150405")
 	res := applyResult{Failed: []string{}, Batch: batch}
 	roots := map[int64]bool{}
 	batchRoot := map[int64]string{}
 	for _, id := range ids {
 		j, err := s.loadJob(id)
+		if err == nil && j.State == "applied" {
+			continue
+		}
 		if err != nil || j.State != "done" {
 			res.Failed = append(res.Failed, fmt.Sprintf("任务 %d 不是「已完成」状态", id))
 			continue
@@ -1362,7 +1427,7 @@ func (s *Server) applyJobs(ids []int64, purge bool) applyResult {
 			continue
 		}
 		s.forgetMedia(m.ID)
-		s.jobSet(id, map[string]any{"state": "applied", "trash_path": batch, "err": ""})
+		s.jobSet(id, map[string]any{"state": "applied", "trash_path": batch, "err": "", "display_name": finalName, "display_dir": m.DirRel, "display_root": m.RootName, "display_root_path": m.RootPath})
 		res.Applied++
 		res.Saved += j.Orig - j.New
 		roots[m.RootID] = true

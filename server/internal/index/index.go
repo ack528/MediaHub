@@ -441,6 +441,13 @@ func (b *batch) commit() error {
 	return err
 }
 
+func (b *batch) rollback() {
+	if b.tx != nil {
+		_ = b.tx.Rollback()
+		b.tx = nil
+	}
+}
+
 func (b *batch) tick() error {
 	b.n++
 	if b.n >= 4000 {
@@ -503,7 +510,7 @@ func (ix *Indexer) ScanRoot(ctx context.Context, r Root) (retErr error) {
 		return err
 	}
 	b := &batch{db: ix.DB}
-	defer b.commit()
+	defer b.rollback()
 	rootID := winfs.Stable(r.Serial, rootFID)
 
 	// 本根目录已有条目的名称(用于维护全文索引),一次读入

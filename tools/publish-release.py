@@ -94,7 +94,7 @@ def main():
     ct, ci = latest_entry(text, "手机端")
     st, si = latest_entry(text, "服务端")
     body = f"## 手机端 LocalBrowse {ct}\n" + "\n".join(ci) + f"\n\n## 服务端 / 管理程序 MediaHub {st}\n" + "\n".join(si)
-    body += "\n\n完整的历史版本见 [CHANGELOG.md](https://github.com/ack528/MediaHub/blob/main/CHANGELOG.md)。\n\n> 发布的 APK 不含 Lossless.dll(版权文件,不公开分发);补帧只在高通处理器上启用。\n"
+    body += "\n\n完整的历史版本见 [CHANGELOG.md](https://github.com/ack528/MediaHub/blob/main/CHANGELOG.md)。\n\n> 发布的 APK 不含 Lossless.dll(版权文件,不公开分发);补帧需自行提供已授权的 DLL。\n"
     tok = token()
     base = f"https://api.github.com/repos/{REPO}"
     try:
@@ -104,7 +104,8 @@ def main():
         subprocess.run(["git", "push", "origin", f":refs/tags/{tag}"], cwd=ROOT, capture_output=True)
     except SystemExit:
         pass
-    rel = api(tok, "POST", f"{base}/releases", {"tag_name": tag, "target_commitish": "main", "name": name, "body": body, "draft": False, "prerelease": False})
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    rel = api(tok, "POST", f"{base}/releases", {"tag_name": tag, "target_commitish": commit, "name": name, "body": body, "draft": True, "prerelease": False})
     print("已创建 Release:", rel["html_url"])
     up = rel["upload_url"].split("{")[0]
     for f in files:
@@ -112,6 +113,7 @@ def main():
         ctype = "application/vnd.android.package-archive" if f.endswith(".apk") else ("application/zip" if f.endswith(".zip") else "text/plain")
         print("上传", f, f"{len(data) / 1048576:.1f} MB")
         api(tok, "POST", f"{up}?name={urllib.parse.quote(f)}", data, {"Content-Type": ctype})
+    api(tok, "PATCH", f"{base}/releases/{rel['id']}", {"draft": False, "make_latest": "true"})
     print("完成:", rel["html_url"])
     save_last()
 

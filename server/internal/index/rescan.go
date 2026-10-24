@@ -17,7 +17,9 @@ import (
 // 做法和 ScanRoot 的"扫一个目录"一致 —— 同样的 upsert(指纹没变的文件不丢元数据)、同样的 FTS 维护、同样的对话归属规则 ——
 // 区别是:① 只处理给定的目录,新出现的子目录(整个文件夹被拷进来 / 改名)递归处理;② 消失的文件、子目录就地删除。
 
-func likeEscape(s string) string { return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s) }
+func likeEscape(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
 
 // frameFor 为目录 dir 算出对话归属等信息。exists=false 表示目录已经不在了。
 func (ix *Indexer) frameFor(r Root, rootID int64, dir string) (f frame, exists bool) {
@@ -78,7 +80,7 @@ func (ix *Indexer) RescanDirs(ctx context.Context, r Root, dirs []string) (chang
 	rootID := winfs.Stable(r.Serial, rootFID)
 	gen := time.Now().UnixNano()
 	b := &batch{db: ix.DB}
-	defer b.commit()
+	defer b.rollback()
 
 	var stack []frame
 	var gone []frame
@@ -101,7 +103,7 @@ func (ix *Indexer) RescanDirs(ctx context.Context, r Root, dirs []string) (chang
 	}
 	dirKnown := func(f frame) bool { // 索引里是否已经有这个目录里的媒体(没有 = 新目录,要递归扫)
 		var one int
-		return ix.DB.QueryRow(`SELECT 1 FROM media WHERE root_id=? AND dir_rel=? LIMIT 1`, r.ID, f.rel).Scan(&one) == nil
+		return b.tx.QueryRow(`SELECT 1 FROM media WHERE root_id=? AND dir_rel=? LIMIT 1`, r.ID, f.rel).Scan(&one) == nil
 	}
 
 	for len(stack) > 0 {
@@ -161,7 +163,7 @@ func (ix *Indexer) RescanDirs(ctx context.Context, r Root, dirs []string) (chang
 			mtime := e.ModTime.UnixMilli()
 			fp := fmt.Sprintf("%d:%d", e.Size, mtime)
 			var oldName string
-			_ = ix.DB.QueryRow(`SELECT name FROM media WHERE id=?`, id).Scan(&oldName)
+			_ = b.tx.QueryRow(`SELECT name FROM media WHERE id=?`, id).Scan(&oldName)
 			if _, err := b.media.Exec(id, f.group, r.ID, nil, e.Name, natsort.Key(e.Name), classify.Ext(e.Name), int(t),
 				e.Size, mtime, e.Created.UnixMilli(), mtime, fp, f.rel, gen); err != nil {
 				return changed, err

@@ -184,12 +184,14 @@ func Probe(ctx context.Context, ffprobe, file string) (*Video, error) {
 
 // Photo 是 ExifTool 读出的照片元数据。
 type Photo struct {
+	Error       string
 	Taken       time.Time
 	W, H        int
 	Orientation int
 }
 
 type exifRec struct {
+	Error            string `json:"Error"`
 	SourceFile       string `json:"SourceFile"`
 	DateTimeOriginal any    `json:"DateTimeOriginal"`
 	CreateDate       any    `json:"CreateDate"`
@@ -246,7 +248,11 @@ func ExifBatch(ctx context.Context, exiftool string, files []string) (map[string
 	runErr := cmd.Run()
 	if out.Len() == 0 {
 		if runErr != nil {
-			return nil, fmt.Errorf("exiftool: %w: %s", runErr, strings.TrimSpace(errb.String()))
+			msg := []rune(strings.TrimSpace(errb.String()))
+			if len(msg) > 800 {
+				msg = append(msg[:800], '…')
+			}
+			return nil, fmt.Errorf("exiftool: %w: %s", runErr, string(msg))
 		}
 		return map[string]*Photo{}, nil
 	}
@@ -264,7 +270,7 @@ func ExifBatch(ctx context.Context, exiftool string, files []string) (map[string
 		if !ok {
 			continue
 		}
-		p := &Photo{W: num(r.ImageWidth), H: num(r.ImageHeight), Orientation: num(r.Orientation)}
+		p := &Photo{W: num(r.ImageWidth), H: num(r.ImageHeight), Orientation: num(r.Orientation), Error: r.Error}
 		p.Taken = parseExifTime(r.DateTimeOriginal, time.Local)
 		if p.Taken.IsZero() {
 			p.Taken = parseExifTime(r.CreateDate, time.Local)
