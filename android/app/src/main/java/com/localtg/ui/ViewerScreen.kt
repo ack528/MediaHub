@@ -69,6 +69,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
     val items = feed.items
     if (items.isEmpty()) { onBack(); return }
     val cfg = LocalSettings.current
+    val slideBarColor = remember(cfg.slideshowBarColor) { Color(com.localtg.data.slideBarArgb(cfg.slideshowBarColor)) }
     val ctx = LocalContext.current
     val act = remember(ctx) { ctx.findActivity() }
     val pager = rememberPagerState(initialPage = startIndex.coerceIn(0, items.lastIndex)) { items.size }
@@ -221,8 +222,8 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
         }
     }
     LaunchedEffect(cur.id) { AppLog.i("viewer", "查看 ${cur.name} (${cur.type}, ${pager.currentPage + 1}/${items.size})"); onCurrent(cur) }
-    // 每滑到一项就记下来:退出查看器后,群组页定位到最后停留的这一项(不是打开时的那一项)
-    LaunchedEffect(cur.id) { feed.originDialogId?.let { c.viewerReturn.value = it to cur.id } }
+    // The queue owns return policy: group shuffle pins its start; other queues follow the current item.
+    LaunchedEffect(feed, cur.id) { feed.returnPosition(cur)?.let { c.viewerReturn.value = it } }
 
     // 控制条隐藏 → 沉浸模式(隐藏状态栏和导航栏);离开时恢复
     DisposableEffect(ui.chrome, inPip) {
@@ -362,9 +363,9 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
         }
 
         if (slides.active && !ui.chrome && !ui.menuOpen && !inPip && !slides.finished && !slides.failed) {
-            androidx.compose.foundation.Canvas(Modifier.align(Alignment.TopStart).fillMaxWidth().height(4.dp)) {
+            androidx.compose.foundation.Canvas(Modifier.align(Alignment.TopStart).fillMaxWidth().height(com.localtg.data.slideBarThickness(cfg.slideshowBarThickness).dp)) {
                 val remaining = if (cur.isVideo) ui.videoRemaining else photoCountdown.value
-                drawRect(Color(0xFFCCCCCC), size = androidx.compose.ui.geometry.Size(size.width * remaining.coerceIn(0f, 1f), size.height))
+                drawRect(slideBarColor, size = androidx.compose.ui.geometry.Size(size.width * remaining.coerceIn(0f, 1f), size.height))
             }
         }
 

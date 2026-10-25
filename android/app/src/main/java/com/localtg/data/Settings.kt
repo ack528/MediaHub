@@ -24,6 +24,8 @@ private val Context.playbackDataStore by preferencesDataStore(name = "playback_p
 data class AppSettings(
 	val slideshowSeconds: Float = 5f,
 	val slideshowOrder: String = "forward",
+    val slideshowBarThickness: Float = 4f,
+    val slideshowBarColor: String = DEFAULT_SLIDE_BAR_COLOR,
     // ---- 外观
     val theme: String = "dark",                // dark(默认)/ light / system
     val chatBackground: String = "gradient",   // gradient / plain
@@ -159,7 +161,11 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
     }?.let { s ->
         // 4.0.0 起默认深色主题:以前的默认值是"跟随系统",没改过的老用户升级后也换成深色(只做一次,之后用户自己改回跟随系统不受影响)
         if (!s.darkDefaultApplied) s.copy(theme = if (s.theme == "system") "dark" else s.theme, darkDefaultApplied = true) else s
-    }?.let { it.copy(slideshowSeconds = slideSeconds(it.slideshowSeconds)) } ?: AppSettings(darkDefaultApplied = true)
+    }?.let { it.copy(
+        slideshowSeconds = slideSeconds(it.slideshowSeconds),
+        slideshowBarThickness = slideBarThickness(it.slideshowBarThickness),
+        slideshowBarColor = parseSlideBarColor(it.slideshowBarColor) ?: DEFAULT_SLIDE_BAR_COLOR,
+    ) } ?: AppSettings(darkDefaultApplied = true)
 
     val value: AppSettings get() = state.value
 

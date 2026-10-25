@@ -55,7 +55,7 @@ suspend fun createSlideshow(source: SlideSource, library: SlideLibrary, anchor: 
             }
         }
         val queueSource = if (source.groupOrder != null) source else source.copy(sequence = sequence)
-        return sequenceFeed(sequence, queueSource, 0)
+        return sequenceFeed(sequence, queueSource, 0, returnAnchorId = anchor.id.takeIf { source.groupOrder != null })
     }
     source.groupOrder?.let { base ->
         val order = if (options.order == "reverse") base.copy(direction = if (base.direction == "asc") "desc" else "asc") else base
@@ -79,10 +79,10 @@ suspend fun createSlideshow(source: SlideSource, library: SlideLibrary, anchor: 
     return sequenceFeed(sequence, source, at)
 }
 
-private fun sequenceFeed(sequence: SlideSequence, source: SlideSource, from: Int): ViewerFeed {
+private fun sequenceFeed(sequence: SlideSequence, source: SlideSource, from: Int, returnAnchorId: String? = null): ViewerFeed {
     val initial = sequence.items.drop(from).filter(source.scope::accepts)
     var emitted = sequence.items.size
-    return ViewerFeed(initial, originDialogId = source.origin, slideSource = source) { _, _ ->
+    return ViewerFeed(initial, originDialogId = source.origin, slideSource = source, returnAnchorId = returnAnchorId) { _, _ ->
         // A cancelled normal-viewer prefetch may already have appended a page. Consume it before fetching again.
         if (emitted >= sequence.items.size && !sequence.exhausted) sequence.more()
         val page = sequence.items.drop(emitted).filter(source.scope::accepts)

@@ -73,7 +73,7 @@ private val SECTIONS = listOf(
     Triple("appearance", "外观", "主题、字体大小、头像形状、屏幕刷新率、动画、隐私"),
     Triple("folders", "文件夹列表", "排序、隐藏小文件夹、头像与第二行内容"),
     Triple("browse", "浏览", "默认排序、网格间距与清晰度、聊天流外观"),
-    Triple("viewer", "图片查看器", "预加载、清晰度、放大上限"),
+    Triple("viewer", "图片查看器", "预加载、清晰度、缩放、幻灯片进度条"),
     Triple("image", "图片", "缓存大小、位图、过渡动画"),
     Triple("video", "视频播放", "自动播放、循环、倍速、进度记忆"),
     Triple("codec", "编解码器", "硬解 / 软解、缓冲、分辨率、音轨字幕"),
@@ -256,6 +256,8 @@ private fun ViewerPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Uni
         "放大上限", s.maxZoom, listOf(2f to "2 倍(默认)", 3f to "3 倍", 4f to "4 倍", 6f to "6 倍", 8f to "8 倍"),
         desc = "双指或双击放大时最多放大到多少",
     ) { u { copy(maxZoom = it) } }
+    Header("幻灯片进度条")
+    SlideshowProgressSettings(s, u)
 }
 
 @Composable

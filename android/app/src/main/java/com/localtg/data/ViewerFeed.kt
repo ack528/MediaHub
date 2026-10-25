@@ -20,6 +20,8 @@ class ViewerFeed(
     /** 从哪个群组打开的(搜索结果等没有就是 null):在查看器里滑到哪一项,退出后这个群组要定位到那一项。 */
     val originDialogId: String? = null,
     val slideSource: SlideSource? = null,
+    /** Group shuffle returns to the item where that queue began, even after playback stops. */
+    val returnAnchorId: String? = null,
     private val onLoadError: (Exception) -> Unit = { com.localtg.AppLog.w("viewer", "加载更多失败", it) },
     private val loader: (suspend (cursor: String?, lastId: String?) -> Pair<List<Item>, String?>)? = null,
 ) {
@@ -29,6 +31,8 @@ class ViewerFeed(
     var exhausted by mutableStateOf(loader == null)
         private set
     private val loadMutex = Mutex()
+
+    fun returnPosition(current: Item): Pair<String, String>? = originDialogId?.let { it to (returnAnchorId ?: current.id) }
 
     suspend fun loadMore(): Boolean = loadMutex.withLock {
         val l = loader ?: return@withLock false

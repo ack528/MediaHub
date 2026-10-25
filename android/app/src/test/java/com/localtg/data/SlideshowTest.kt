@@ -33,6 +33,7 @@ class SlideshowTest {
             feed.loadMore()
             assertEquals(expected, feed.items.map { it.id }); assertTrue(feed.exhausted)
             assertEquals("group", feed.originDialogId)
+            assertEquals("group" to expected.last(), feed.returnPosition(feed.items.last()))
             assertTrue(library.historyCalls.all { it.first.mediaTypes == "photo,gif" })
         }
     }
@@ -51,7 +52,26 @@ class SlideshowTest {
         feed.loadMore()
         assertEquals(listOf("4", "1", "7", "2"), feed.items.map { it.id })
         assertTrue(feed.items.all { it.type != "video" }); assertTrue(feed.exhausted)
+        assertEquals("random" to "2", feed.returnPosition(feed.items.last()))
         assertTrue(library.shuffleCalls.all { it.first.roots == "8" && it.first.mediaTypes == "photo,gif" && it.second == 500L })
+    }
+
+    @Test fun groupShufflePinsStartAcrossPagingAndStopButNewOrdersFollowCurrent() = runBlocking {
+        val library = Library()
+        library.onShuffle = { cursor -> if (cursor == null) HistoryResp(listOf(item(8),item(9)),nextCursor="next") else HistoryResp(listOf(item(10))) }
+        library.onHistory = { _,_,around -> HistoryResp(listOf(item(around!!.toInt()),item(11))) }
+        val source=SlideSource(SlideScope("photo",dialog="group"),SlideGroupOrder("name","asc"))
+        val random=createSlideshow(source,library,item(3),SlideshowOptions(order="shuffle"),500)
+        random.loadMore()
+        assertEquals("group" to "3",random.returnPosition(item(10)))
+        val state=SlideshowPlayback();state.start(SlideshowOptions(order="shuffle"));state.pause();state.end();state.stop()
+        assertEquals("group" to "3",random.returnPosition(item(10)))
+        for(order in listOf("forward","reverse")) {
+            val next=createSlideshow(random.slideSource!!,library,item(10),SlideshowOptions(order=order),501)
+            assertEquals("group" to "11",next.returnPosition(item(11)))
+        }
+        val restarted=createSlideshow(random.slideSource!!,library,item(10),SlideshowOptions(order="shuffle"),502)
+        assertEquals("group" to "10",restarted.returnPosition(item(9)))
     }
 
     @Test fun randomSequenceSupportsForwardAndReverseFromChosenPosition() = runBlocking {
