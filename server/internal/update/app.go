@@ -158,6 +158,8 @@ func (u *Updater) noteApp(rel *release) {
 	busy := u.appBusy
 	if !cached && !busy {
 		u.app.Latest, u.app.Ready, u.app.State, u.app.Progress, u.app.Message = ver, false, "downloading", 0, "正在下载 "+ver
+		// These fields describe the verified file, never a previous version.
+		u.app.Sha256, u.app.Size, u.appPath = "", 0, ""
 		u.appBusy = true
 	}
 	u.appMu.Unlock()

@@ -61,7 +61,7 @@ object AppUpdater {
     private const val PROBE = 256 * 1024L
 
     /** 自己的服务器上缓存好的安装包。 */
-    class ServerSrc(val url: String, val version: String, val sha: String, val ready: Boolean, val progress: Int = 0)
+    class ServerSrc(val url: String, val version: String, val sha: String, val ready: Boolean, val progress: Int = 0, val size: Long = 0)
 
     /**
      * 一次发布。[sha] 检查时已经拿到的 SHA-256(从 SHA256SUMS.txt);[server] 不为空 = 版本信息来自自己的服务器。
@@ -70,6 +70,13 @@ object AppUpdater {
         val tag: String, val version: String, val notes: String, val apkUrl: String, val sumUrl: String?, val size: Long,
         val sha: String? = null, val server: ServerSrc? = null,
     )
+
+    internal fun trustedSha(rel: Release, server: ServerSrc?): String? {
+        fun valid(sha: String?) = sha?.lowercase()?.takeIf { Regex("[a-f0-9]{64}").matches(it) }
+        // Older servers may retain the previous APK digest while preparing a new one.
+        return valid(rel.sha.takeIf { rel.server == null || rel.server.ready })
+            ?: valid(server?.takeIf { it.ready && it.version == rel.version }?.sha)
+    }
 
     @Serializable private class GhAsset(val name: String = "", @SerialName("browser_download_url") val url: String = "", val size: Long = 0)
     @Serializable private class GhRelease(@SerialName("tag_name") val tag: String = "", val body: String? = null, val assets: List<GhAsset> = emptyList(), val sums: String? = null)
@@ -269,8 +276,10 @@ object AppUpdater {
         downloadLock.lock()
         try {
             val name = "LocalBrowse-${rel.version}.apk"
-            val want = (rel.sha ?: rel.server?.sha?.takeIf { it.length == 64 }
-                ?: wantSum(rel.sumUrl ?: throw IOException("发布缺少校验文件"), name)).lowercase()
+            val initial = rel.server
+            val server = if (initial?.ready == true) initial else withTimeoutOrNull(2000) { recheck?.invoke() } ?: initial
+            val want = trustedSha(rel, server) ?: wantSum(rel.sumUrl ?: throw IOException("发布缺少校验文件"), name)
+            val size = if (initial != null && !initial.ready) server?.takeIf { it.ready && it.version == rel.version }?.size ?: 0L else rel.size
             val store = store(ctx)
             store.cached(rel.version, want)?.let { return@withContext it }
             val part = store.partial(rel.version)
@@ -279,14 +288,12 @@ object AppUpdater {
                 if (total > 0) { high = maxOf(high, done * 10000 / total).coerceAtMost(9900); onProgress(high, 10000) }
                 else onProgress(high, 10000)
             }
-            val initial = rel.server
-            val server = if (initial?.ready == true) initial else withTimeoutOrNull(2000) { recheck?.invoke() } ?: initial
             if (serverHttp != null && server?.ready == true && server.version == rel.version && server.sha.equals(want, true)) {
                 try {
                     val http = serverHttp.newBuilder().dispatcher(okhttp3.Dispatcher())
                         .connectTimeout(3, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS).build()
                     val url = server.url + "?version=${rel.version}&sha256=$want"
-                    UpdateTransfer(http).fetch(url, part, want, rel.size, report)
+                    UpdateTransfer(http).fetch(url, part, want, size, report)
                     return@withContext store.promote(rel.version, want)
                 } catch (e: CancellationException) { throw e
                 } catch (e: IOException) { AppLog.w("update", "服务器下载中断，保留已下载内容后切换源", e) }
@@ -296,7 +303,7 @@ object AppUpdater {
             var error: IOException? = null
             for (url in (probes.map { it.url } + urls).distinct()) {
                 try {
-                    UpdateTransfer(client.newBuilder().readTimeout(8, TimeUnit.SECONDS).build()).fetch(url, part, want, rel.size, report)
+                    UpdateTransfer(client.newBuilder().readTimeout(8, TimeUnit.SECONDS).build()).fetch(url, part, want, size, report)
                     return@withContext store.promote(rel.version, want)
                 } catch (e: CancellationException) { throw e
                 } catch (e: IOException) { error = e; AppLog.i("update", "更换下载源: ${e.message}") }

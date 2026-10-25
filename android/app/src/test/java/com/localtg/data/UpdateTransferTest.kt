@@ -63,4 +63,12 @@ class UpdateTransferTest {
         assertEquals(0.5f,slideSeconds(0.1f))
         assertEquals(5f,slideSeconds(Float.NaN))
     }
+    @Test fun newVersionNeverUsesThePreviousServersDigest() {
+        val old="a".repeat(64);val current="b".repeat(64)
+        val preparing=AppUpdater.ServerSrc("http://server/app.apk","4.2.0",old,false)
+        val release=AppUpdater.Release("","4.2.0","","",null,123,old,preparing)
+        assertNull(AppUpdater.trustedSha(release,preparing))
+        assertEquals(current,AppUpdater.trustedSha(release,AppUpdater.ServerSrc("http://server/app.apk","4.2.0",current,true)))
+        assertNull(AppUpdater.trustedSha(release,AppUpdater.ServerSrc("http://server/app.apk","4.1.9",old,true)))
+    }
 }

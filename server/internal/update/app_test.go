@@ -15,6 +15,24 @@ import (
 	"time"
 )
 
+func TestNewAppVersionDiscardsPreviousFileMetadata(t *testing.T) {
+	u := New(Options{Version: "1.0.0", AppDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, false)
+	u.app = AppStatus{Latest: "1.0.0", Sha256: "previous-sha", Size: 999, Ready: true, State: "ready"}
+	u.appPath = "previous.apk"
+	var rel release
+	if err := json.Unmarshal([]byte(`{"tag_name":"v2","assets":[{"name":"LocalBrowse-2.0.0.apk","browser_download_url":"http://127.0.0.1/new.apk"}]}`), &rel); err != nil {
+		t.Fatal(err)
+	}
+	u.noteApp(&rel) // Missing manifest deliberately stops before any network download.
+	st := u.AppStatus()
+	if st.Latest != "2.0.0" || st.Ready || st.Sha256 != "" || st.Size != 0 {
+		t.Fatalf("new version inherited old file metadata: %+v", st)
+	}
+	if path, _ := u.AppFile(); path != "" {
+		t.Fatal("previous file exposed as new version")
+	}
+}
+
 // 服务端缓存手机端安装包:下载、校验、只留最新一个、重启服务后读回;缓存文件被改坏了就丢弃。
 func TestAppCacheDownloadsVerifiesAndRestores(t *testing.T) {
 	apk := []byte("PK\x03\x04 这是一个假的安装包")

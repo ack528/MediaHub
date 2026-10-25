@@ -971,8 +971,8 @@ private suspend fun serverRelease(c: AppContainer): com.localtg.data.AppUpdater.
     val base = "https://github.com/${com.localtg.data.AppUpdater.REPO}/releases/latest/download/"
     return com.localtg.data.AppUpdater.Release(
         tag = "", version = i.latest, notes = i.notes.trim().take(1500), apkUrl = base + "LocalBrowse-${i.latest}.apk", sumUrl = base + "SHA256SUMS.txt",
-        size = i.size, sha = i.sha256.lowercase().takeIf { it.length == 64 },
-        server = com.localtg.data.AppUpdater.ServerSrc(c.api.appUpdateApkUrl(), i.latest, i.sha256, i.ready, i.progress),
+        size = if (i.ready) i.size else 0, sha = i.sha256.lowercase().takeIf { i.ready && it.length == 64 },
+        server = com.localtg.data.AppUpdater.ServerSrc(c.api.appUpdateApkUrl(), i.latest, if (i.ready) i.sha256 else "", i.ready, i.progress, if (i.ready) i.size else 0),
     )
 }
 
