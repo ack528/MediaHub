@@ -32,6 +32,11 @@ internal fun SlideshowProgressSettings(settings: AppSettings, update: (AppSettin
     var thickness by remember(settings.slideshowBarThickness) { mutableFloatStateOf(slideBarThickness(settings.slideshowBarThickness)) }
     val hex = parseSlideBarColor(settings.slideshowBarColor) ?: DEFAULT_SLIDE_BAR_COLOR
     var colorOpen by remember { mutableStateOf(false) }
+    val position = slideBarPosition(settings.slideshowBarPosition)
+    ChoiceRow("图片全屏提示", slidePhotoIndicator(settings.slideshowPhotoIndicator), listOf("bar" to "进度条", "countdown" to "暂停按钮和倒计时", "none" to "不显示"),
+        desc = "图片隐藏信息时使用，倒计时显示在左下角暂停按钮右侧") { value -> update { copy(slideshowPhotoIndicator = value) } }
+    ChoiceRow("进度条位置", position, listOf("top" to "上", "bottom" to "下", "left" to "左", "right" to "右"),
+        desc = "图片和视频进度条共用") { value -> update { copy(slideshowBarPosition = value) } }
     TgCell(null) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("进度条粗细", color = tg.name, fontSize = 15.sp, modifier = Modifier.weight(1f))
@@ -41,12 +46,12 @@ internal fun SlideshowProgressSettings(settings: AppSettings, update: (AppSettin
             onValueChangeFinished = { update { copy(slideshowBarThickness = slideBarThickness(thickness)) } },
             valueRange = 0.5f..12f, steps = 22, modifier = Modifier.fillMaxWidth().height(40.dp),
             colors = SliderDefaults.colors(thumbColor = tg.accent, activeTrackColor = tg.accent))
-        ProgressSample(thickness, Color(slideBarArgb(hex)))
+        ProgressSample(thickness, Color(slideBarArgb(hex)), position)
         Text("0.5–12 dp · 图片和视频幻灯片共用，保存后立即生效", color = tg.message, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
     }
     TgTextCell("进度条颜色", value = hex, subtitle = "常用颜色或自定义 #RRGGBB 色值", onClick = { colorOpen = true })
-    TgTextCell("恢复进度条默认样式", subtitle = "浅灰色 · 4 dp", onClick = {
-        update { copy(slideshowBarThickness = 4f, slideshowBarColor = DEFAULT_SLIDE_BAR_COLOR) }
+    TgTextCell("恢复全屏提示默认设置", subtitle = "顶部进度条 · 浅灰色 · 4 dp", onClick = {
+        update { copy(slideshowBarThickness = 4f, slideshowBarColor = DEFAULT_SLIDE_BAR_COLOR, slideshowBarPosition = "top", slideshowPhotoIndicator = "bar") }
     })
     if (colorOpen) {
         var text by remember { mutableStateOf(hex) }
@@ -71,7 +76,7 @@ internal fun SlideshowProgressSettings(settings: AppSettings, update: (AppSettin
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(tg.gray).padding(horizontal = 12.dp, vertical = 10.dp),
                     textStyle = LocalTextStyle.current.copy(color = tg.name, fontSize = 15.sp), cursorBrush = SolidColor(tg.accent))
                 if (parsed == null) Text("请输入如 #4DA6FF 的有效色值", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                ProgressSample(thickness, Color(slideBarArgb(parsed ?: hex)))
+                ProgressSample(thickness, Color(slideBarArgb(parsed ?: hex)), position)
             }
         }, confirmButton = { TextButton(enabled = parsed != null, onClick = { update { copy(slideshowBarColor = parsed!!) }; colorOpen = false }) { Text("保存") } },
             dismissButton = { TextButton(onClick = { colorOpen = false }) { Text("取消") } })
@@ -79,8 +84,8 @@ internal fun SlideshowProgressSettings(settings: AppSettings, update: (AppSettin
 }
 
 @Composable
-private fun ProgressSample(thickness: Float, color: Color) {
-    Box(Modifier.fillMaxWidth().height(32.dp).clip(RoundedCornerShape(6.dp)).background(Brush.horizontalGradient(listOf(Color(0xFF222222), Color(0xFFE8E8E8))))) {
-        Box(Modifier.fillMaxWidth(0.72f).height(slideBarThickness(thickness).dp).background(color))
+private fun ProgressSample(thickness: Float, color: Color, position: String) {
+    Box(Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(6.dp)).background(Brush.horizontalGradient(listOf(Color(0xFF222222), Color(0xFFE8E8E8))))) {
+        SlideshowProgressBar(thickness, color, position, { 0.72f })
     }
 }

@@ -73,7 +73,7 @@ private val SECTIONS = listOf(
     Triple("appearance", "外观", "主题、字体大小、头像形状、屏幕刷新率、动画、隐私"),
     Triple("folders", "文件夹列表", "排序、隐藏小文件夹、头像与第二行内容"),
     Triple("browse", "浏览", "默认排序、网格间距与清晰度、聊天流外观"),
-    Triple("viewer", "图片查看器", "预加载、清晰度、缩放、幻灯片进度条"),
+    Triple("viewer", "图片查看器", "预加载、清晰度、缩放、幻灯片全屏提示"),
     Triple("image", "图片", "缓存大小、位图、过渡动画"),
     Triple("video", "视频播放", "自动播放、循环、倍速、进度记忆"),
     Triple("codec", "编解码器", "硬解 / 软解、缓冲、分辨率、音轨字幕"),
@@ -230,7 +230,7 @@ private fun FoldersPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Un
     ) { u { copy(dialogMinCount = it) } }
     Header("每一行")
     ChoiceRow(
-        "第二行内容", s.dialogSubtitle, listOf("last" to "最后一项的文件名", "path" to "所在路径", "none" to "不显示"),
+        "第二行内容", s.dialogSubtitle, listOf("last" to "最近浏览的文件名", "path" to "所在路径", "none" to "不显示"),
     ) { u { copy(dialogSubtitle = it) } }
     SwitchRow("头像使用文件夹封面", "关闭后头像只显示首字母,更省流量", s.avatarCover) { u { copy(avatarCover = it) } }
 }
@@ -256,7 +256,7 @@ private fun ViewerPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Uni
         "放大上限", s.maxZoom, listOf(2f to "2 倍(默认)", 3f to "3 倍", 4f to "4 倍", 6f to "6 倍", 8f to "8 倍"),
         desc = "双指或双击放大时最多放大到多少",
     ) { u { copy(maxZoom = it) } }
-    Header("幻灯片进度条")
+    Header("幻灯片全屏提示")
     SlideshowProgressSettings(s, u)
 }
 
@@ -595,7 +595,7 @@ private fun CodecPage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Unit
     ) { u { copy(maxBitrateMbps = it) } }
     SwitchRow(
         "自动画质", "网速不够时自动降一档转码:开播前网速估计明显低于视频码率就直接转码到扛得住的档位;播放中连续卡顿(45 秒内两次,或一次超过 8 秒)就自动降一档并从当前位置继续,画面上会提示,可在播放器菜单里改回。" +
-            "降档只针对当前这个视频,不改「记住的播放设置」。经内网穿透 / 云中继、带宽小的时候最有用。需要服务端支持转码。",
+            "手动选择画质后优先保持手动档位；自动降档只针对未手动选定画质的视频，不改「记住的播放设置」。经内网穿透 / 云中继、带宽小的时候最有用。需要服务端支持转码。",
         s.autoQuality,
     ) { u { copy(autoQuality = it) } }
     ChoiceRow(
@@ -1077,7 +1077,7 @@ private fun SwitchRow(title: String, desc: String?, checked: Boolean, onChange: 
 }
 
 @Composable
-private fun <T> ChoiceRow(title: String, value: T, options: List<Pair<T, String>>, desc: String? = null, onSelect: (T) -> Unit) {
+internal fun <T> ChoiceRow(title: String, value: T, options: List<Pair<T, String>>, desc: String? = null, onSelect: (T) -> Unit) {
     var open by remember { mutableStateOf(false) }
     val hap = LocalHaptics.current
     val label = options.firstOrNull { it.first == value }?.second ?: value.toString()

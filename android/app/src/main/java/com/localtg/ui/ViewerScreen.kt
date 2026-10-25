@@ -363,9 +363,14 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
         }
 
         if (slides.active && !ui.chrome && !ui.menuOpen && !inPip && !slides.finished && !slides.failed) {
-            androidx.compose.foundation.Canvas(Modifier.align(Alignment.TopStart).fillMaxWidth().height(com.localtg.data.slideBarThickness(cfg.slideshowBarThickness).dp)) {
-                val remaining = if (cur.isVideo) ui.videoRemaining else photoCountdown.value
-                drawRect(slideBarColor, size = androidx.compose.ui.geometry.Size(size.width * remaining.coerceIn(0f, 1f), size.height))
+            val photoIndicator = com.localtg.data.slidePhotoIndicator(cfg.slideshowPhotoIndicator)
+            if (cur.isVideo || photoIndicator == "bar") {
+                SlideshowProgressBar(cfg.slideshowBarThickness, slideBarColor, cfg.slideshowBarPosition,
+                    remaining = { if (cur.isVideo) ui.videoRemaining else photoCountdown.value })
+            } else if (photoIndicator == "countdown") {
+                PhotoSlideshowCountdown(slides.playing, slides.options?.imageSeconds ?: cfg.slideshowSeconds, { photoCountdown.value },
+                    onToggle = ui.toggleSlides, modifier = Modifier.align(Alignment.BottomStart).navigationBarsPadding()
+                        .padding(start = 8.dp, bottom = 8.dp))
             }
         }
 

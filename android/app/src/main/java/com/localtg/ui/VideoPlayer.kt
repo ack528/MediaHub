@@ -228,7 +228,9 @@ fun VideoPage(
     val blocked = item.brokenLabel() != null && (item.size == 0L || !forceTry)
     // null = 直接播放原文件;否则请服务端按这个码率(bps)转码,分辨率不变。
     // 开了「记住画质」:上一个视频选了 1.5M 转码,切到下一个视频就直接用 1.5M(服务端也已经在预热它了),不用再手动选。
-    var transcodeBitrate by remember(item.id) { mutableStateOf<Int?>(initialTranscode(c, item)) }
+    // Adjacent pages are composed before a manual choice. Re-entering a page must read the latest preference.
+    var transcodeBitrate by remember(item.id, isCurrent) { mutableStateOf<Int?>(initialTranscode(c, item)) }
+    var manuallySelectedQuality by remember(item.id, isCurrent) { mutableStateOf(com.localtg.data.hasRememberedQuality(c.settings.value)) }
     // 兼容版本(服务端 3.2.0 起):视频手机能解、只是音轨 / 容器不行的,服务端做一份"视频原样复制 + 音频转 AAC"的 MP4,之后直放。
     var compatUrl by remember(item.id) { mutableStateOf<String?>(null) }
     // 需要兼容版本的视频,先查服务端有没有、没查完不创建播放器(免得先试直放,再切)
@@ -237,7 +239,7 @@ fun VideoPage(
     val sid = remember(item.id) { c.hlsSid(item.id) } // 每个视频固定一个会话标识:服务端预热的转码,播放时才能接上
     val stalls = remember(item.id) { com.localtg.data.StallTracker() }      // 自动画质:卡顿统计
     val lastSeek = remember(item.id) { longArrayOf(0L) }                    // 最近一次用户拖动进度的时间:拖动引起的缓冲不算卡顿
-    var tCodec by remember(item.id) { mutableStateOf(com.localtg.data.DeviceCodecs.resolveCodec(c.settings.value.playerCodec, c.api.caps.codecs)) }
+    var tCodec by remember(item.id, isCurrent) { mutableStateOf(com.localtg.data.DeviceCodecs.resolveCodec(c.settings.value.playerCodec, c.api.caps.codecs)) }
     var resumeMs by remember(item.id) { mutableLongStateOf(-1L) }        // -1 = 还没读取保存的进度
     var preservePosition by remember { mutableStateOf(false) }
     var appliedRestart by remember { mutableIntStateOf(ui.restartVideo) }
@@ -504,6 +506,7 @@ fun VideoPage(
     // 自动画质:网速不够时自动降一档转码。卡顿中每秒检查一次:45 秒内第二次卡顿,或者一次卡了超过 8 秒 → 降档。
     // 降档只是这个视频的临时调整,不改「记住的播放设置」;一个视频最多降 3 次,降完 25 秒内不再动。
     fun stepDown() {
+        if (!com.localtg.data.allowAutoQuality(c.settings.value, manuallySelectedQuality)) return
         val pl = player ?: return
         val est = com.localtg.data.NetEstimate.fresh
         val cur = (transcodeBitrate?.toLong() ?: com.localtg.data.originalBps(item)).takeIf { it > 0 }
@@ -527,9 +530,9 @@ fun VideoPage(
         stalls.switched(now)
         showHud(Hud(TgIcons.Speed, "网络较慢,已自动降到 ${com.localtg.data.QualityTiers.label(tier)} 转码(可在画质菜单里改回)"))
     }
-    LaunchedEffect(player, state, firstFrame) {
+    LaunchedEffect(player, state, firstFrame, manuallySelectedQuality, cfg.playerQuality, cfg.rememberPlayback, cfg.autoQuality) {
         if (player == null || !isCurrent || !firstFrame || state != Player.STATE_BUFFERING) return@LaunchedEffect
-        if (!c.settings.value.autoQuality || c.isLocal || !c.api.transcodeOk) return@LaunchedEffect
+        if (!com.localtg.data.allowAutoQuality(c.settings.value, manuallySelectedQuality) || c.isLocal || !c.api.transcodeOk) return@LaunchedEffect
         while (true) {
             delay(1000)
             val now = android.os.SystemClock.elapsedRealtime()
@@ -1196,12 +1199,14 @@ fun VideoPage(
                         val cur = rates.indexOf(transcodeBitrate)
                         fun pick(i: Int) {
                             panel = ""
+                            manuallySelectedQuality = true
+                            // Clicking the already active automatic tier is still an explicit choice to remember.
+                            rememberPlaybackChoice(c, rates[i], tCodec)
                             if (rates[i] != transcodeBitrate) {
                                 resumeMs = pp?.currentPosition ?: 0L
                                 useSoftware = false
                                 transcodeBitrate = rates[i]
                                 AppLog.i("player", "手动切换画质:" + (rates[i]?.let { "转码 ${it / 1000}kbps" } ?: "原画"))
-                                rememberPlaybackChoice(c, rates[i], tCodec)
                             }
                         }
                         MenuLabel("播放画质(转码只调码率,分辨率不变)")
@@ -1220,7 +1225,7 @@ fun VideoPage(
                                 tCodec = resolved
                                 if (transcodeBitrate != null) { resumeMs = pp?.currentPosition ?: 0L; panel = "" }
                             }
-                            rememberPlaybackChoice(c, transcodeBitrate, resolved)
+                            rememberPlaybackChoice(c, com.localtg.data.qualityForCodecChange(c.settings.value, transcodeBitrate), resolved)
                         }
                         MenuNote(
                             when {
@@ -1229,7 +1234,7 @@ fun VideoPage(
                                 else -> "H.265 在相同码率下画质更好、相同画质更省流量。自动 = 手机能硬解就用 H.265。当前编码:${tCodec.uppercase()}"
                             },
                         )
-                        if (cfg.rememberPlayback) MenuNote("已开启「记住播放设置」:这里选的画质和编码会用于后面的视频,并同步到服务器(可在 设置 → 视频播放 里关闭)。")
+                        if (cfg.rememberPlayback) MenuNote("已开启「记住播放设置」:手动选择的画质和编码会用于后面的视频，不会被自动降档覆盖，并同步到服务器(可在 设置 → 视频播放 里关闭)。")
                         MenuLabel("解码方式")
                         MenuChips(listOf("硬件解码", "软件解码"), if (decoderName[0].isEmpty()) -1 else if (soft) 1 else 0) { i ->
                             panel = ""
@@ -1549,16 +1554,10 @@ private fun JumpDialog(durationMs: Long, onDismiss: () -> Unit, onJump: (Long) -
 }
 
 /**
- * 「记住画质」:新打开的视频初始用哪个转码码率。没记住 / 记的是原画 / 本地媒体 / 视频本身码率已经比目标低(转码只会白白耗服务端)→ null(直接播放)。
+ * 「记住画质」:使用手动选择的转码档位，不按原视频码率悄悄改回原画。
  */
 internal fun rememberedTranscode(c: com.localtg.AppContainer, item: Item): Int? {
-    val s = c.settings.value
-    if (!s.rememberPlayback || s.playerQuality <= 0 || c.isLocal || item.brokenLabel() != null) return null
-    val cap = com.localtg.data.QualityTiers.cap(c.api.caps.maxTranscodeBitrate)
-    val target = minOf(s.playerQuality, cap)
-    val origBps = (item.video?.bitrateKbps ?: 0L) * 1000
-    if (origBps > 0 && origBps <= target * 115L / 100) return null // 原本就不比目标高,不转
-    return target
+    return com.localtg.data.rememberedVideoBitrate(c.settings.value, c.api.caps.maxTranscodeBitrate, c.isLocal, item.brokenLabel() != null)
 }
 
 /** 用户在播放器里选了画质 / 编码:记在本机并同步到服务器(服务端据此给后续请求做默认值、预热下一个视频)。 */

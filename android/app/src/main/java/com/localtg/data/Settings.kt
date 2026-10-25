@@ -26,6 +26,8 @@ data class AppSettings(
 	val slideshowOrder: String = "forward",
     val slideshowBarThickness: Float = 4f,
     val slideshowBarColor: String = DEFAULT_SLIDE_BAR_COLOR,
+    val slideshowBarPosition: String = "top",
+    val slideshowPhotoIndicator: String = "bar",
     // ---- 外观
     val theme: String = "dark",                // dark(默认)/ light / system
     val chatBackground: String = "gradient",   // gradient / plain
@@ -39,7 +41,7 @@ data class AppSettings(
     // ---- 文件夹列表
     val dialogSort: String = "recent",         // recent(服务端顺序:最近更新) / name / count(媒体数量) / path
     val dialogMinCount: Int = 0,               // 隐藏媒体数少于这个值的文件夹(0 = 不隐藏)
-    val dialogSubtitle: String = "last",       // 每行第二行显示:last(最后一项文件名) / path(所在路径) / none
+    val dialogSubtitle: String = "last",       // 每行第二行显示:last(最近浏览的文件名，保留旧键兼容) / path(所在路径) / none
     val avatarCover: Boolean = true,           // 头像用文件夹封面;关闭则只显示首字母
     // ---- 浏览
     val defaultSort: String = "auto",          // 文件夹默认排序:auto(服务器按名称、本地按时间) / name / taken / size / type
@@ -165,6 +167,8 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
         slideshowSeconds = slideSeconds(it.slideshowSeconds),
         slideshowBarThickness = slideBarThickness(it.slideshowBarThickness),
         slideshowBarColor = parseSlideBarColor(it.slideshowBarColor) ?: DEFAULT_SLIDE_BAR_COLOR,
+        slideshowBarPosition = slideBarPosition(it.slideshowBarPosition),
+        slideshowPhotoIndicator = slidePhotoIndicator(it.slideshowPhotoIndicator),
     ) } ?: AppSettings(darkDefaultApplied = true)
 
     val value: AppSettings get() = state.value

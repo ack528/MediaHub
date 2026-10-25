@@ -44,10 +44,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.unit.Constraints
 import kotlin.math.roundToInt
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -79,6 +76,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 class DialogsViewModel(private val c: AppContainer) : ViewModel() {
+    private val ns = c.session.ns()
+    val recentNames = c.viewState.recentNames(ns)
     val dialogs = MutableStateFlow<List<Dialog>>(emptyList())
     val loading = MutableStateFlow(true)
     val error = MutableStateFlow<String?>(null)
@@ -126,6 +125,7 @@ fun DialogsScreen(
     val all by vm.dialogs.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
+    val recentNames by vm.recentNames.collectAsState(initial = emptyMap())
     val scope = rememberCoroutineScope()
     val tg = LocalTg.current
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -191,7 +191,7 @@ fun DialogsScreen(
                                 RandomRow(lb) { r -> onRandom(lb, lb?.let { l -> all.filter { it.rootLabel == l }.map { it.rootId }.distinct().joinToString(",") }, r) }
                             }
                             itemsIndexed(shown, key = { _, d -> d.id }) { i, d ->
-                                Box(Modifier.animateItem()) { DialogRow(d, c, onClick = { r -> c.chatSiblings = shown.map { it.id }; onOpen(d, r) }) }
+                                Box(Modifier.animateItem()) { DialogRow(d, c, recentNames[d.id], onClick = { r -> c.chatSiblings = shown.map { it.id }; onOpen(d, r) }) }
                             }
                         }
                     }
@@ -276,7 +276,7 @@ private fun RandomRow(label: String?, onClick: (androidx.compose.ui.geometry.Rec
 }
 
 @Composable
-private fun DialogRow(d: Dialog, c: AppContainer, onClick: (androidx.compose.ui.geometry.Rect?) -> Unit) {
+private fun DialogRow(d: Dialog, c: AppContainer, recentName: String?, onClick: (androidx.compose.ui.geometry.Rect?) -> Unit) {
     val tg = LocalTg.current
     val at = remember { arrayOfNulls<androidx.compose.ui.geometry.Rect>(1) } // 这一行的位置:点进去时从这里展开
     Box(Modifier.fillMaxWidth().height(70.dp).onGloballyPositioned { at[0] = it.boundsInRoot() }.hapticClickable { onClick(at[0]) }) {
@@ -292,23 +292,16 @@ private fun DialogRow(d: Dialog, c: AppContainer, onClick: (androidx.compose.ui.
                 Text(d.last?.takenAt?.let { formatDialogTime(it) }.orEmpty(), color = tg.date, fontSize = 13.sp)
             }
             Row(Modifier.padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                val last = d.last
                 val sub = com.localtg.ui.tg.LocalSettings.current.dialogSubtitle
                 if (sub == "path") {
                     Text(d.pathDisplay, Modifier.weight(1f), color = tg.message, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 } else if (sub == "none") {
                     Box(Modifier.weight(1f))
-                } else if (last != null) {
-                    val kind = when (last.type) { "video" -> "视频"; "gif" -> "GIF"; "audio" -> "音频"; else -> "照片" }
+                } else {
                     Text(
-                        buildAnnotatedString {
-                            withStyle(SpanStyle(color = tg.attach)) { append(kind) }
-                            append("  ${last.name}")
-                        },
+                        recentName ?: "暂无浏览记录",
                         Modifier.weight(1f), color = tg.message, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
-                } else {
-                    Box(Modifier.weight(1f))
                 }
                 // 数量:相当于"已静音群"的灰色计数(Telegram 的未读计数:高 23dp、全圆角、13sp 中等粗细)
                 Box(

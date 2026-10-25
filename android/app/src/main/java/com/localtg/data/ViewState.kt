@@ -5,6 +5,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 
@@ -37,6 +39,17 @@ data class DialogView(
 class ViewStateStore(private val ctx: Context, private val ns: () -> String = { "" }) {
     /** 键按服务器分前缀(不同服务器的文件夹 id 可能重复) */
     private fun key(dialogId: String, prefix: String) = stringPreferencesKey("dv_$prefix$dialogId")
+
+    /** 首页一次观察当前服务器的浏览记录；不为每个群单独读盘或请求网络。 */
+    fun recentNames(prefix: String = ns()) = ctx.viewDataStore.data.map { prefs ->
+        val start = "dv_$prefix"
+        prefs.asMap().mapNotNull { (key, value) ->
+            if (!key.name.startsWith(start)) return@mapNotNull null
+            val view = runCatching { AppJson.decodeFromString<DialogView>(value as String) }.getOrNull()
+            view?.takeIf { it.itemId != null && it.itemName.isNotBlank() }
+                ?.let { key.name.removePrefix(start) to it.itemName }
+        }.toMap()
+    }.distinctUntilChanged()
 
     suspend fun load(dialogId: String, prefix: String = ns()): DialogView? = runCatching {
         ctx.viewDataStore.data.first()[key(dialogId, prefix)]?.let { AppJson.decodeFromString<DialogView>(it) }

@@ -133,8 +133,12 @@ class AppContainer(app: Application) {
 
     suspend fun syncPlayerPrefs() {
         if (isLocal || !api.caps.playerPrefs) return
-        val s = settings.value
+        val namespace = session.ns()
+        val server = session.session.value?.baseUrl
         val remote = api.getPlayerPrefRemote()
+        if (isLocal || session.ns() != namespace || session.session.value?.baseUrl != server) return
+        // The user may have selected a newer quality while this request was in flight.
+        val s = settings.value
         if (remote != null && remote.savedAt > s.playerPrefAt) {
             // 服务器上的更新:采用(别的手机选过画质)
             settings.update { copy(playerQuality = if (remote.direct || remote.bitrate <= 0) 0 else remote.bitrate, playerCodec = remote.codec, playerPrefAt = remote.savedAt) }
