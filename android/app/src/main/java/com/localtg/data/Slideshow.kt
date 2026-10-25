@@ -8,7 +8,8 @@ data class SlideScope(val types: String, val dialog: String? = null, val roots: 
     val mediaTypes get() = types.split(',').filter { it in setOf("photo", "gif", "video") }.distinct().joinToString(",")
     fun accepts(item: Item) = item.type in mediaTypes.split(',')
 }
-data class SlideshowOptions(val imageSeconds: Int = 5, val order: String = "forward")
+fun slideSeconds(value: Float): Float = if (value.isFinite()) value.coerceIn(0.5f, 10f) else 5f
+data class SlideshowOptions(val imageSeconds: Float = 5f, val order: String = "forward")
 data class SlideGroupOrder(val sort: String, val direction: String)
 
 interface SlideLibrary {

@@ -30,6 +30,7 @@ export interface Config {
   };
   /** 有客户端连接时给传输和播放让路 */
   priority: { enabled: boolean; activeWindowSec: number; pauseCompress: boolean; lowerChild: boolean };
+  browseHistory: { enabled: boolean; maxEntries: number; retentionDays: number; intervalSeconds: number };
   /** 管理程序自己的设置(服务端忽略) */
   desktop: { autoStartService: boolean };
 }
@@ -59,6 +60,7 @@ export const DEFAULT_CONFIG: Config = {
     command: "", args: "", workDir: "",
   },
   priority: { enabled: true, activeWindowSec: 120, pauseCompress: true, lowerChild: true },
+  browseHistory: { enabled: true, maxEntries: 100, retentionDays: 90, intervalSeconds: 60 },
   desktop: { autoStartService: false },
 };
 

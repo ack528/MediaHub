@@ -38,7 +38,7 @@ export function Library({ tab }: { tab: string }) {
 
   const items = itemsOf("library", tab);
   return (
-    <Card icon="tag" title="扫描与过滤" count={items.length}>
+    <Card icon="tag" title={tab} count={items.length}>
       {items.map((i) => <ItemRow key={i.id} item={i} />)}
     </Card>
   );

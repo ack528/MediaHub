@@ -121,6 +121,9 @@ CREATE INDEX ix_oj_media ON opt_job(media_id, state);`,
 	// v12: remote configuration belongs to an explicitly privileged account.
 	`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;
 UPDATE users SET is_admin=1 WHERE id=(SELECT MIN(id) FROM users);`,
+	// v13: selectable per-user browsing checkpoints.
+	`CREATE TABLE user_browse_history(user_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, saved_at INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY(user_id,dialog_id,saved_at));
+CREATE INDEX ix_browse_history_age ON user_browse_history(saved_at);`,
 }
 
 // Migrate 把数据库升级到最新模式。

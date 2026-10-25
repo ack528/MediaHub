@@ -27,6 +27,10 @@ type configField struct {
 }
 
 var remoteFields = []configField{
+	{Key: "browseHistory.enabled", Group: "浏览历史", Title: "保存浏览历史", Kind: "bool"},
+	{Key: "browseHistory.intervalSeconds", Group: "浏览历史", Title: "自动保存间隔（秒）", Kind: "number", Min: 10, Max: 86400},
+	{Key: "browseHistory.maxEntries", Group: "浏览历史", Title: "每用户每群历史上限", Kind: "number", Min: 1, Max: 1000},
+	{Key: "browseHistory.retentionDays", Group: "浏览历史", Title: "历史保留天数", Kind: "number", Min: 1, Max: 3650},
 	{Key: "listen", Group: "网络", Title: "监听地址", Kind: "string"},
 	{Key: "tls.enabled", Group: "网络", Title: "HTTPS 加密", Kind: "bool"},
 	{Key: "roots", Group: "媒体库", Title: "媒体根目录", Kind: "roots"},

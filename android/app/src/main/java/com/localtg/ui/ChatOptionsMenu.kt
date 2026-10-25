@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -12,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.localtg.ui.tg.LocalTg
 import com.localtg.ui.tg.TgIcons
 
@@ -19,7 +21,7 @@ import com.localtg.ui.tg.TgIcons
 @Composable
 internal fun ChatOptionsMenu(sort: String, asc: Boolean, types: Set<String>, mode: Int, columns: Int,
     onSort: (String) -> Unit, onDirection: (Boolean) -> Unit, onType: (String) -> Unit,
-    onMode: (Int) -> Unit, onColumns: (Int) -> Unit, onDate: () -> Unit,
+    onMode: (Int) -> Unit, onColumns: (Int) -> Unit, onDate: () -> Unit, onHistory: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf<String?>(null) }
     val tg = LocalTg.current
@@ -30,22 +32,23 @@ internal fun ChatOptionsMenu(sort: String, asc: Boolean, types: Set<String>, mod
         val rotation by animateFloatAsState(if (expanded == key) 90f else 0f)
         DropdownMenuItem(text = {
             Row(Modifier.fillMaxWidth()) {
-                Text(title, color = tg.name, modifier = Modifier.weight(1f))
-                Text(value, color = tg.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 135.dp))
+                Text(title, fontSize = 13.sp, color = tg.name, modifier = Modifier.weight(1f))
+                Text(value, fontSize = 12.sp, color = tg.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 104.dp))
             }
-        }, trailingIcon = { Icon(TgIcons.ChevronRight, if (expanded == key) "收起" else "展开", Modifier.size(18.dp).rotate(rotation), tint = tg.message) },
-            onClick = { expanded = if (expanded == key) null else key })
+        }, trailingIcon = { Icon(TgIcons.ChevronRight, if (expanded == key) "收起" else "展开", Modifier.size(16.dp).rotate(rotation), tint = tg.message) },
+            modifier = Modifier.height(36.dp), onClick = { expanded = if (expanded == key) null else key })
     }
     @Composable fun Option(title: String, checked: Boolean, click: () -> Unit) {
-        DropdownMenuItem(text = { Text(title, color = if (checked) tg.accent else tg.name) },
-            modifier = Modifier.padding(start = 16.dp),
-            trailingIcon = { if (checked) Icon(TgIcons.Check, null, Modifier.size(18.dp), tint = tg.accent) }, onClick = click)
+        DropdownMenuItem(text = { Text(title, fontSize = 13.sp, color = if (checked) tg.accent else tg.name) },
+            modifier = Modifier.padding(start = 12.dp).height(36.dp),
+            trailingIcon = { if (checked) Icon(TgIcons.Check, null, Modifier.size(16.dp), tint = tg.accent) }, onClick = click)
     }
     @Composable fun Children(key: String, content: @Composable ColumnScope.() -> Unit) {
         AnimatedVisibility(expanded == key, enter = expandVertically(), exit = shrinkVertically()) {
             Column(Modifier.fillMaxWidth().background(tg.accent.copy(alpha = 0.05f)), content = content)
         }
     }
+    DropdownMenuItem(text = { Text("浏览历史", fontSize = 13.sp, color = tg.name) }, modifier = Modifier.height(36.dp), onClick = onHistory)
     Header("sort", "排序", sorts.firstOrNull { it.first == sort }?.second.orEmpty())
     Children("sort") {
         sorts.forEach { (key, title) -> Option(title, key == sort) { onSort(key) } }
@@ -61,7 +64,13 @@ internal fun ChatOptionsMenu(sort: String, asc: Boolean, types: Set<String>, mod
         modes.forEachIndexed { index, title -> Option(title, index == mode) { onMode(index) } }
         if (mode == 1) {
             HorizontalDivider(color = tg.accent.copy(alpha = 0.12f))
-            (2..6).forEach { count -> Option("$count 列", columns == count) { onColumns(count) } }
+            Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, top = 4.dp, bottom = 4.dp)) {
+                (2..6).forEach { count ->
+                    androidx.compose.foundation.layout.Box(Modifier.weight(1f).height(32.dp).background(if (columns == count) tg.accent.copy(alpha = 0.16f) else androidx.compose.ui.graphics.Color.Transparent).then(Modifier.clickable { onColumns(count) }), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                        Text("$count", fontSize = 13.sp, color = if (columns == count) tg.accent else tg.name)
+                    }
+                }
+            }
         }
     }
 }

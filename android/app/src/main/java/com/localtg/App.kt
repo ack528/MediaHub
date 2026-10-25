@@ -50,6 +50,11 @@ class AppContainer(app: Application) {
     val apiHttp: OkHttpClient = clients.api
     val api = Api(apiHttp, session).also { it.serverRenderHeic = settings.value.heicMode == "server" }
     init {
+        scope.launch(Dispatchers.IO) {
+            val installed = app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
+            com.localtg.data.AppUpdater.store(app).cleanupInstalled(installed)
+            com.localtg.data.UpdatePackageStore(java.io.File(app.cacheDir, "updates")).cleanupInstalled(installed)
+        }
         // 设置改变后立即生效的项
         scope.launch { settings.state.map { it.lanFirst }.distinctUntilChanged().drop(1).collect { runCatching { probeRoute() } } } // 开关变了马上生效
         scope.launch { settings.state.collect { api.serverRenderHeic = it.heicMode == "server"; com.localtg.data.AppUpdater.preferred = it.updateSource } }

@@ -34,7 +34,7 @@ export interface PageDef {
 
 export const PAGES: PageDef[] = [
   { id: "overview", label: "概览", icon: "gauge", tabs: ["运行状态"] },
-  { id: "library", label: "媒体库", icon: "folder", tabs: ["根目录", "扫描与过滤"] },
+  { id: "library", label: "媒体库", icon: "folder", tabs: ["根目录", "扫描与过滤", "浏览历史"] },
   { id: "storage", label: "缓存与图片", icon: "database", tabs: ["缓存", "图片"] },
   { id: "video", label: "视频转码", icon: "film", tabs: ["转码", "Jellyfin", "工具路径"] },
   { id: "optimize", label: "存储优化", icon: "zap", tabs: ["重复文件", "视频压缩", "回收区"] },
@@ -64,6 +64,10 @@ const portOf = (listen: string) => Number(listen.slice(listen.lastIndexOf(":") +
 // ------------------------------------------------------------ 设置项
 
 export const ITEMS: Item[] = [
+  { id: "historyEnabled", page: "library", tab: "浏览历史", icon: "clock", title: "保存浏览历史", desc: "按账号保存群组浏览位置，可在手机群组菜单中选择恢复、删除或清空。关闭后停止新增，已有记录仍可管理。", kind: "switch", restart: true, ...at("browseHistory.enabled") },
+  { id: "historyInterval", page: "library", tab: "浏览历史", icon: "clock", title: "自动保存间隔", desc: "仅在浏览位置变化时生成记录，手动保存不受间隔限制。", kind: "number", min: 10, max: 86400, unit: "秒", restart: true, ...at("browseHistory.intervalSeconds") },
+  { id: "historyLimit", page: "library", tab: "浏览历史", icon: "database", title: "每群历史上限", desc: "每个账号的每个群组分别保留，超出后清理最旧记录。", kind: "number", min: 1, max: 1000, restart: true, ...at("browseHistory.maxEntries") },
+  { id: "historyDays", page: "library", tab: "浏览历史", icon: "clock", title: "保留天数", desc: "过期记录不再展示，并在保存新记录时清理。", kind: "number", min: 1, max: 3650, unit: "天", restart: true, ...at("browseHistory.retentionDays") },
   // ---- 媒体库 / 扫描与过滤
   {
     id: "indexOther", page: "library", tab: "扫描与过滤", icon: "filetext", kind: "switch", restart: true,

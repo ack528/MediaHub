@@ -22,7 +22,7 @@ private val Context.playbackDataStore by preferencesDataStore(name = "playback_p
  */
 @Serializable
 data class AppSettings(
-	val slideshowSeconds: Int = 5,
+	val slideshowSeconds: Float = 5f,
 	val slideshowOrder: String = "forward",
     // ---- 外观
     val theme: String = "dark",                // dark(默认)/ light / system
@@ -51,7 +51,7 @@ data class AppSettings(
     val bubbleWidth: Int = 72,                 // 聊天流里媒体气泡占屏幕宽度的百分比
     val chatImageWidth: Int = 960,             // 聊天流里图片的清晰度(像素宽度)
     val defaultColumns: Int = 3,               // 网格默认列数(各文件夹自己记住的优先)
-    val newestAtBottom: Boolean = true,        // 聊天流默认最新在底部
+    val newestAtBottom: Boolean = true,        // 旧字段，仅保留设置兼容；各模式现统一使用 defaultSortDir
     val rememberPosition: Boolean = true,      // 记住每个文件夹的浏览位置
     val preloadCount: Int = 48,                // 滑动 / 跳到某处停下后,预加载附近这么多张缩略图(0 = 关闭)
     val pauseThumbsWhenFast: Boolean = true,   // 快速滑动时暂停加载缩略图
@@ -159,7 +159,7 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
     }?.let { s ->
         // 4.0.0 起默认深色主题:以前的默认值是"跟随系统",没改过的老用户升级后也换成深色(只做一次,之后用户自己改回跟随系统不受影响)
         if (!s.darkDefaultApplied) s.copy(theme = if (s.theme == "system") "dark" else s.theme, darkDefaultApplied = true) else s
-    } ?: AppSettings(darkDefaultApplied = true)
+    }?.let { it.copy(slideshowSeconds = slideSeconds(it.slideshowSeconds)) } ?: AppSettings(darkDefaultApplied = true)
 
     val value: AppSettings get() = state.value
 

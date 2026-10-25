@@ -12,7 +12,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -28,35 +27,18 @@ import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
-import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.UnknownHostException
-import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicIntegerArray
-import java.util.concurrent.atomic.AtomicLongArray
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/**
- * 手机端检查更新:设置 → 关于 → 检查更新。发布约定:Release 里有 LocalBrowse-<版本>.apk 和 SHA256SUMS.txt;版本号取自文件名。
- *
- * 3.3.1 重做(以前"检查不了 / 下载巨慢"的原因:API、直连、8 个镜像是**一个接一个**试的,每个最长等 15 秒连接 + 60 秒读取,
- * 网络差时要好几分钟才报失败;下载按"谁先回 1 个字节"选源,响应快但限速的镜像会被选中,卡住时要等 2 分钟才换):
- *  1. **先问自己的服务器**(服务端 3.3.0 起):服务端检查更新时会顺便把最新的手机安装包下载缓存好,手机直接从服务器下载,
- *     走局域网 / 内网穿透,几秒钟就完,不用连 GitHub。服务器还没下好、版本太旧或连不上时才走下面的 GitHub。
- *  2. **检查**:GitHub API、直连和每个镜像同时发请求,谁先拿到用谁(API 先到时带更新说明),最多等 25 秒。
- *  3. **下载**:所有源同时下载开头 256KB 测**实际速度**(并确认返回的是 APK 而不是镜像的拦截页),
- *     然后在最快的几个源上开 4 个连接分段下载(每段 512KB,哪个连接快哪个多下);某一段 15 秒没有数据就换个源重下这一段,
- *     最后几段由空闲的连接同时抢着下(谁先完成用谁),不会被一个慢连接拖住。整个文件下完再校验 SHA-256,不对就逐个源整包重下。
- * 域名解析并发问几个 DoH 服务器(哪个先答用哪个),系统 DNS 兜底;同一个域名解析出多个 IP 时按 TCP 连接耗时选最快的。
- * 注意:访问 GitHub 用自己的 OkHttp 客户端(系统信任的证书);访问自己的服务器用应用的客户端(只信任固定指纹的自签名证书)。
- */
+/** 更新检查并行请求；下载单一写入、断点续传，校验成功后持久保存，实际安装后清理。 */
 object AppUpdater {
     const val REPO = "ack528/MediaHub"
 
@@ -76,7 +58,6 @@ object AppUpdater {
     val latency = ConcurrentHashMap<String, Long>()
 
     private const val UA = "LocalBrowse-Updater"
-    private const val CHUNK = 512 * 1024L
     private const val PROBE = 256 * 1024L
 
     /** 自己的服务器上缓存好的安装包。 */
@@ -179,17 +160,24 @@ object AppUpdater {
      * 最新发布。[server] 问自己的服务器(返回 null = 服务器不知道 / 不支持);它和 GitHub 同时开始,服务器知道就用服务器的。
      * 发布里没有 APK 返回 null。
      */
-    suspend fun latest(server: (suspend () -> Release?)? = null): Release? = coroutineScope {
-        val gh = async { runCatching { latestGithub() } }
-        val sv = server?.let { s ->
-            runCatching { withTimeoutOrNull(16_000) { s() } }.onFailure { AppLog.i("update", "服务器不能提供更新(${it.message}),改用 GitHub") }.getOrNull()
+    suspend fun latest(server: (suspend () -> Release?)? = null, installed: String = "0"): Release? = coroutineScope {
+        val results = Channel<Result<Release?>>(Channel.UNLIMITED)
+        val jobs = mutableListOf(launch { results.send(runCatching { latestGithub() }) })
+        if (server != null) jobs += launch {
+            results.send(runCatching { withTimeoutOrNull(3500) { server() } })
         }
-        if (sv != null) {
-            gh.cancel()
-            AppLog.i("update", "最新版本 ${sv.version}(来自服务器,${if (sv.server?.ready == true) "已缓存好" else "服务器还在下载"})")
-            return@coroutineScope sv
-        }
-        gh.await().getOrThrow()
+        var best: Release? = null
+        var failure: Throwable? = null
+        try {
+            repeat(jobs.size) {
+                val result = results.receive()
+                failure = result.exceptionOrNull() ?: failure
+                result.getOrNull()?.let { if (best == null || compare(it.version, best!!.version) > 0) best = it }
+                if (best != null && compare(best!!.version, installed) > 0) return@coroutineScope best
+            }
+            if (best == null && failure != null) throw failure!!
+            best
+        } finally { jobs.forEach { it.cancel() } }
     }
 
     /** GitHub API、直连和每个镜像同时问,谁先拿到用谁;API 的结果带更新说明,跳转 / 镜像先到时再给 API 最多 2 秒。 */
@@ -254,74 +242,70 @@ object AppUpdater {
      * 下载并校验,返回本地文件。onProgress(已下载, 总大小)在 IO 线程调用。
      * [serverHttp] 访问自己服务器的客户端;[recheck] 再问一次服务器(检查时服务器还没下好,点下载时可能已经好了)。
      */
+    private val downloadLock = kotlinx.coroutines.sync.Mutex()
+    data class DownloadState(val version: String = "", val progress: Int = -1, val file: File? = null, val error: String = "")
+    val downloadState = kotlinx.coroutines.flow.MutableStateFlow(DownloadState())
+    private var downloadJob: kotlinx.coroutines.Job? = null
+    fun store(ctx: Context) = UpdatePackageStore(File(ctx.filesDir, "updates"))
+    fun startDownload(scope: kotlinx.coroutines.CoroutineScope, ctx: Context, rel: Release, http: OkHttpClient, recheck: suspend () -> ServerSrc?) {
+        if (downloadJob?.isActive == true) return
+        downloadState.value = DownloadState(rel.version, 0)
+        downloadJob = scope.launch {
+            try {
+                val file = download(ctx.applicationContext, rel, http, recheck) { done, total ->
+                    downloadState.value = DownloadState(rel.version, if (total > 0) (done * 100 / total).toInt().coerceIn(0, 99) else 0)
+                }
+                downloadState.value = DownloadState(rel.version, file = file)
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) {
+                AppLog.w("update", "下载更新失败", e)
+                downloadState.value = DownloadState(rel.version, error = e.message ?: "下载失败")
+            }
+        }
+    }
     suspend fun download(
         ctx: Context, rel: Release, serverHttp: OkHttpClient? = null, recheck: (suspend () -> ServerSrc?)? = null, onProgress: (Long, Long) -> Unit,
     ): File = withContext(Dispatchers.IO) {
-        val name = "LocalBrowse-${rel.version}.apk"
-        val dir = File(ctx.cacheDir, "updates").apply { deleteRecursively(); mkdirs() }
-        val out = File(dir, name)
-        val s0 = rel.server
-        if (s0 != null && serverHttp != null) {
-            val s = if (s0.ready) s0 else runCatching { recheck?.invoke() }.getOrNull() ?: s0
-            if (s.ready && s.version == rel.version && s.sha.length == 64) {
+        downloadLock.lock()
+        try {
+            val name = "LocalBrowse-${rel.version}.apk"
+            val want = (rel.sha ?: rel.server?.sha?.takeIf { it.length == 64 }
+                ?: wantSum(rel.sumUrl ?: throw IOException("发布缺少校验文件"), name)).lowercase()
+            val store = store(ctx)
+            store.cached(rel.version, want)?.let { return@withContext it }
+            val part = store.partial(rel.version)
+            var high = 0L
+            val report: (Long, Long) -> Unit = { done, total ->
+                if (total > 0) { high = maxOf(high, done * 10000 / total).coerceAtMost(9900); onProgress(high, 10000) }
+                else onProgress(high, 10000)
+            }
+            val initial = rel.server
+            val server = if (initial?.ready == true) initial else withTimeoutOrNull(2000) { recheck?.invoke() } ?: initial
+            if (serverHttp != null && server?.ready == true && server.version == rel.version && server.sha.equals(want, true)) {
                 try {
-                    val t0 = System.nanoTime()
-                    AppLog.i("update", "从服务器下载 ${s.url}")
-                    fetchTo(serverHttp.newBuilder().readTimeout(30, TimeUnit.SECONDS).build(), s.url, out, s.sha.lowercase(), onProgress)
-                    AppLog.i("update", "已从服务器下载并校验 ${out.name}(${out.length() / 1024} KB,${(System.nanoTime() - t0) / 1_000_000}ms)")
-                    return@withContext out
-                } catch (e: Exception) {
-                    AppLog.w("update", "从服务器下载失败,改用 GitHub", e)
-                    out.delete()
-                }
-            } else AppLog.i("update", "服务器还没下载好 v${rel.version}(${s.progress}%),这次从 GitHub 下载")
-        }
-        val sumUrl = rel.sumUrl ?: throw IOException("发布里没有 SHA256SUMS.txt,无法校验,已放弃")
-        val want = rel.sha ?: wantSum(sumUrl, name)
-        githubDownload(rel, out, want, onProgress)
-        out
+                    val http = serverHttp.newBuilder().dispatcher(okhttp3.Dispatcher())
+                        .connectTimeout(3, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS).build()
+                    val url = server.url + "?version=${rel.version}&sha256=$want"
+                    UpdateTransfer(http).fetch(url, part, want, rel.size, report)
+                    return@withContext store.promote(rel.version, want)
+                } catch (e: CancellationException) { throw e
+                } catch (e: IOException) { AppLog.w("update", "服务器下载中断，保留已下载内容后切换源", e) }
+            }
+            val urls = candidates(rel.apkUrl)
+            val probes = measure(if (preferred.isNotEmpty()) urls.take(1) else urls)
+            var error: IOException? = null
+            for (url in (probes.map { it.url } + urls).distinct()) {
+                try {
+                    UpdateTransfer(client.newBuilder().readTimeout(8, TimeUnit.SECONDS).build()).fetch(url, part, want, rel.size, report)
+                    return@withContext store.promote(rel.version, want)
+                } catch (e: CancellationException) { throw e
+                } catch (e: IOException) { error = e; AppLog.i("update", "更换下载源: ${e.message}") }
+            }
+            throw error ?: IOException("下载失败，已保留断点")
+        } finally { downloadLock.unlock() }
     }
 
-    /** 测速结果:bps = 测速那 256KB 的实际速度;ranged = 支持分段;total = 文件总大小(-1 = 不知道)。 */
     private class Probe(val url: String, val bps: Double, val ranged: Boolean, val total: Long)
-
-    private fun host(u: String) = u.removePrefix("https://").substringBefore('/')
-
-    private suspend fun githubDownload(rel: Release, out: File, want: String, onProgress: (Long, Long) -> Unit) {
-        val urls = candidates(rel.apkUrl)
-        val probes = measure(if (preferred.isNotEmpty()) urls.take(1) else urls)
-        AppLog.i("update", "下载测速:" + probes.joinToString { "${host(it.url)} ${(it.bps / 1024).toInt()}KB/s${if (it.ranged) "" else "(不支持分段)"}" }.ifEmpty { "全部不通" })
-        val total = probes.firstOrNull { it.total > 0 }?.total ?: rel.size
-        val best = probes.firstOrNull()?.bps ?: 0.0
-        // 速度不到最快那个 15% 的源不参与分段(它拿到的那段会拖住整体)
-        val ranged = probes.filter { it.ranged && it.total == total && it.bps >= best * 0.15 }
-        if (ranged.isNotEmpty() && total > 2 * CHUNK) {
-            try {
-                val t0 = System.nanoTime()
-                multiFetch(ranged.take(4), total, out, want, onProgress)
-                AppLog.i("update", "分段下载完成并校验 ${out.name}(${total / 1024} KB,${(System.nanoTime() - t0) / 1_000_000}ms,源 ${ranged.take(4).joinToString { host(it.url) }})")
-                return
-            } catch (e: Exception) {
-                AppLog.w("update", "分段下载失败,改成逐个源整包下载", e)
-                out.delete()
-            }
-        }
-        var lastErr: Exception? = null
-        for (u in (probes.map { it.url } + urls).distinct()) {
-            try {
-                AppLog.i("update", "下载 $u")
-                fetchTo(client, u, out, want, onProgress)
-                AppLog.i("update", "已下载并校验 ${out.name}(${out.length() / 1024} KB)")
-                return
-            } catch (e: Exception) {
-                lastErr = e
-                AppLog.w("update", "下载失败,换下一个地址: $u", e)
-                out.delete()
-            }
-        }
-        throw lastErr ?: IOException("下载失败")
-    }
-
     /** 所有源同时下载开头 256KB,按实际速度从快到慢排;返回的不是 APK(开头不是 "PK")的源不算。 */
     private suspend fun measure(urls: List<String>): List<Probe> = coroutineScope {
         urls.map { u ->
@@ -348,115 +332,6 @@ object AppUpdater {
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
             }
         }.awaitAll().filterNotNull().sortedByDescending { it.bps }
-    }
-
-    /**
-     * 多连接分段下载:4 个连接分到 [srcs] 上(源少就同一个源开多个连接 —— 镜像通常是按连接限速的),每段 512KB 从队列里取;
-     * 一段失败(15 秒没数据 / 连接断开)放回队列给别的连接,同一个连接失败两次就不再用;队列空了以后空闲的连接去抢还没下完的段。
-     */
-    private suspend fun multiFetch(srcs: List<Probe>, total: Long, out: File, want: String, onProgress: (Long, Long) -> Unit) = withContext(Dispatchers.IO) {
-        val n = ((total + CHUNK - 1) / CHUNK).toInt()
-        val prog = AtomicLongArray(n)
-        val done = AtomicIntegerArray(n)
-        val running = IntArray(n)
-        val lock = Any()
-        val pending = ArrayDeque((0 until n).toList())
-        fun next(): Int? = synchronized(lock) {
-            pending.removeFirstOrNull()?.also { running[it]++ }
-                ?: (0 until n).filter { done.get(it) == 0 && running[it] == 1 }.minByOrNull { prog.get(it) }?.also { running[it]++ }
-        }
-        var lastReport = 0L
-        fun report() {
-            val now = System.nanoTime()
-            if (now - lastReport < 200_000_000L) return
-            lastReport = now
-            var s = 0L
-            for (i in 0 until n) s += prog.get(i)
-            onProgress(minOf(s, total), total)
-        }
-        RandomAccessFile(out, "rw").use { raf ->
-            raf.setLength(total)
-            val fc = raf.channel
-            coroutineScope {
-                (0 until 4).map { srcs[it % srcs.size] }.forEach { src ->
-                    launch(Dispatchers.IO) {
-                        var fails = 0
-                        while (isActive) {
-                            val i = next() ?: break
-                            val a = i * CHUNK
-                            val b = minOf(total, a + CHUNK) - 1
-                            val ok = try { fetchRange(src.url, a, b, fc, i, prog, done, ::report); true } catch (e: Exception) {
-                                AppLog.i("update", "第 ${i + 1}/$n 段从 ${host(src.url)} 下载失败(${e.javaClass.simpleName}),换个连接重下"); false
-                            }
-                            synchronized(lock) {
-                                running[i]--
-                                if (ok) done.set(i, 1)
-                                else if (done.get(i) == 0 && running[i] == 0) { prog.set(i, 0); pending.addFirst(i) }
-                            }
-                            if (!ok && ++fails >= 2) break
-                        }
-                    }
-                }
-            }
-        }
-        if ((0 until n).any { done.get(it) == 0 }) throw IOException("分段下载没有完成(几个源都失败了)")
-        onProgress(total, total)
-        val got = sha256(out)
-        if (got != want) throw IOException("校验和不一致(下载损坏或被篡改)")
-    }
-
-    private fun fetchRange(url: String, a: Long, b: Long, fc: java.nio.channels.FileChannel, i: Int, prog: AtomicLongArray, done: AtomicIntegerArray, report: () -> Unit) {
-        client.newCall(Request.Builder().url(url).header("Range", "bytes=$a-$b").header("User-Agent", UA).build()).execute().use { r ->
-            if (r.code != 206) throw IOException("不支持分段(HTTP ${r.code})")
-            val cr = r.header("Content-Range").orEmpty()
-            if (!cr.startsWith("bytes $a-")) throw IOException("分段位置不对:$cr")
-            val src = r.body.source()
-            val buf = ByteArray(64 * 1024)
-            val len = b - a + 1
-            var off = 0L
-            while (off < len) {
-                if (done.get(i) == 1) return // 别的连接已经下完这一段(最后几段同时抢的时候)
-                val k = src.read(buf, 0, minOf(buf.size.toLong(), len - off).toInt())
-                if (k < 0) throw IOException("连接提前断开")
-                val bb = java.nio.ByteBuffer.wrap(buf, 0, k)
-                var pos = a + off
-                while (bb.hasRemaining()) pos += fc.write(bb, pos)
-                off += k
-                val o = off
-                prog.accumulateAndGet(i, o) { x, y -> maxOf(x, y) }
-                report()
-            }
-        }
-    }
-
-    private fun sha256(f: File): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        f.inputStream().use { ins -> val buf = ByteArray(256 * 1024); while (true) { val n = ins.read(buf); if (n < 0) break; md.update(buf, 0, n) } }
-        return md.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    /** 整包下载一个地址(15 秒没有数据就算失败,换下一个)。 */
-    private fun fetchTo(http: OkHttpClient, url: String, out: File, want: String, onProgress: (Long, Long) -> Unit) {
-        val md = MessageDigest.getInstance("SHA-256")
-        http.newCall(Request.Builder().url(url).header("User-Agent", UA).build()).execute().use { r ->
-            if (!r.isSuccessful) throw IOException("下载失败 HTTP ${r.code}")
-            val total = r.body.contentLength()
-            var done = 0L
-            r.body.byteStream().use { ins ->
-                out.outputStream().use { os ->
-                    val buf = ByteArray(128 * 1024)
-                    while (true) {
-                        val n = ins.read(buf)
-                        if (n < 0) break
-                        os.write(buf, 0, n); md.update(buf, 0, n)
-                        done += n
-                        onProgress(done, total)
-                    }
-                }
-            }
-        }
-        val got = md.digest().joinToString("") { "%02x".format(it) }
-        if (got != want) throw IOException("校验和不一致(下载损坏或被篡改)")
     }
 
     /** 调起系统安装器。没有"安装未知应用"权限时先跳到系统设置里让用户打开,返回 false(用户开了权限后再点一次)。 */

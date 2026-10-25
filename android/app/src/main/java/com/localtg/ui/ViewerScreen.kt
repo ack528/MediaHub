@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
@@ -80,7 +81,9 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
     var waitingForNext by remember { mutableStateOf(false) }
     var videoEnded by remember { mutableStateOf<String?>(null) }
     var startJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
-    var menuGrace by remember { mutableStateOf(false) }
+    val photoCountdown = remember { androidx.compose.animation.core.Animatable(1f) }
+    var countdownItem by remember { mutableStateOf<String?>(null) }
+    var countdownRevision by remember { androidx.compose.runtime.mutableIntStateOf(-1) }
     val slides = ui.slides
     val namespace = c.session.ns()
     fun notify(text: String) { android.widget.Toast.makeText(ctx, text, android.widget.Toast.LENGTH_SHORT).show() }
@@ -168,11 +171,15 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
         if (slides.active) slideView.keepScreenOn = slides.playing
         onDispose { slideView.keepScreenOn = old }
     }
-    // A menu is a temporary hold, not a user pause. Give the picture a full interval when it closes.
-    LaunchedEffect(ui.menuOpen) { menuGrace = true; if (!ui.menuOpen) { kotlinx.coroutines.delay(300); menuGrace = false } }
-    LaunchedEffect(cur.id, slideReady, slides.playing, slides.epoch, slides.options?.imageSeconds, pager.isScrollInProgress, ui.menuOpen, ui.touching, ui.photoZoomed, menuGrace, slides.preparing) {
-        if (slides.canAdvance(ui.menuOpen, ui.touching, pager.isScrollInProgress, ui.photoZoomed) && !menuGrace && !cur.isVideo && slideReady == cur.id) {
-            kotlinx.coroutines.delay(slides.options!!.imageSeconds.coerceIn(3, 60) * 1000L)
+    // The animated fraction is both the timer and the display; pausing keeps the remaining fraction.
+    LaunchedEffect(cur.id, slideReady, slides.playing, slides.countdownRevision, pager.isScrollInProgress, ui.menuOpen, ui.touching, ui.photoZoomed, slides.preparing) {
+        if (countdownItem != cur.id || countdownRevision != slides.countdownRevision) {
+            photoCountdown.snapTo(1f)
+            countdownItem = cur.id; countdownRevision = slides.countdownRevision
+        }
+        if (slides.canAdvance(ui.menuOpen, ui.touching, pager.isScrollInProgress, ui.photoZoomed) && !cur.isVideo && slideReady == cur.id) {
+            val duration = (com.localtg.data.slideSeconds(slides.options!!.imageSeconds) * 1000f * photoCountdown.value).toInt().coerceAtLeast(1)
+            photoCountdown.animateTo(0f, androidx.compose.animation.core.tween(duration, easing = androidx.compose.animation.core.LinearEasing))
             if (ui.sleepAt == -1L) { ui.sleepAt = 0L; slides.pause() } else scope.launch { advanceSlide() }
         }
     }
@@ -320,7 +327,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
                         .navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 28.dp, bottom = 12.dp),
                     verticalAlignment = Alignment.Bottom,
                 ) {
-                    Column(Modifier.weight(1f)) {
+                    if (!slides.active) Column(Modifier.weight(1f)) {
                         Text(formatDateTime(cur.takenAt), color = Color.White, fontSize = 14.sp)
                         Text(
                             listOfNotNull(cur.w?.let { "${cur.w}×${cur.h}" }, if (cur.isVideo) sizeLabel(cur, ui.transcodeBps, 0L, short = true) else formatSize(cur.size), cur.ext.uppercase().takeIf { it.isNotEmpty() }).joinToString(" · "),
@@ -328,7 +335,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
                         )
                     }
                     if (slides.active) ViewerIcon(if (slides.playing) TgIcons.Pause else TgIcons.Play, if (slides.playing) "暂停幻灯片" else "继续幻灯片") { ui.toggleSlides() }
-                    Pill("${pager.currentPage + 1} / ${items.size}", sizeSp = 12)
+                    if (!slides.active) Pill("${pager.currentPage + 1} / ${items.size}", sizeSp = 12)
                 }
             }
             val lastPage = remember { arrayOf("main") }
@@ -351,6 +358,13 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
                     MenuRow("幻灯片播放", slideshowSummary(ui)) { panel = "slides" }
                     MenuRow("图片信息") { panel = "info" }
                 }
+            }
+        }
+
+        if (slides.active && !ui.chrome && !ui.menuOpen && !inPip && !slides.finished && !slides.failed) {
+            androidx.compose.foundation.Canvas(Modifier.align(Alignment.TopStart).fillMaxWidth().height(4.dp)) {
+                val remaining = if (cur.isVideo) ui.videoRemaining else photoCountdown.value
+                drawRect(Color(0xFFCCCCCC), size = androidx.compose.ui.geometry.Size(size.width * remaining.coerceIn(0f, 1f), size.height))
             }
         }
 

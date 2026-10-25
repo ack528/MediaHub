@@ -18,6 +18,7 @@ private val Context.viewDataStore by preferencesDataStore(name = "view_state")
 data class DialogView(
     /** 退出时屏幕上"第一项"(聊天流里是最靠下的一条,网格里是左上角)的条目 id */
     val itemId: String? = null,
+    val itemName: String = "",
     /** 该条目相对于列表边缘的像素偏移,用于精确还原 */
     val offsetPx: Int = 0,
     val sort: String = "taken",
@@ -41,6 +42,30 @@ class ViewStateStore(private val ctx: Context, private val ns: () -> String = { 
         ctx.viewDataStore.data.first()[key(dialogId, prefix)]?.let { AppJson.decodeFromString<DialogView>(it) }
     }.getOrNull()
 
+    private fun historyKey(dialogId: String, prefix: String) = stringPreferencesKey("bh_$prefix$dialogId")
+    suspend fun history(dialogId: String, prefix: String = ns()): List<BrowseCheckpoint> = runCatching {
+        ctx.viewDataStore.data.first()[historyKey(dialogId,prefix)]?.let { AppJson.decodeFromString<List<BrowseCheckpoint>>(it) }.orEmpty()
+    }.getOrDefault(emptyList())
+    suspend fun checkpoint(dialogId: String, view: DialogView, manual: Boolean = false, prefix: String = ns()) {
+        if (view.itemId == null) return
+        ctx.viewDataStore.edit { prefs ->
+            val key = historyKey(dialogId,prefix)
+            val old = prefs[key]?.let { AppJson.decodeFromString<List<BrowseCheckpoint>>(it) }.orEmpty()
+            val now = System.currentTimeMillis()
+            val first = old.firstOrNull()
+            val next = if (manual || first == null || (now-first.savedAt >= 60000 && first.view.itemId != view.itemId)) listOf(BrowseCheckpoint(view,now)) + old else old
+            prefs[key] = AppJson.encodeToString(next.filter { now-it.savedAt <= 90L*86400000 }.take(100))
+        }
+    }
+    suspend fun deleteHistory(dialogId: String, at: Long?, prefix: String = ns()) {
+        ctx.viewDataStore.edit { prefs ->
+            val key=historyKey(dialogId,prefix)
+            if (at == null) prefs.remove(key) else {
+                val old=prefs[key]?.let { AppJson.decodeFromString<List<BrowseCheckpoint>>(it) }.orEmpty()
+                prefs[key]=AppJson.encodeToString(old.filter { it.savedAt != at })
+            }
+        }
+    }
     suspend fun save(dialogId: String, v: DialogView, prefix: String = ns()) {
         runCatching {
             ctx.viewDataStore.edit { it[key(dialogId, prefix)] = AppJson.encodeToString(v.copy(savedAt = System.currentTimeMillis())) }
@@ -52,3 +77,10 @@ class ViewStateStore(private val ctx: Context, private val ns: () -> String = { 
         runCatching { ctx.viewDataStore.edit { it.clear() } }
     }
 }
+
+@Serializable
+data class BrowseCheckpoint(val view: DialogView, val savedAt: Long)
+@Serializable
+data class BrowseHistoryPolicy(val enabled: Boolean = true, val maxEntries: Int = 100, val retentionDays: Int = 90, val intervalSeconds: Int = 60)
+@Serializable
+data class BrowseHistoryResult(val entries: List<BrowseCheckpoint> = emptyList(), val config: BrowseHistoryPolicy = BrowseHistoryPolicy())

@@ -471,6 +471,12 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
         } catch (e: Exception) { noteSync(e); throw e }
     }
 
+    suspend fun browseHistory(dialogId: String): BrowseHistoryResult = call(Request.Builder().url("$base/api/v1/dialogs/$dialogId/browse-history").build())
+    suspend fun saveBrowseHistory(dialogId: String, view: DialogView): BrowseHistoryResult = call(Request.Builder().url("$base/api/v1/dialogs/$dialogId/browse-history").post(AppJson.encodeToString(view).toRequestBody(json)).build())
+    suspend fun deleteBrowseHistory(dialogId: String, at: Long? = null) {
+        send(Request.Builder().url("$base/api/v1/dialogs/$dialogId/browse-history" + (at?.let { "?at=$it" } ?: "")).delete().build())
+    }
+
     /** 服务器上这个视频的播放进度(毫秒,0 = 看完 / 重新开始)和更新时间;没有记录或出错返回 null。 */
     suspend fun getPlaybackRemote(mediaId: String): RemotePlay? = try {
         val r = call<PlayResp>(Request.Builder().url("$base/api/v1/media/$mediaId/playback").build())

@@ -266,7 +266,6 @@ private fun BrowsePage(s: AppSettings, u: (AppSettings.() -> AppSettings) -> Uni
         s.swipeGroups,
     ) { u { copy(swipeGroups = it) } }
     SwitchRow("记住浏览位置", "再次打开同一个文件夹时回到上次退出的位置,并记住排序、网格 / 聊天、过滤", s.rememberPosition) { u { copy(rememberPosition = it) } }
-    SwitchRow("最新在底部", "聊天流默认旧 → 新排列,最新一条在最下面(和 Telegram 一样)", s.newestAtBottom) { u { copy(newestAtBottom = it) } }
     Header("默认排序")
     ChoiceRow(
         "排序依据", s.defaultSort,
@@ -891,6 +890,9 @@ private fun AboutPage(c: AppContainer) {
     InfoRow("服务端", server)
     InfoRow("系统", "Android ${android.os.Build.VERSION.RELEASE}(API ${android.os.Build.VERSION.SDK_INT})")
     InfoRow("设备", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+    ActionRow("项目主页", "github.com/ack528/MediaHub") {
+        ctx.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/ack528/MediaHub")))
+    }
     UpdateSection(ver, c)
     MirrorSection(c.settings.value) { c.settings.update(it) }
     ChangelogSection(ver)
@@ -907,7 +909,12 @@ private fun UpdateSection(ver: String, c: AppContainer) {
     var checking by remember { mutableStateOf(false) }
     var rel by remember { mutableStateOf<com.localtg.data.AppUpdater.Release?>(null) }
     var msg by remember { mutableStateOf("") }
-    var progress by remember { mutableStateOf(-1) } // -1 = 没在下载
+    val download by com.localtg.data.AppUpdater.downloadState.collectAsState()
+    var cached by remember { mutableStateOf<com.localtg.data.UpdatePackageStore.Pending?>(null) }
+    LaunchedEffect(download.file, ver) {
+        cached = withContext(Dispatchers.IO) { com.localtg.data.AppUpdater.store(ctx).pending(ver) }
+    }
+    val progress = download.progress
     val newer = rel?.let { com.localtg.data.AppUpdater.compare(it.version, ver) > 0 } == true
     Header("软件更新")
     ActionRow(
@@ -917,7 +924,7 @@ private fun UpdateSection(ver: String, c: AppContainer) {
         if (checking || progress >= 0) return@ActionRow
         checking = true; msg = ""
         try {
-            val r = com.localtg.data.AppUpdater.latest(if (c.isLocal) null else suspend { serverRelease(c) })
+            val r = com.localtg.data.AppUpdater.latest(if (c.isLocal) null else suspend { serverRelease(c) }, ver)
             rel = r
             msg = when {
                 r == null -> "最新发布里没有安装包"
@@ -933,6 +940,12 @@ private fun UpdateSection(ver: String, c: AppContainer) {
             msg = "检查失败:${e.message ?: e.javaClass.simpleName}(GitHub 在手机网络下可能访问不了)"
         } finally { checking = false }
     }
+    if (progress >= 0) InfoRow("正在下载 v${download.version}", "$progress% · 离开此页面后会继续下载")
+    if (download.error.isNotEmpty()) InfoRow("下载状态", download.error + "，已保留断点，可重试")
+    val pending = cached
+    if (pending != null) ActionRow("安装已下载的 v${pending.version}", "安装取消或失败后会保留，实际安装此版本后自动清理") {
+        msg = if (com.localtg.data.AppUpdater.install(ctx, pending.file)) "已调起安装器，安装包仍保留在本地" else "请允许安装未知应用，返回后再次点安装即可"
+    }
     val r = rel
     if (r != null && newer) {
         if (r.notes.isNotEmpty()) {
@@ -941,23 +954,14 @@ private fun UpdateSection(ver: String, c: AppContainer) {
                 Text(com.localtg.data.cleanMarkdown(r.notes), color = tg.message, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
             }
         }
-        ActionRow(
-            if (progress >= 0) "正在下载… $progress%" else "下载并安装 v${r.version}",
-            "大小 ${if (r.size > 0) formatSize(r.size) else "未知"};${if (r.server?.ready == true) "从自己的服务器下载;" else ""}下载完成会校验后调起系统安装器(第一次需要允许本应用「安装未知应用」)",
+        if (pending?.version != r.version && progress < 0) ActionRow(
+            "下载 v${r.version}",
+            "${if (r.server?.ready == true) "优先从服务器下载 · " else ""}支持断点续传，校验后保存在本地，点击安装",
         ) {
-            if (progress >= 0) return@ActionRow
-            progress = 0
-            try {
-                val f = com.localtg.data.AppUpdater.download(ctx, r, c.http, recheck = { serverRelease(c)?.server }) { done, total -> progress = if (total > 0) (done * 100 / total).toInt().coerceIn(0, 100) else 0 }
-                progress = -1
-                msg = if (com.localtg.data.AppUpdater.install(ctx, f)) "已调起安装器" else "请先在系统设置里允许本应用安装未知应用,然后再点一次"
-            } catch (e: Exception) {
-                progress = -1
-                com.localtg.AppLog.w("update", "下载更新失败", e)
-                msg = "下载失败:${e.message ?: e.javaClass.simpleName}"
-            }
+            com.localtg.data.AppUpdater.startDownload(c.scope, ctx, r, c.apiHttp) { if (c.isLocal) null else serverRelease(c)?.server }
         }
     }
+
 }
 
 /** 问服务器:它缓存的最新手机端版本。服务器不知道(旧版服务端 / 它也连不上 GitHub)返回 null。 */

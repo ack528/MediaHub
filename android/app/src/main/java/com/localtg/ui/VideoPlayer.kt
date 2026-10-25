@@ -108,6 +108,7 @@ class ViewerUi {
         set(value) { if (value) slides.resume() else slides.pause() }
     var menuOpen by mutableStateOf(false)
     var photoZoomed by mutableStateOf(false)
+    var videoRemaining by mutableFloatStateOf(1f)
     var touching by mutableStateOf(false)
     var dismissMenus by mutableIntStateOf(0)
     var restartVideo by mutableIntStateOf(0)
@@ -487,6 +488,18 @@ fun VideoPage(
         }
     }
     LaunchedEffect(error, blocked) { if (error == null && !blocked && isCurrent) ui.slides.ready() }
+
+    LaunchedEffect(player, isCurrent, ui.slideshowMode) {
+        if (isCurrent && ui.slideshowMode) {
+            ui.videoRemaining = 1f
+            while (true) {
+                val p = player
+                val duration = p?.duration?.takeIf { it > 0 } ?: item.durationMs ?: 0L
+                if (duration > 0) ui.videoRemaining = (1f - (p?.currentPosition ?: 0L).toFloat() / duration).coerceIn(0f, 1f)
+                delay(50)
+            }
+        }
+    }
 
     // 自动画质:网速不够时自动降一档转码。卡顿中每秒检查一次:45 秒内第二次卡顿,或者一次卡了超过 8 秒 → 降档。
     // 降档只是这个视频的临时调整,不改「记住的播放设置」;一个视频最多降 3 次,降完 25 秒内不再动。

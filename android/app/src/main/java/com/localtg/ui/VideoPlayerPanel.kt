@@ -56,16 +56,16 @@ import com.localtg.ui.tg.TgIcons
 
 /*
  * 播放器右上角的「更多」菜单(1.12.1 重做,2.0 统一对齐:1.12.0 的整块面板 + 图标磁贴太大、图标要想一会才懂,改回右上角的小浮层 + 纯文字行):
- *   - 从右上角的 ⋮ 按钮下面弹出,宽 280dp,最高不超过屏幕的 78%,超出滚动;不压暗画面,点浮层外面关闭;
+ *   - 从右上角的 ⋮ 按钮下面弹出,宽 232dp,最高不超过屏幕的 62%,超出滚动;不压暗画面,点浮层外面关闭;
  *   - 一级:倍速 / 字幕 / 音轨 / 画面比例 / 循环 / 画质增强 / 画质与解码 / 更多(每行 "名称 …… 当前值 ›",一眼能看懂);
  *   - 二级:同一个浮层里换内容,顶上是返回箭头 + 标题(选项列表打勾、分段选择、开关)。
  * 画在播放页自己的组合里(不是 Dialog 窗口),沉浸模式不会被打断。
  */
 
-/** 所有行统一:左右内边距 16dp、行高至少 40dp、右侧固定留出 18dp 的"箭头 / 对勾"位置,这样不同行的文字和数值左右都对齐。 */
-private val PadX = 16.dp
-private val RowMin = 40.dp
-private val SlotW = 18.dp
+/** 所有行统一:左右内边距 12dp、行高至少 36dp、右侧固定留出 16dp 的"箭头 / 对勾"位置,这样不同行的文字和数值左右都对齐。 */
+private val PadX = 12.dp
+private val RowMin = 36.dp
+private val SlotW = 16.dp
 
 private val MenuBg = Color(0xF21B1B1D)
 private val TextDim = Color(0x99FFFFFF)
@@ -95,8 +95,8 @@ internal fun PlayerMenuHost(
         ) {
             Column(
                 Modifier
-                    .width(minOf(280.dp, maxWidth - 16.dp))
-                    .heightIn(max = maxHeight * 0.78f)
+                    .width(minOf(232.dp, maxWidth - 16.dp))
+                    .heightIn(max = minOf(380.dp, maxHeight * 0.62f))
                     .shadow(12.dp, RoundedCornerShape(14.dp))
                     .clip(RoundedCornerShape(14.dp)).background(MenuBg)
                     .pointerInput(Unit) { detectTapGestures { } } // 吃掉浮层上的点击,不让它落到遮罩上把浮层关了
@@ -107,7 +107,7 @@ internal fun PlayerMenuHost(
                         Box(Modifier.size(36.dp).clip(CircleShape).clickable(onClick = onBack), contentAlignment = Alignment.Center) {
                             Icon(TgIcons.Back, "返回", tint = Color.White, modifier = Modifier.size(20.dp))
                         }
-                        Text(title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 4.dp))
+                        Text(title, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 4.dp))
                     }
                 }
                 Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(vertical = 4.dp), content = content)
@@ -119,10 +119,10 @@ internal fun PlayerMenuHost(
 /** 一行:名称 + 当前值(右对齐,淡色)+ 右侧固定宽度的箭头位(没有箭头的行也留着,数值才会和别的行右对齐)。 */
 @Composable
 internal fun MenuRow(title: String, value: String? = null, arrow: Boolean = true, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().heightIn(min = RowMin).clickable(onClick = onClick).padding(horizontal = PadX, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().heightIn(min = RowMin).clickable(onClick = onClick).padding(horizontal = PadX, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
         // 名称占满剩余宽度,当前值紧贴右侧的箭头位(以前中间夹了个弹性空白,值被挤到右半边的正中间,每行位置都不一样)
-        Text(title, color = Color.White, fontSize = 14.sp, maxLines = 1, modifier = Modifier.weight(1f))
-        if (value != null) Text(value, color = TextDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End, modifier = Modifier.padding(start = 12.dp).widthIn(max = 150.dp))
+        Text(title, color = Color.White, fontSize = 13.sp, maxLines = 1, modifier = Modifier.weight(1f))
+        if (value != null) Text(value, color = TextDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End, modifier = Modifier.padding(start = 12.dp).widthIn(max = 96.dp))
         Box(Modifier.padding(start = 2.dp).requiredWidth(SlotW), contentAlignment = Alignment.CenterEnd) {
             if (arrow) Icon(TgIcons.ChevronRight, null, tint = TextDim, modifier = Modifier.size(SlotW))
         }
@@ -155,8 +155,8 @@ internal fun MenuLabel(text: String) {
 internal fun MenuOptions(options: List<Pair<String, Boolean>>, onPick: (Int) -> Unit) {
     val accent = LocalTg.current.accent
     options.forEachIndexed { i, (label, selected) ->
-        Row(Modifier.fillMaxWidth().heightIn(min = RowMin).clickable { onPick(i) }.padding(horizontal = PadX, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, color = if (selected) accent else Color.White, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Row(Modifier.fillMaxWidth().heightIn(min = RowMin).clickable { onPick(i) }.padding(horizontal = PadX, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = if (selected) accent else Color.White, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Box(Modifier.padding(start = 8.dp).requiredWidth(SlotW), contentAlignment = Alignment.CenterEnd) {
                 if (selected) Icon(TgIcons.Check, null, tint = accent, modifier = Modifier.size(SlotW))
             }
@@ -190,7 +190,7 @@ internal fun MenuChips(options: List<String>, selected: Int, onSelect: (Int) -> 
 internal fun MenuSwitch(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     val accent = LocalTg.current.accent
     Row(Modifier.fillMaxWidth().heightIn(min = RowMin).clickable { onChange(!checked) }.padding(start = PadX, end = PadX - 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+        Text(title, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
         Switch(
             checked, onChange, modifier = Modifier.padding(start = 8.dp).scale(0.8f),
             colors = SwitchDefaults.colors(checkedTrackColor = accent, checkedThumbColor = Color.White, uncheckedTrackColor = Color(0x33FFFFFF), uncheckedThumbColor = Color(0xCCFFFFFF), uncheckedBorderColor = Color.Transparent),

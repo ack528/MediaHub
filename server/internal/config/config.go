@@ -57,6 +57,12 @@ type Config struct {
 		MaxThreads    int    `json:"maxThreads"`    // 压缩时软件解码 / 软件编码最多用的线程数;0 = CPU 核数的一半(至少 2)
 		Window        string `json:"window"`        // 只在这个时段压缩,如 "01:00-07:00"(可跨午夜);空 = 全天。时段外正在压缩的会被挂起
 	} `json:"optimize"`
+	BrowseHistory struct {
+		Enabled         bool `json:"enabled"`
+		MaxEntries      int  `json:"maxEntries"`
+		RetentionDays   int  `json:"retentionDays"`
+		IntervalSeconds int  `json:"intervalSeconds"`
+	} `json:"browseHistory"`
 	Auth struct {
 		TokenDays int `json:"tokenDays"`
 		// LoginLockSec:任何设备登录失败后,所有设备在这么多秒内都不能再验证密码(默认 20;0 = 关闭)
@@ -172,6 +178,10 @@ func Default() *Config {
 	c.Video.SoftwareFallback = true
 	c.Video.PosterSource = "auto"
 	c.Jellyfin.URL = "http://127.0.0.1:8096"
+	c.BrowseHistory.Enabled = true
+	c.BrowseHistory.MaxEntries = 100
+	c.BrowseHistory.RetentionDays = 90
+	c.BrowseHistory.IntervalSeconds = 60
 	c.Auth.TokenDays = 180
 	c.Optimize.AutoReplace, c.Optimize.TrashKeepDays = true, 7
 	c.Auth.LoginLockSec = 20

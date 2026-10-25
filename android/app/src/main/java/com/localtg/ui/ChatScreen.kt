@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -170,9 +171,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     val restoredFrom = MutableStateFlow<String?>(null)
     // 服务器上的文件夹默认按文件名排序;本地媒体默认按文件时间
     val sortKey = MutableStateFlow(if (c.isLocal) "taken" else "name")
-    /** 聊天流从上到下是否为正序(时间:旧→新,最新在最底部,和 Telegram 一样)。 */
-    val ascChat = MutableStateFlow(true)
-    /** 网格从左上到右下是否为正序(默认新→旧)。 */
+    /** 所有视图共用的从上到下排序方向。 */
     val ascGrid = MutableStateFlow(!c.isLocal) // 按名称时网格从 a 到 z(从前到后);按时间时新的在前
     val grid = MutableStateFlow(false)
     /** 网格模式下用瀑布流卡片显示(小红书式);排序 / 方向 / 位置和网格完全一样。 */
@@ -199,6 +198,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     /** 从查看器返回时,列表最近一次定位到(或打开查看器时所在)的条目:和查看器最后停留的条目相同就不用再滚动。 */
     var viewerOpenedId: String? = null
 
+    private var positionName = ""
     private var pos: Pair<String?, Int>? = null // 当前屏幕上的第一项(null 表示正处于最新一端)
     private var saveJob: Job? = null
 
@@ -206,13 +206,12 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
         val st = c.settings.value
         AppLog.i("chat", "打开 dialog=$dialogId rememberPosition=${st.rememberPosition}")
         columns.value = st.defaultColumns.coerceIn(2, 6)
-        ascChat.value = st.newestAtBottom
         // 设置里的默认排序 / 方向(各文件夹记住的视图优先)
         if (st.defaultSort != "auto") sortKey.value = st.defaultSort
         ascGrid.value = sortKey.value == "name" || sortKey.value == "type"
         when (st.defaultSortDir) {
-            "asc" -> { ascChat.value = true; ascGrid.value = true }
-            "desc" -> { ascChat.value = false; ascGrid.value = false }
+            "asc" -> ascGrid.value = true
+            "desc" -> ascGrid.value = false
         }
         if (c.isLocal && st.defaultSort == "auto" && st.defaultSortDir == "auto") ascGrid.value = false
         viewModelScope.launch {
@@ -232,9 +231,10 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
                 restoredFrom.value = remote.view.device
             }
             chosen?.let { v ->
-                sortKey.value = v.sort; ascChat.value = v.ascChat; ascGrid.value = v.ascGrid
+                sortKey.value = v.sort; ascGrid.value = if (v.grid) v.ascGrid else v.ascChat
                 grid.value = v.grid; feed.value = v.feed; columns.value = v.columns.coerceIn(2, 6)
                 types.value = v.types.toSet().ifEmpty { defaultTypes }
+                positionName = v.itemName
                 anchorId = v.itemId; anchorOffset = v.offsetPx
                 AppLog.i("chat", "恢复位置 item=${v.itemId} offset=${v.offsetPx} grid=${v.grid} sort=${v.sort}")
             }
@@ -245,9 +245,9 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     @OptIn(ExperimentalCoroutinesApi::class)
     val items: Flow<PagingData<Item>> = ready.filter { it }.flatMapLatest {
         combine(
-            combine(sortKey, ascChat, ascGrid, grid, types) { s, ac, ag, g, t ->
-                // 聊天流使用反向布局(列表第 0 项在最底部),所以服务端方向与"从上到下的正序"相反
-                Query(s, if (g) (if (ag) "asc" else "desc") else (if (ac) "desc" else "asc"), t)
+            combine(sortKey, ascGrid, types) { s, ag, t ->
+                // 所有视图按同一顺序布局；切换视图不重建或反转分页。
+                Query(s, if (ag) "asc" else "desc", t)
             },
             reload,
         ) { q, n -> q.copy(nonce = n) }.distinctUntilChanged().flatMapLatest { q ->
@@ -264,16 +264,17 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
 
     /** 修改视图设置。anchor = 要保持位置的条目(切换聊天/网格时用当前条目);null 表示回到最新一端。 */
     fun change(anchor: String?, force: Boolean = false, block: () -> Unit) {
+        modeAnchor = null; modeFirstReport = null
         anchorId = anchor; anchorOffset = 0; pos = null; freshOpen = false
         block()
-        // 聊天流和网格的查询参数相同时(例如按时间排序、网格新→旧、聊天新→旧 → 服务端方向都是 desc),Pager 不会重建,
-        // 新显示的那个列表组合出来就在最开头,锚点根本没用上 —— 切换视图"不在对应位置"就是这个原因。force = 强制重建一次,让锚点生效。
+        // 跳转到尚未加载的位置时，即使查询条件相同也要围绕锚点重建。
         if (force) reload.value += 1
         persistSoon()
     }
 
-    /** 回到最新一端(聊天流的最底部 / 网格的最顶部):丢掉位置锚点,从最新重新加载。 */
+    /** 回到当前排序的起点:丢掉位置锚点,从最新重新加载。 */
     fun jumpToNewest() {
+        modeAnchor = null; modeFirstReport = null
         anchorId = null; anchorOffset = 0; pos = null; freshOpen = false
         reload.value += 1
         persistSoon()
@@ -281,6 +282,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
 
     /** 跳转到某一天(date = yyyy-MM-dd):取该日附近的一条作为锚点,重建列表并滚到那里。返回是否成功。 */
     suspend fun jumpToDate(date: String): Boolean {
+        modeAnchor = null; modeFirstReport = null
         val q = lastQuery ?: return false
         return try {
             // limit=2:返回 [该日之前的一条?, 该日当天或更靠后的第一条];只有一条时它就是最近的那条
@@ -298,6 +300,7 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
 
     /** 跳转到指定条目(文件夹内搜索选中的结果):以它为锚点重建列表并滚到那里。 */
     fun jumpToItem(id: String) {
+        modeAnchor = null; modeFirstReport = null
         anchorId = id; anchorOffset = 0; pos = null; freshOpen = false
         viewerOpenedId = id
         reload.value += 1
@@ -320,18 +323,48 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
         }
     }
 
-    fun setColumns(n: Int) { columns.value = n; persistSoon() }
+    private var modeAnchor: String? = null
+    private var modeFirstReport: Pair<String,Int>? = null
+    val layoutRevision = MutableStateFlow(0)
+    fun switchMode(value: Int, item: String? = currentItemId()) {
+        modeAnchor = item; modeFirstReport = null
+        anchorId = item
+        anchorOffset = 0
+        pos = null
+        freshOpen = true
+        grid.value = value != 0
+        feed.value = value == 2
+        layoutRevision.value += 1
+        persistSoon()
+    }
+
+    fun setColumns(n: Int) { columns.value = n; switchMode(if (feed.value) 2 else 1) }
 
     /** 界面上报当前位置(滚动时频繁调用,内部去抖后保存)。atEnd = 正处于最新一端。 */
-    fun reportPosition(itemId: String, offsetPx: Int, atEnd: Boolean) {
-        pos = (if (atEnd) null else itemId) to offsetPx
+    fun reportPosition(itemId: String, offsetPx: Int, atEnd: Boolean, name: String = "") {
+        val initial = modeAnchor
+        if (initial != null) {
+            val report = itemId to offsetPx
+            if (modeFirstReport == null) modeFirstReport = report
+            if (modeFirstReport == report) {
+                pos = initial to 0
+                persistSoon()
+                return
+            }
+            modeAnchor = null; modeFirstReport = null
+        }
+        positionName = name
+        pos = itemId to offsetPx
         persistSoon()
     }
 
     /** 当前位置的条目 id(切换视图时作为锚点)。 */
-    fun currentItemId(): String? = pos?.first
+    fun currentItemId(): String? = pos?.first ?: anchorId
 
     /** 位置已恢复:清掉锚点,之后重新进入(例如从查看器返回)不会再次跳动。 */
+    fun isLayoutCurrent(mode: Int, revision: Int): Boolean =
+        mode == (if (!grid.value) 0 else if (feed.value) 2 else 1) && revision == generation.value * 100000 + layoutRevision.value
+
     fun anchorConsumed() { anchorId = null; anchorOffset = 0 }
 
     private fun persistSoon() {
@@ -342,20 +375,45 @@ class ChatViewModel(private val c: AppContainer, private val dialogId: String) :
     /** 离开页面时立即保存;用应用级协程域,界面销毁后也能写完。 */
     fun persistNow() { saveJob?.cancel(); persist(now = true) }
 
-    private fun persist(now: Boolean = false) {
-        if (!c.settings.value.rememberPosition || !active) return
+    fun snapshot(): DialogView {
         val p = pos
-        val v = DialogView(
+        return DialogView(
             itemId = if (p != null) p.first else anchorId, offsetPx = p?.second ?: anchorOffset,
-            sort = sortKey.value, ascChat = ascChat.value, ascGrid = ascGrid.value, grid = grid.value, feed = feed.value,
+            itemName = positionName, sort = sortKey.value, ascChat = ascGrid.value, ascGrid = ascGrid.value, grid = grid.value, feed = feed.value,
             types = types.value.toList(), columns = columns.value, device = android.os.Build.MODEL,
         )
-        c.scope.launch { c.viewState.save(dialogId, v, ns) }
+    }
+    suspend fun history(): com.localtg.data.BrowseHistoryResult = if (c.isLocal) com.localtg.data.BrowseHistoryResult(c.viewState.history(dialogId, ns)) else c.api.browseHistory(dialogId)
+    suspend fun saveCheckpoint() {
+        val view = snapshot()
+        if (c.isLocal) c.viewState.checkpoint(dialogId, view, true, ns) else c.api.saveBrowseHistory(dialogId, view)
+    }
+    suspend fun deleteCheckpoint(at: Long?) {
+        if (c.isLocal) c.viewState.deleteHistory(dialogId,at,ns) else c.api.deleteBrowseHistory(dialogId,at)
+    }
+    suspend fun restoreCheckpoint(view: DialogView) {
+        val id = view.itemId ?: return
+        val result = c.api.history(dialogId, view.sort, if (view.ascGrid) "asc" else "desc", view.types.joinToString(","),null,3,around=id)
+        if (result.items.none { it.id == id }) throw IllegalStateException("文件已删除、移动或不在筛选范围中，可删除这条历史")
+        modeAnchor=null;modeFirstReport=null
+        sortKey.value=view.sort; ascGrid.value=view.ascGrid
+        grid.value=view.grid;feed.value=view.feed;types.value=view.types.toSet();columns.value=view.columns.coerceIn(2,6)
+        anchorId=id;anchorOffset=view.offsetPx;pos=null;positionName=view.itemName;freshOpen=false
+        reload.value+=1
+    }
+    private fun persist(now: Boolean = false) {
+        if (!c.settings.value.rememberPosition || !active) return
+        val v = snapshot()
+        c.scope.launch {
+            c.viewState.save(dialogId, v, ns)
+            if (c.isLocal) c.viewState.checkpoint(dialogId, v, prefix=ns)
+        }
         // 同步到服务器:滚动时 3 秒去抖,离开页面时立即发;还是打开时那台服务器才发
         if (!c.isLocal && c.session.session.value?.baseUrl == startBase) {
             serverJob?.cancel()
             serverJob = c.scope.launch {
                 if (!now) delay(3000)
+                if (c.isLocal || c.session.session.value?.baseUrl != startBase) return@launch
                 runCatching { c.api.putDialogView(dialogId, v) }.onFailure { AppLog.d("chat", "同步浏览位置失败: ${it.message}") }
             }
         }
@@ -385,15 +443,17 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
     val feed by vm.feed.collectAsState()
     val mode = if (!grid) 0 else if (feed) 2 else 1 // 0 聊天流 / 1 网格 / 2 瀑布流
     val sortKey by vm.sortKey.collectAsState()
-    val ascChat by vm.ascChat.collectAsState()
     val ascGrid by vm.ascGrid.collectAsState()
     val types by vm.types.collectAsState()
     val total by vm.total.collectAsState()
     val columns by vm.columns.collectAsState()
-    val gen by vm.generation.collectAsState()
+    val dataGen by vm.generation.collectAsState()
+    val layoutGen by vm.layoutRevision.collectAsState()
+    val gen = dataGen * 100000 + layoutGen
     val ready by vm.ready.collectAsState()
     var menu by remember { mutableStateOf(false) }
     var datePicker by remember { mutableStateOf(false) }
+    var historyOpen by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var searchJumpGen by remember { mutableStateOf<Int?>(null) } // 选中了一条结果:列表重建定位好之前面板先留着,定位好再淡出
@@ -436,10 +496,10 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
         val snap = lazyItems.itemSnapshotList.items
         vm.viewerOpenedId = item.id
         c.viewerReturn.value = null // 清掉上一次遗留的返回信号,以这一次打开为准
-        c.viewerFeed = com.localtg.data.ViewerFeed(snap, prevIsHigherIndex = !grid, originDialogId = dialogId,
+        c.viewerFeed = com.localtg.data.ViewerFeed(snap, prevIsHigherIndex = false, originDialogId = dialogId,
             slideSource = com.localtg.data.SlideSource(
                 com.localtg.data.SlideScope(types.joinToString(","), dialog = dialogId),
-                com.localtg.data.SlideGroupOrder(sortKey, if (if (grid) ascGrid else !ascChat) "asc" else "desc")),
+                com.localtg.data.SlideGroupOrder(sortKey, if (ascGrid) "asc" else "desc")),
             loader = vm.moreLoader())
         onOpenViewer(snap.indexOfFirst { it.id == item.id }.coerceAtLeast(0))
     }
@@ -487,24 +547,26 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                 // 右上角:聊天流 → 网格 → 瀑布流 → 聊天流 轮换(图标是下一个视图);切换时保持在当前这一条(强制重建 Pager,锚点才会生效)
                 val next = (mode + 1) % 3
                 BarIcon(when (next) { 1 -> TgIcons.Grid; 2 -> TgIcons.Feed; else -> TgIcons.Chat }, when (next) { 1 -> "网格视图"; 2 -> "瀑布流视图"; else -> "聊天视图" }) {
-                    vm.change(vm.currentItemId(), force = true) { vm.grid.value = next != 0; vm.feed.value = next == 2 }
+                    vm.switchMode(next)
                 }
                 Box {
                     BarIcon(TgIcons.More, "更多") { menu = true }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(280.dp)) {
-                        ChatOptionsMenu(sortKey, if (grid) ascGrid else ascChat, types, mode, columns,
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(232.dp).heightIn(max = 360.dp)) {
+                        ChatOptionsMenu(sortKey, ascGrid, types, mode, columns,
                             onSort = { key -> hap.perform(Hap.Tick); vm.change(null) { vm.sortKey.value = key; vm.ascGrid.value = key == "name" || key == "type" } },
-                            onDirection = { asc -> vm.change(null) { if (grid) vm.ascGrid.value = asc else vm.ascChat.value = asc } },
+                            onDirection = { asc -> vm.change(null) { vm.ascGrid.value = asc } },
                             onType = { key -> val next = if (key in types) types - key else types + key; if (next.isNotEmpty()) vm.change(null) { vm.types.value = next } },
-                            onMode = { value -> if (value != mode) { hap.perform(Hap.Tick); vm.change(vm.currentItemId(), force = true) { vm.grid.value = value != 0; vm.feed.value = value == 2 } } },
+                            onMode = { value -> if (value != mode) { hap.perform(Hap.Tick); vm.switchMode(value) } },
                             onColumns = vm::setColumns,
                             onDate = { menu = false; datePicker = true },
+                            onHistory = { menu = false; historyOpen = true },
                         )
                     }
                 }
             }
             }
     }) {
+        if (historyOpen) BrowseHistoryDialog(vm, { historyOpen = false })
         if (datePicker) {
             val st = rememberDatePickerState()
             DatePickerDialog(
@@ -556,24 +618,26 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                         else (fadeIn(tween(220, 90, Motion.Standard)) + scaleIn(tween(300, easing = Motion.Standard), initialScale = 0.96f)) togetherWith fadeOut(tween(90))
                     },
                 ) { md ->
+                    val restored: () -> Unit = { if (vm.isLayoutCurrent(md, gen)) vm.anchorConsumed() }
+                    val report: (String, Int, Boolean) -> Unit = { id, off, end -> if (vm.isLayoutCurrent(md, gen)) vm.reportPosition(id, off, end, lazyItems.itemSnapshotList.items.firstOrNull { it.id == id }?.name.orEmpty()) }
                     if (md == 2) MediaFeed(
-                        lazyItems, c.api, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest,
+                        lazyItems, c.api, gen, restoreId, restoreOffset, open, restored, report, vm.freshOpen, vm::jumpToNewest,
                         onLongPress = { it ->
                             android.widget.Toast.makeText(ctx, "已在聊天流中定位到这一条", android.widget.Toast.LENGTH_SHORT).show()
-                            vm.change(it.id, force = true) { vm.grid.value = false; vm.feed.value = false }
+                            vm.switchMode(0, it.id)
                         },
                         scrollTarget = scrollTarget, onScrollDone = onScrolled,
                     )
                     else if (md == 1) MediaGrid(
-                        lazyItems, c.api, columns, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest,
+                        lazyItems, c.api, columns, gen, restoreId, restoreOffset, open, restored, report, vm.freshOpen, vm::jumpToNewest,
                         onLongPress = { it ->
                             // 长按网格里的某一格:切到聊天流并定位到这一条
                             android.widget.Toast.makeText(ctx, "已在聊天流中定位到这一条", android.widget.Toast.LENGTH_SHORT).show()
-                            vm.change(it.id, force = true) { vm.grid.value = false }
+                            vm.switchMode(0, it.id)
                         },
                         scrollTarget = scrollTarget, onScrollDone = onScrolled,
                     )
-                    else ChatFeed(lazyItems, c.api, gen, restoreId, restoreOffset, open, vm::anchorConsumed, vm::reportPosition, vm.freshOpen, vm::jumpToNewest, sortKey == "taken", scrollTarget, onScrolled)
+                    else ChatFeed(lazyItems, c.api, gen, restoreId, restoreOffset, open, restored, report, vm.freshOpen, vm::jumpToNewest, sortKey == "taken", scrollTarget, onScrolled)
                 }
             }
             androidx.compose.animation.AnimatedContent(
@@ -611,7 +675,7 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
 /**
  * 位置记忆:Pager 重建(含刚打开页面)后,等第一页到达,把列表滚回上次停留的条目与偏移;
  * 恢复完成后持续上报当前位置(去抖保存由 ViewModel 负责)。
- * 上报的"位置"= 屏幕上第一项:聊天流(反向布局)里是最靠下的一条,网格里是左上角那一格。
+ * 上报的位置为所有模式的首个可见项；切换模式后先恢复锚点再开始上报。
  */
 @Composable
 private fun PositionMemory(
@@ -637,7 +701,8 @@ private fun PositionMemory(
     }
     LaunchedEffect(gen, done) {
         if (!done) return@LaunchedEffect
-        snapshotFlow { firstIndex() to firstOffset() }.collect { (i, off) ->
+        snapshotFlow { if (items.loadState.refresh is LoadState.NotLoading) firstIndex() to firstOffset() else null }.collect { position ->
+            val (i, off) = position ?: return@collect
             if (i in 0 until items.itemCount) {
                 items.peek(i)?.let { onPosition(it.id, off, i == 0 && off < 40) } // 在最新一端 → 不记锚点,下次直接从最新开始
             }
@@ -686,13 +751,13 @@ private fun ChatFeed(
         val maxH = maxWidth * 0.95f
         val endReached = items.loadState.append.endOfPaginationReached
         LazyColumn(
-            state = state, reverseLayout = true, modifier = Modifier.fillMaxSize(),
+            state = state, reverseLayout = false, modifier = Modifier.fillMaxSize(),
             contentPadding = barContentPadding(extra = 8.dp), verticalArrangement = Arrangement.spacedBy(LocalSettings.current.chatSpacing.dp),
         ) {
             items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
                 val item = items[index] ?: return@items
-                // 反向布局:索引大 = 更早 = 更靠上。当比上面一条晚一天(或已是最早的一条)时,在本条上方显示日期胶囊
-                val older = if (index + 1 < items.itemCount) items.peek(index + 1) else null // 最后一项没有"更早的一条",peek 越界会闪退
+                // 日期分隔对应同一顺序中前一项。
+                val older = if (index > 0) items.peek(index - 1) else null // 最后一项没有"更早的一条",peek 越界会闪退
                 val showDate = if (older != null) localDate(older.takenAt) != localDate(item.takenAt) else endReached
                 Column(Modifier.fillMaxWidth()) {
                     if (showDate && cfg.showDatePills && showDates) { // 只有按时间排序时,中间的日期才有意义
@@ -711,7 +776,7 @@ private fun ChatFeed(
         // 往上翻了一段以后,右下角出现"回到最新"按钮(Telegram 的做法)
         val scope = rememberCoroutineScope()
         JumpButton(
-            visible = state.firstVisibleItemIndex > 6, up = false, modifier = Modifier.align(Alignment.BottomEnd),
+            visible = state.firstVisibleItemIndex > 6, up = true, modifier = Modifier.align(Alignment.BottomEnd),
         ) { onJumpNewest(); scope.launch { state.scrollToItem(0) } }
     }
 }

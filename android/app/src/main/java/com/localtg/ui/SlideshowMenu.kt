@@ -1,6 +1,11 @@
 package com.localtg.ui
 
 import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.localtg.AppContainer
 import com.localtg.data.*
 
@@ -19,13 +24,16 @@ internal fun SlideshowMenu(c: AppContainer, ui: ViewerUi, source: SlideSource?) 
     }
     if (state.preparing) MenuNote("正在准备播放队列…")
     MenuDivider()
-    MenuLabel("图片停留时间")
-    val seconds = listOf(3, 5, 10, 15, 30, 60)
-    seconds.chunked(3).forEach { row ->
-        MenuChips(row.map { "${it}秒" }, row.indexOf(state.options?.imageSeconds ?: settings.slideshowSeconds)) { i ->
-            c.settings.update { copy(slideshowSeconds = row[i]) }; state.interval(row[i])
-        }
-    }
+    var seconds by remember { mutableFloatStateOf(slideSeconds(state.options?.imageSeconds ?: settings.slideshowSeconds)) }
+    MenuLabel("图片停留 ${"%.1f".format(java.util.Locale.ROOT, seconds)} 秒")
+    Slider(
+        value = seconds,
+        onValueChange = { seconds = (kotlin.math.round(it * 10f) / 10f).coerceIn(0.5f, 10f) },
+        onValueChangeFinished = { c.settings.update { copy(slideshowSeconds = seconds) }; state.interval(seconds) },
+        valueRange = 0.5f..10f, steps = 94,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(36.dp),
+        colors = SliderDefaults.colors(thumbColor = com.localtg.ui.tg.LocalTg.current.accent, activeTrackColor = com.localtg.ui.tg.LocalTg.current.accent),
+    )
     if (state.active) {
         MenuDivider()
         if (state.message.isNotEmpty()) MenuNote(state.message)

@@ -1,3 +1,4 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { bridge } from "../bridge";
 import { Badge, Btn, Card, Row } from "../components";
@@ -130,7 +131,7 @@ function Changelog() {
 }
 
 export function About() {
-  const { env, config, svc } = useApp();
+  const { env, config, svc, toast } = useApp();
   const open = (p?: string) => p && bridge.openPath(p);
   return (
     <>
@@ -140,6 +141,7 @@ export function About() {
     <Changelog />
     <Card icon="info" title="关于 MediaHub">
       <Row icon="server" title="MediaHub 管理程序" desc={`v${env?.appVersion ?? "?"} · 服务端 ${svc?.info?.version ?? "未运行"} · Tauri 2`} />
+      <Row icon="globe" title="项目主页" desc="github.com/ack528/MediaHub"><Btn icon="link" onClick={() => openUrl("https://github.com/ack528/MediaHub").catch(e => toast(String(e), "err"))}>在浏览器打开</Btn></Row>
       <Row icon="folder" title="安装目录" desc={env?.root ?? "—"}><Btn icon="folderopen" onClick={() => open(env?.root)}>打开</Btn></Row>
       <Row icon="filetext" title="配置文件" desc={env?.configPath ?? "—"}><Btn icon="folderopen" onClick={() => open(env?.configPath?.replace(/[\\/][^\\/]+$/, ""))}>打开所在文件夹</Btn></Row>
       <Row icon="database" title="数据目录" desc={config.dataDir}><Btn icon="folderopen" onClick={() => open(config.dataDir)}>打开</Btn></Row>

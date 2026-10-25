@@ -94,6 +94,9 @@ func (s *Server) putView(w http.ResponseWriter, r *http.Request) {
 		_, err := s.DB.Exec(`INSERT INTO user_view(user_id,dialog_id,json,saved_at) VALUES(?,?,?,?)
 		ON CONFLICT(user_id,dialog_id) DO UPDATE SET json=excluded.json, saved_at=excluded.saved_at
 		WHERE excluded.saved_at >= user_view.saved_at`, uid, id, js, at)
+		if err == nil {
+			err = s.recordBrowseHistory(uid, id, js, at, false)
+		}
 		return err
 	})
 	w.WriteHeader(204)
@@ -146,6 +149,10 @@ func (s *Server) putPlayback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) clearViews(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.DB.ExecContext(r.Context(), `DELETE FROM user_browse_history WHERE user_id=?`, userID(r)); err != nil {
+		writeErr(w, 500, "history.write", err.Error())
+		return
+	}
 	_, _ = s.DB.Exec(`DELETE FROM user_view WHERE user_id=?`, userID(r))
 	w.WriteHeader(204)
 }
