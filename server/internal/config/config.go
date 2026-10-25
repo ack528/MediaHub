@@ -51,9 +51,9 @@ type Config struct {
 	} `json:"jellyfin"`
 	// Optimize 存储优化:压缩校验通过后怎么处理
 	Optimize struct {
-		AutoReplace   bool `json:"autoReplace"`   // 压缩结果校验通过(能正常播放)就自动替换原文件,默认 true;原文件进回收区,可还原
-		PurgeOriginal bool `json:"purgeOriginal"` // 替换后立刻永久删除原文件(省空间,没有后悔药),默认 false
-		TrashKeepDays int  `json:"trashKeepDays"` // 「压缩替换」回收区里的原文件保留多少天后自动永久删除;0 = 永不自动删除。默认 7
+		AutoReplace   bool   `json:"autoReplace"`   // 压缩结果校验通过(能正常播放)就自动替换原文件,默认 true;原文件进回收区,可还原
+		PurgeOriginal bool   `json:"purgeOriginal"` // 替换后立刻永久删除原文件(省空间,没有后悔药),默认 false
+		TrashKeepDays int    `json:"trashKeepDays"` // 「压缩替换」回收区里的原文件保留多少天后自动永久删除;0 = 永不自动删除。默认 7
 		MaxThreads    int    `json:"maxThreads"`    // 压缩时软件解码 / 软件编码最多用的线程数;0 = CPU 核数的一半(至少 2)
 		Window        string `json:"window"`        // 只在这个时段压缩,如 "01:00-07:00"(可跨午夜);空 = 全天。时段外正在压缩的会被挂起
 	} `json:"optimize"`
@@ -131,7 +131,7 @@ type Tunnel struct {
 	RestartOnFail bool   `json:"restartOnFail"` // 连续探测失败时自动重启穿透进程
 
 	// ---- frp
-	Binary string `json:"binary"` // frpc.exe 的路径;留空 = 服务端内置的 frpc(或 tools\frp\frpc.exe)
+	Binary         string `json:"binary"` // frpc.exe 的路径;留空 = 服务端内置的 frpc(或 tools\frp\frpc.exe)
 	ServerAddr     string `json:"serverAddr"`
 	ServerPort     int    `json:"serverPort"`
 	Token          string `json:"token"`
@@ -234,6 +234,14 @@ func (c *Config) AdminAddr() string {
 
 // Load 读取配置文件;文件不存在则返回默认值。root 用于解析 tools 的默认位置(项目根目录)。
 func Load(path, projectRoot string) (*Config, error) {
+	if path == "" {
+		path = DefaultPath(projectRoot)
+	}
+	var err error
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
 	c := Default()
 	c.Path = path
 	c.RootsUnset = true
@@ -268,4 +276,27 @@ func Load(path, projectRoot string) (*Config, error) {
 		}
 	}
 	return c, nil
+}
+
+// DefaultPath is independent of the working directory and MEDIAHUB_ROOT.
+// The root locates binaries/tools; it is not a development-mode flag.
+func DefaultPath(root string) string {
+	return defaultPath(root, `C:\MediaHub\config.json`)
+}
+
+func defaultPath(root, stable string) string {
+	if p := os.Getenv("MEDIAHUB_CONFIG"); p != "" {
+		return p
+	}
+	legacy := filepath.Join(root, "runtime", "mediahub", "config.json")
+	if os.Getenv("MEDIAHUB_DEV") == "1" {
+		return legacy
+	}
+	if _, err := os.Stat(stable); err == nil {
+		return stable
+	}
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return stable
 }

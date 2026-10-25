@@ -101,6 +101,8 @@ import kotlin.math.roundToInt
 /** 查看器级别的界面状态,所有页共享(控制条显示、锁定、方向、睡眠定时)。 */
 class ViewerUi {
     /** 当前这一页的视频正在用的转码码率(bps);null = 没在转码。查看器底部的信息条据此显示转码后的预估体积。 */
+    var slideshowMode by mutableStateOf(false)
+    var slideshowPlaying by mutableStateOf(true)
     var transcodeBps by mutableStateOf<Int?>(null)
     var chrome by mutableStateOf(true)
     var locked by mutableStateOf(false)
@@ -184,7 +186,7 @@ private fun fmt(ms: Long): String {
 @Composable
 fun VideoPage(
     item: Item, c: AppContainer, isCurrent: Boolean, ui: ViewerUi,
-    onBack: () -> Unit, onPrev: (() -> Unit)?, onNext: (() -> Unit)?, onEnded: () -> Unit,
+    onBack: () -> Unit, onPrev: (() -> Unit)?, onNext: (() -> Unit)?, onEnded: () -> Unit, onSlideError: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val act = remember(ctx) { ctx.findActivity() }
@@ -230,7 +232,7 @@ fun VideoPage(
     var state by remember { mutableIntStateOf(Player.STATE_IDLE) }
     var speed by remember { mutableFloatStateOf(cfg.speed) }
     var tracks by remember { mutableStateOf(Tracks.EMPTY) }
-    var loop by remember { mutableStateOf(cfg.loop) }
+    var loop by remember { mutableStateOf(cfg.loop && !ui.slideshowMode) }
     var resize by remember(cfg.resizeMode) { mutableStateOf(cfg.resizeMode) }
     var abA by remember(item.id) { mutableStateOf<Long?>(null) }
     var abB by remember(item.id) { mutableStateOf<Long?>(null) }
@@ -274,7 +276,7 @@ fun VideoPage(
     LaunchedEffect(isCurrent, item.id) {
         if (isCurrent && resumeMs < 0) {
             // 服务器和本机各有一份进度时,以"最后更新的时间"为准(哪个终端最后看的就接着哪个);没有记录或连不上就用本机的
-            resumeMs = if (!cfg.resume) 0L else {
+            resumeMs = if (ui.slideshowMode || !cfg.resume) 0L else {
                 val (lp, lt) = c.playback.getWithTime(item.id, ns)
                 val remote = if (c.isLocal) null else kotlinx.coroutines.withTimeoutOrNull(2000) { c.api.getPlaybackRemote(item.id) }
                 when {
@@ -401,7 +403,7 @@ fun VideoPage(
             }
             if (resumeMs > 0) pl.seekTo((resumeMs - c.settings.value.resumeRewindSec * 1000L).coerceAtLeast(0L))
             pl.prepare()
-            pl.playWhenReady = c.settings.value.autoplay
+            pl.playWhenReady = if (ui.slideshowMode) ui.slideshowPlaying else c.settings.value.autoplay
             player = pl
             AppLog.i("player", "播放 ${item.name} (${item.ext}, ${item.w}x${item.h}) 从 ${resumeMs}ms")
         }
@@ -425,6 +427,19 @@ fun VideoPage(
             player = null; firstFrame = false; playing = false
             if (p != null) c.videoPlaying = false
         }
+    }
+
+    LaunchedEffect(player, ui.slideshowMode, ui.slideshowPlaying) {
+        if (ui.slideshowMode) {
+            player?.repeatMode = Player.REPEAT_MODE_OFF
+            if (ui.slideshowPlaying) {
+                if (player?.playbackState == Player.STATE_ENDED) player?.seekTo(0)
+                player?.play()
+            } else player?.pause()
+        }
+    }
+    LaunchedEffect(isCurrent, blocked, error) {
+        if (ui.slideshowMode && isCurrent && (blocked || error != null)) onSlideError()
     }
 
     // 自动画质:网速不够时自动降一档转码。卡顿中每秒检查一次:45 秒内第二次卡顿,或者一次卡了超过 8 秒 → 降档。
@@ -1057,7 +1072,9 @@ fun VideoPage(
                             panel = ""
                         }
                     }
-                    "loop" -> {
+                    "loop" -> if (ui.slideshowMode) {
+                        MenuNote("幻灯片中视频播完后切换，不启用单个或 A-B 循环")
+                    } else {
                         val abText = when { abA == null -> "A-B 循环:设置起点 A"; abB == null -> "A-B 循环:设置终点 B"; else -> "A-B 循环:取消(${fmt(abA!!)} – ${fmt(abB!!)})" }
                         MenuOptions(listOf("不循环" to (!loop && abA == null), "单个循环" to loop, abText to (abA != null))) { i ->
                             when (i) {

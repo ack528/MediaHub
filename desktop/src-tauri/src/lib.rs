@@ -88,12 +88,13 @@ fn find_old_config() -> Option<PathBuf> {
 
 /// 配置文件放在程序目录之外的固定位置(默认 C:\MediaHub\config.json,和数据目录同级),
 /// 更新服务端 / 换便携版文件夹都不会丢媒体根目录等设置。第一次使用时把旧位置的配置搬过来。
-/// 开发环境(设置了 MEDIAHUB_ROOT)仍用项目里的 runtime\mediahub\config.json。
+/// 开发环境(MEDIAHUB_DEV=1)仍用项目里的 runtime\mediahub\config.json。
 fn config_path() -> PathBuf {
-    if std::env::var("MEDIAHUB_ROOT").map(|v| !v.is_empty()).unwrap_or(false) {
-        return legacy_config_path();
-    }
-    let p = Path::new(DEFAULT_DATA_DIR).parent().map(|d| d.join("config.json")).unwrap_or_else(legacy_config_path);
+    let stable = Path::new(DEFAULT_DATA_DIR).parent().map(|d| d.join("config.json")).unwrap_or_else(legacy_config_path);
+    let p = selected_config_path(
+        std::env::var_os("MEDIAHUB_CONFIG").filter(|v| !v.is_empty()).map(PathBuf::from),
+        std::env::var("MEDIAHUB_DEV").as_deref() == Ok("1"), stable.clone(), legacy_config_path());
+    if p != stable { return p; }
     if !p.exists() {
         if let Some(old) = find_old_config() {
             if let Some(dir) = p.parent() {
@@ -103,6 +104,23 @@ fn config_path() -> PathBuf {
         }
     }
     p
+}
+
+fn selected_config_path(explicit: Option<PathBuf>, development: bool, stable: PathBuf, legacy: PathBuf) -> PathBuf {
+    explicit.unwrap_or_else(|| if development { legacy } else { stable })
+}
+
+#[cfg(test)]
+mod config_location_tests {
+    use super::*;
+    #[test]
+    fn restart_uses_persistent_config_unless_explicitly_overridden() {
+        let stable = PathBuf::from(r"C:\MediaHub\config.json");
+        let legacy = PathBuf::from(r"D:\便携 with spaces\runtime\mediahub\config.json");
+        assert_eq!(selected_config_path(None, false, stable.clone(), legacy.clone()), stable);
+        assert_eq!(selected_config_path(None, true, stable.clone(), legacy.clone()), legacy);
+        assert_eq!(selected_config_path(Some(legacy.clone()), false, stable.clone(), PathBuf::new()), legacy);
+    }
 }
 
 fn read_json(path: &Path) -> Value {
@@ -307,6 +325,7 @@ fn start_service_blocking() -> Result<(), String> {
         .arg("-config")
         .arg(config_path())
         .env("MEDIAHUB_ROOT", root_dir())
+        .env("MEDIAHUB_CONFIG", config_path())
         .current_dir(root_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())

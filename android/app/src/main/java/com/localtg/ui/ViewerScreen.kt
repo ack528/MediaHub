@@ -70,10 +70,53 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
     val ctx = LocalContext.current
     val act = remember(ctx) { ctx.findActivity() }
     val pager = rememberPagerState(initialPage = startIndex.coerceIn(0, items.lastIndex)) { items.size }
-    val ui = remember { ViewerUi() }
+    val ui = remember { ViewerUi().apply { slideshowMode = feed.slideshow != null } }
     val scope = rememberCoroutineScope()
     val inPip by c.inPip.collectAsState()
     val cur = items[pager.currentPage]
+    var slideReady by remember { mutableStateOf<String?>(null) }
+    var slideMessage by remember { mutableStateOf("") }
+    var advancing by remember { mutableStateOf(false) }
+    var waitingForNext by remember { mutableStateOf(false) }
+    var slidesFinished by remember { mutableStateOf(false) }
+    suspend fun advanceSlide() {
+        if (advancing) return
+        advancing = true
+        try {
+            val next = pager.settledPage + 1
+            if (next >= items.size && !feed.exhausted) feed.loadMore()
+            if (next < items.size) {
+                waitingForNext = false; slidesFinished = false; slideMessage = ""; slideReady = null
+                pager.scrollToPage(next)
+            } else {
+                ui.slideshowPlaying = false
+                slidesFinished = feed.exhausted
+                waitingForNext = !feed.exhausted
+                slideMessage = if (feed.exhausted) "本轮已播放完毕" else "加载下一批失败，点击继续重试"
+            }
+        } finally { advancing = false }
+    }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, feed) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (ui.slideshowMode && event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) ui.slideshowPlaying = false
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val slideView = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(ui.slideshowMode, ui.slideshowPlaying) {
+        val old = slideView.keepScreenOn
+        if (ui.slideshowMode) slideView.keepScreenOn = ui.slideshowPlaying
+        onDispose { slideView.keepScreenOn = old }
+    }
+    LaunchedEffect(cur.id, slideReady, ui.slideshowPlaying, pager.isScrollInProgress) {
+        if (ui.slideshowMode && ui.slideshowPlaying && !pager.isScrollInProgress && !cur.isVideo && slideReady == cur.id) {
+            kotlinx.coroutines.delay(feed.slideshow!!.imageSeconds.coerceIn(3, 60) * 1000L)
+            advanceSlide()
+        }
+    }
+
     // 翻到接近已加载内容的末尾时,继续取更多(聊天历史 / 搜索结果),不会只能翻到第一页
     LaunchedEffect(pager.currentPage, items.size) { if (pager.currentPage >= items.size - 5) feed.loadMore() }
     val hapV = LocalHaptics.current
@@ -159,12 +202,19 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
                     onPrev = if (page + prevDelta in items.indices) { { scope.launch { pager.animateScrollToPage(page + prevDelta) } } } else null,
                     onNext = if (page - prevDelta in items.indices) { { scope.launch { pager.animateScrollToPage(page - prevDelta) } } } else null,
                     onEnded = {
-                        if (ui.sleepAt == -1L) { ui.sleepAt = 0L; AppLog.i("player", "睡眠定时:播完停止") }
+                        if (ui.slideshowMode) { if (ui.slideshowPlaying) scope.launch { advanceSlide() } }
+                        else if (ui.sleepAt == -1L) { ui.sleepAt = 0L; AppLog.i("player", "睡眠定时:播完停止") }
                         else if (c.settings.value.autoNext && page - prevDelta in items.indices) scope.launch { pager.animateScrollToPage(page - prevDelta) }
                     },
+                    onSlideError = { ui.slideshowPlaying = false; slideMessage = "视频无法播放，可重试或跳过" },
                 )
             } else {
-                PhotoPage(item, c, ui, shared = pager.currentPage == page)
+                PhotoPage(item, c, ui, shared = pager.settledPage == page, onSlideReady = { ok ->
+                    if (pager.settledPage == page) {
+                        slideReady = item.id
+                        if (!ok && ui.slideshowMode) { ui.slideshowPlaying = false; slideMessage = "图片加载失败，可跳过" }
+                    }
+                })
             }
         }
         // 图片的顶栏 / 底栏:和视频页同一套风格(渐变底、图标按钮、小字号),不再是一整块半透明黑条
@@ -226,6 +276,27 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
                 }
             }
         }
+        if (ui.slideshowMode && !inPip) {
+            Column(
+                Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp, start = 12.dp, end = 12.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(14.dp)).background(Color(0xCC101820)).padding(horizontal = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(slideMessage.ifEmpty { "幻灯片 · ${pager.settledPage + 1}${if (feed.exhausted) "/${items.size}" else ""} · 图片 ${feed.slideshow!!.imageSeconds}秒" }, color = Color.White, fontSize = 12.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        if (slidesFinished) {
+                            slidesFinished = false; slideMessage = ""
+                            scope.launch { pager.scrollToPage(0); ui.slideshowPlaying = true }
+                        } else if (waitingForNext) { ui.slideshowPlaying = true; scope.launch { advanceSlide() } }
+                        else { slideMessage = ""; ui.slideshowPlaying = !ui.slideshowPlaying }
+                    }) { Text(if (slidesFinished) "重播" else if (ui.slideshowPlaying) "暂停" else "继续", color = Color.White) }
+                    TextButton(enabled = !advancing, onClick = { scope.launch { advanceSlide() } }) { Text("下一项", color = Color.White) }
+                    TextButton(onClick = onBack) { Text("结束", color = Color.White) }
+                }
+            }
+        }
+
     }
 }
 
@@ -265,10 +336,11 @@ private fun photoInfoRows(item: Item): List<Pair<String, String>> = listOfNotNul
 ).filter { it.second.isNotEmpty() }
 
 @Composable
-private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean) {
+private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean, onSlideReady: (Boolean) -> Unit = {}) {
     val ready = LocalViewerReady.current
+    val currentSlideReady by androidx.compose.runtime.rememberUpdatedState(onSlideReady)
     if (!item.canShowNatively()) {
-        LaunchedEffect(item.id) { ready(item.id) }
+        LaunchedEffect(item.id, shared) { ready(item.id); if (shared) currentSlideReady(false) }
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("暂不支持预览 ${item.ext.uppercase()} 格式\n(服务端转换将在后续版本提供)", color = Color.White)
         }
@@ -288,9 +360,11 @@ private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean
     // 垫图、占位的缩略图或原图画出来了:告诉打开动画可以交接了
     val shown = based || zs.isImageDisplayed || zs.isPlaceholderDisplayed
     LaunchedEffect(shown) { if (shown) ready(item.id) }
+    LaunchedEffect(zs.isImageDisplayed, shared) { if (shared && zs.isImageDisplayed) currentSlideReady(true) }
     ZoomableAsyncImage(
         model = ImageRequest.Builder(LocalContext.current).data(c.api.imageUrl(item, cfg.viewerImageWidth))
             .placeholderMemoryCacheKey(thumbKey(item)) // 先显示点开前的缩略图,不是一片黑
+            .listener(onError = { _, _ -> currentSlideReady(false) })
             .build(),
         contentDescription = item.name,
         state = zs,

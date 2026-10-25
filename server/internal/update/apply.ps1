@@ -17,6 +17,7 @@ $mgrExe = Join-Path $Root 'MediaHub.exe'
 
 function Start-Hub {
   $env:MEDIAHUB_ROOT = $Root
+  $env:MEDIAHUB_CONFIG = $Config
   $a = @('serve')
   if ($Config) { $a += @('-config', ('"' + $Config + '"')) }
   Start-Process -FilePath $svcExe -ArgumentList $a -WorkingDirectory $Root -WindowStyle Hidden | Out-Null
@@ -94,7 +95,12 @@ if ($ok) {
 }
 
 # 6. 管理程序重新打开
-if ($mgrWas) { Log '重新打开管理程序'; Start-Process -FilePath $mgrExe -WorkingDirectory $Root | Out-Null }
+if ($mgrWas) {
+  $env:MEDIAHUB_ROOT = $Root
+  $env:MEDIAHUB_CONFIG = $Config
+  Log '重新打开管理程序'
+  Start-Process -FilePath $mgrExe -WorkingDirectory $Root -WindowStyle Hidden | Out-Null
+}
 
 # 7. 清理(留 update.log 和 result.txt)
 Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue

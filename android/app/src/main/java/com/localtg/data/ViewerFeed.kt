@@ -4,6 +4,9 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CancellationException
 
 /**
  * 查看器的数据源:先给已经加载好的条目,翻到接近末尾时用 [loader] 继续取更多(聊天历史或搜索结果),
@@ -16,6 +19,7 @@ class ViewerFeed(
     val prevIsHigherIndex: Boolean = false,
     /** 从哪个群组打开的(搜索结果等没有就是 null):在查看器里滑到哪一项,退出后这个群组要定位到那一项。 */
     val originDialogId: String? = null,
+    val slideshow: SlideshowOptions? = null,
     private val loader: (suspend (cursor: String?, lastId: String?) -> Pair<List<Item>, String?>)? = null,
 ) {
     val items = mutableStateListOf<Item>().apply { addAll(initial) }
@@ -23,23 +27,25 @@ class ViewerFeed(
     private var started = false
     var exhausted by mutableStateOf(loader == null)
         private set
-    private var loading = false
+    private val loadMutex = Mutex()
 
-    suspend fun loadMore() {
-        val l = loader ?: return
-        if (exhausted || loading) return
-        loading = true
+    suspend fun loadMore(): Boolean = loadMutex.withLock {
+        val l = loader ?: return@withLock false
+        if (exhausted) return@withLock false
         try {
             val (more, next) = l(if (started) cursor else null, items.lastOrNull()?.id)
             started = true
             val known = items.mapTo(HashSet()) { it.id }
-            items.addAll(more.filter { known.add(it.id) })
+            val added = more.filter { known.add(it.id) }
+            items.addAll(added)
             cursor = next
-            if (next == null || more.isEmpty()) exhausted = true
+            if (next == null || added.isEmpty()) exhausted = true
+            added.isNotEmpty()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             com.localtg.AppLog.w("viewer", "加载更多失败", e)
-        } finally {
-            loading = false
+            false
         }
     }
 }

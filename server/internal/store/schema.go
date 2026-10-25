@@ -118,6 +118,9 @@ display_dir=COALESCE((SELECT dir_rel FROM media WHERE id=media_id),''),
 display_root=COALESCE((SELECT r.label FROM media m JOIN roots r ON r.id=m.root_id WHERE m.id=media_id),''),
 display_root_path=COALESCE((SELECT r.path FROM media m JOIN roots r ON r.id=m.root_id WHERE m.id=media_id),'');
 CREATE INDEX ix_oj_media ON opt_job(media_id, state);`,
+	// v12: remote configuration belongs to an explicitly privileged account.
+	`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;
+UPDATE users SET is_admin=1 WHERE id=(SELECT MIN(id) FROM users);`,
 }
 
 // Migrate 把数据库升级到最新模式。

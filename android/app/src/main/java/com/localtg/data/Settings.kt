@@ -22,6 +22,8 @@ private val Context.playbackDataStore by preferencesDataStore(name = "playback_p
  */
 @Serializable
 data class AppSettings(
+	val slideshowSeconds: Int = 5,
+	val slideshowOrder: String = "forward",
     // ---- 外观
     val theme: String = "dark",                // dark(默认)/ light / system
     val chatBackground: String = "gradient",   // gradient / plain

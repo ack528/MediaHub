@@ -82,6 +82,7 @@ private val SECTIONS = listOf(
     Triple("speedtest", "网络测速", "服务器延迟、下载 / 上传速度(至少测 15 秒)"),
     Triple("storage", "存储与缓存", "清理缓存和记录、重新生成随机序列、恢复默认设置"),
     Triple("account", "服务器管理", "已保存的服务器、切换、添加、退出登录"),
+    Triple("server-config", "服务器状态与配置", "查看运行状态、媒体库、转码、存储优化和后台参数"),
     Triple("log", "日志与诊断", "日志级别、查看、复制、分享给开发者"),
     Triple("about", "关于", "版本信息"),
 )
@@ -129,6 +130,7 @@ fun SettingsScreen(c: AppContainer, section: String?, onBack: (() -> Unit)?, onO
                         "speedtest" -> SpeedTestPage(c, s, update)
                         "storage" -> StoragePage(c)
                         "account" -> AccountPage(c)
+                        "server-config" -> ServerManagementPage(c)
                         "log" -> LogPage(s, update, onOpenView = { onOpen("log-view") })
                         "about" -> AboutPage(c)
                     }
@@ -143,7 +145,7 @@ private val SECTION_GROUPS = listOf(
     listOf("appearance", "folders", "browse", "viewer", "image"),
     listOf("video", "codec", "enhance"),
     listOf("network", "speedtest", "storage"),
-    listOf("account", "log", "about"),
+    listOf("account", "server-config", "log", "about"),
 )
 
 /** 设置首页每个分类的彩色方块图标(颜色取自 Telegram 设置首页的那一套)。 */

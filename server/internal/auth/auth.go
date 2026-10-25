@@ -79,7 +79,7 @@ func (s *Service) CreateUser(name, pw string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.Exec(`INSERT INTO users(name,pw_hash,created) VALUES(?,?,?)`, name, h, time.Now().Unix())
+	_, err = s.DB.Exec(`INSERT INTO users(name,pw_hash,created,is_admin) VALUES(?,?,?,CASE WHEN EXISTS(SELECT 1 FROM users) THEN 0 ELSE 1 END)`, name, h, time.Now().Unix())
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return errors.New("用户已存在")
 	}
@@ -217,12 +217,13 @@ func (s *Service) Logout(token string) {
 }
 
 type UserInfo struct {
+	IsAdmin bool   `json:"isAdmin"`
 	Name    string `json:"name"`
 	Created int64  `json:"created"`
 }
 
 func (s *Service) ListUsers() ([]UserInfo, error) {
-	rows, err := s.DB.Query(`SELECT name, created FROM users ORDER BY id`)
+	rows, err := s.DB.Query(`SELECT name, created, is_admin FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +231,7 @@ func (s *Service) ListUsers() ([]UserInfo, error) {
 	out := []UserInfo{}
 	for rows.Next() {
 		var u UserInfo
-		if err := rows.Scan(&u.Name, &u.Created); err != nil {
+		if err := rows.Scan(&u.Name, &u.Created, &u.IsAdmin); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -240,6 +241,18 @@ func (s *Service) ListUsers() ([]UserInfo, error) {
 
 // DeleteUser 删除账号及其所有令牌。
 func (s *Service) DeleteUser(name string) error {
+	var admin, users, admins int
+	if err := s.DB.QueryRow(`SELECT is_admin FROM users WHERE name=?`, name).Scan(&admin); err != nil {
+		return errors.New("用户不存在")
+	}
+	if admin == 1 {
+		if err := s.DB.QueryRow(`SELECT count(*),coalesce(sum(is_admin),0) FROM users`).Scan(&users, &admins); err != nil {
+			return err
+		}
+		if users > 1 && admins <= 1 {
+			return errors.New("请先授权其他管理员，再删除最后一个管理员账号")
+		}
+	}
 	var id int64
 	if err := s.DB.QueryRow(`SELECT id FROM users WHERE name=?`, name).Scan(&id); err != nil {
 		return errors.New("用户不存在")
@@ -249,4 +262,31 @@ func (s *Service) DeleteUser(name string) error {
 	}
 	_, err := s.DB.Exec(`DELETE FROM users WHERE id=?`, id)
 	return err
+}
+
+// SetAdmin grants management access locally; keep at least one administrator.
+func (s *Service) SetAdmin(name string, enabled bool) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var id int64
+	var current bool
+	if err = tx.QueryRow(`SELECT id,is_admin FROM users WHERE name=?`, name).Scan(&id, &current); err != nil {
+		return errors.New("用户不存在")
+	}
+	if current && !enabled {
+		var count int
+		if err = tx.QueryRow(`SELECT count(*) FROM users WHERE is_admin=1`).Scan(&count); err != nil {
+			return err
+		}
+		if count <= 1 {
+			return errors.New("至少保留一个管理员")
+		}
+	}
+	if _, err = tx.Exec(`UPDATE users SET is_admin=? WHERE id=?`, enabled, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

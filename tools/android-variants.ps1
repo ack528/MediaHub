@@ -3,11 +3,11 @@
 #   -Personal :出自用版(带 Lossless.dll),放到 dist\
 # 为什么单独一个脚本、而不是 Start-Job:Job 的输出是管道,Gradle 守护进程会继承这根管道,守护进程不退出管道就不关,
 # 主脚本 Receive-Job -Wait 就一直等(曾经卡了 10 多分钟,而构建 2 分钟就结束了)。这里由主脚本用 Start-Process + 文件重定向启动,守护进程想留多久都不影响。
-param([string]$Version, [switch]$Release, [switch]$Personal)
+param([string]$Version, [switch]$Release, [switch]$Personal, [string]$ReleaseDirectory = '')
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Dist = Join-Path $Root 'dist'
-$RelDir = Join-Path $Dist 'release'
+$RelDir = if ($ReleaseDirectory) { [IO.Path]::GetFullPath($ReleaseDirectory) } else { Join-Path $Dist 'release' }
 $dll = Join-Path $Root 'android\app\src\main\assets\lsfg\Lossless.dll'
 $dllHold = Join-Path $Dist 'Lossless.dll.hold'
 $apk = Join-Path $Root 'android\app\build\outputs\apk\release\app-release.apk'

@@ -183,6 +183,18 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
 
     private val base: String get() = store.session.value?.baseUrl ?: error("未登录")
 
+    suspend fun serverManagementStatus(): kotlinx.serialization.json.JsonObject = call(Request.Builder().url("$base/api/v1/manage/status").build())
+    suspend fun serverConfiguration(): ServerConfiguration = call(Request.Builder().url("$base/api/v1/manage/config").build())
+    suspend fun saveServerConfiguration(revision: String, changes: Map<String, kotlinx.serialization.json.JsonElement>) {
+        val payload = kotlinx.serialization.json.buildJsonObject {
+            put("revision", kotlinx.serialization.json.JsonPrimitive(revision))
+            put("changes", kotlinx.serialization.json.JsonObject(changes))
+        }
+        send(Request.Builder().url("$base/api/v1/manage/config").put(payload.toString().toRequestBody(json)).build())
+    }
+    suspend fun restartServer() = send(Request.Builder().url("$base/api/v1/manage/restart").post("{}".toRequestBody(json)).build())
+    suspend fun rescanServer() = send(Request.Builder().url("$base/api/v1/manage/rescan").post("{}".toRequestBody(json)).build())
+
     private suspend inline fun <reified T> call(request: Request): T = AppJson.decodeFromString<T>(callBody(request))
 
     /**

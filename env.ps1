@@ -39,6 +39,8 @@ $env:GRADLE_OPTS        = "-Dorg.gradle.workers.max=$($env:BUILD_JOBS) -Dfile.en
 
 # 其它
 $env:MEDIAHUB_ROOT = $Root
+$env:MEDIAHUB_DEV = '1'
+$env:MEDIAHUB_CONFIG = Join-Path $Root 'runtime\mediahub\config.json'
 $env:PATH = @(
   "$T\jdk\bin", "$T\gradle\bin", "$T\go\bin", "$T\gopath\bin",
   "$T\android-sdk\cmdline-tools\latest\bin", "$T\android-sdk\platform-tools",

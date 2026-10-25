@@ -90,6 +90,18 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: (() ->
     LaunchedEffect(Unit) { if (c.settings.value.randomSeed == 0L) c.settings.update { copy(randomSeed = newRandomSeed(randomSeed)) } }
     val grid = rememberLazyGridState()
     val scope = rememberCoroutineScope()
+    var slidesDialog by remember { mutableStateOf(false) }
+    var slidesLoading by remember { mutableStateOf(false) }
+    val slidesContext = androidx.compose.ui.platform.LocalContext.current
+    if (slidesDialog) SlideshowDialog(st, true, { slidesDialog = false }) { options ->
+        slidesDialog = false
+        slidesLoading = true
+        scope.launch {
+            try { openSlideshow(slidesContext, c, options, onOpenViewer) { com.localtg.data.randomSlideshow(c.api, roots, seed, options) } }
+            finally { slidesLoading = false }
+        }
+    }
+
 
     fun explain(e: Throwable) =
         if (e is ApiException && e.http == 404) "服务端版本太旧,不支持随机浏览。请把服务端更新到 1.7.0 或更新的版本。" else friendlyError(e)
@@ -160,6 +172,7 @@ fun RandomScreen(c: AppContainer, label: String?, roots: String?, onBack: (() ->
             Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) { // 顶栏内容高 56dp(Telegram)
                 if (onBack != null) BarIcon(TgIcons.Back, "返回", onBack) else Spacer(Modifier.width(12.dp))
                 Text(if (label != null) "随机浏览 · $label" else "随机浏览", Modifier.weight(1f).padding(start = if (onBack != null) 14.dp else 10.dp), color = tg.barText, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                BarIcon(TgIcons.Play, "幻灯片播放") { if (!slidesLoading) slidesDialog = true }
                 BarIcon(TgIcons.Refresh, "重新洗牌") { c.settings.update { copy(randomSeed = newRandomSeed(randomSeed)) } }
             }
             Row(Modifier.fillMaxWidth()) {

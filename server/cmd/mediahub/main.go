@@ -46,7 +46,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "3.3.3"
+const version = "3.4.0"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -101,7 +101,7 @@ func main() {
 // 并写回配置文件 —— 不用每次更新都重新添加媒体根目录。
 // 优先恢复上次还处于启用状态的;没有的话(例如已经用空配置启动过一次,全被停用了),配置文件缺失时恢复所有登记过且路径还在的。
 func restoreRoots(db *sql.DB, cfg *config.Config, log *slog.Logger) {
-	if len(cfg.Roots) > 0 {
+	if len(cfg.Roots) > 0 || !cfg.RootsUnset {
 		return
 	}
 	query := func(q string) []config.Root {
@@ -144,15 +144,26 @@ func restoreRoots(db *sql.DB, cfg *config.Config, log *slog.Logger) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "用法: mediahub serve|scan [-config path] | user add|passwd <name> | version")
+	fmt.Fprintln(os.Stderr, "用法: mediahub serve|scan [-config path] | user add|passwd|delete <name> | user list | user admin <name> [-grant=true|false] [-config path] | version")
 }
 
 func loadCfg(fs *flag.FlagSet, args []string) (*config.Config, *slog.Logger, error) {
 	pr := projectRoot()
-	cfgPath := fs.String("config", filepath.Join(pr, "runtime", "mediahub", "config.json"), "配置文件")
+	cfgPath := fs.String("config", config.DefaultPath(pr), "配置文件")
 	debugFlag := fs.Bool("debug", false, "输出调试日志")
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, err
+	}
+	var explicit bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			explicit = true
+		}
+	})
+	if explicit {
+		if _, err := os.Stat(*cfgPath); err != nil {
+			return nil, nil, fmt.Errorf("指定的配置文件不可读: %w", err)
+		}
 	}
 	cfg, err := config.Load(*cfgPath, pr)
 	if err != nil {
@@ -460,9 +471,10 @@ func run(args []string, serve bool) int {
 		logx.Go("自动更新", func() { srv.Update.Run(ctx) })
 	}
 	srv.WarmRandom(ctx)
-	srv.Render.Gov = gov // 播放 / 传输期间图片转换最多 2 路同时
-	srv.StartOptimizeWorker(ctx) // 存储优化:视频压缩队列(没有任务时什么都不做)
-	srv.StartClients(ctx)        // 客户端连接追踪:速度采样、过期清理
+	srv.Restart = func() error { return update.Restart(projectRoot(), cfg.Path, stop) }
+	srv.Render.Gov = gov                        // 播放 / 传输期间图片转换最多 2 路同时
+	srv.StartOptimizeWorker(ctx)                // 存储优化:视频压缩队列(没有任务时什么都不做)
+	srv.StartClients(ctx)                       // 客户端连接追踪:速度采样、过期清理
 	go dbMaintenance(ctx, db, cfg.DataDir, log) // 数据库:PRAGMA optimize + 每日自动备份
 	// 内网穿透:托管 frpc / 自定义穿透客户端(配置了才启动),掉线自动重连,定期探测外网地址
 	if cfg.Tunnel.Enabled {
@@ -527,7 +539,7 @@ func run(args []string, serve bool) int {
 }
 
 func userCmd(args []string) int {
-	if len(args) < 1 || (args[0] != "add" && args[0] != "passwd" && args[0] != "list" && args[0] != "delete") {
+	if len(args) < 1 || (args[0] != "add" && args[0] != "passwd" && args[0] != "list" && args[0] != "delete" && args[0] != "admin") {
 		usage()
 		return 2
 	}
@@ -540,6 +552,7 @@ func userCmd(args []string) int {
 		rest = args[2:]
 	}
 	fs := flag.NewFlagSet("user", flag.ExitOnError)
+	grant := fs.Bool("grant", true, "授予管理员权限，false 为撤销")
 	cfg, _, err := loadCfg(fs, rest)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "配置错误:", err)
@@ -560,6 +573,12 @@ func userCmd(args []string) int {
 			return 1
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(users)
+		return 0
+	case "admin":
+		if err := a.SetAdmin(args[1], *grant); err != nil {
+			fmt.Fprintln(os.Stderr, "失败:", err)
+			return 1
+		}
 		return 0
 	case "delete":
 		if err := a.DeleteUser(args[1]); err != nil {
@@ -591,4 +610,3 @@ func appUpdateDir(on bool, dataDir string) string {
 	}
 	return filepath.Join(dataDir, "app-update")
 }
-

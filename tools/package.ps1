@@ -7,13 +7,14 @@
 # 桌面端(Rust)、Android、Go 三条编译互不依赖,会同时跑;Android 的第二套(带 DLL)只重新打包,不重新编译 Kotlin。
 # 前提:已运行过 tools\setup.ps1(便携工具链),signing\ 下有 Android 发布密钥(没有则用调试签名)。
 param(
-  [string]$Version = '4.0.2',          # 手机端(APK)版本号
+  [string]$Version = '4.1.0',          # 手机端(APK)版本号
   [string]$ServerVersion = '',        # 服务端 / 管理程序版本号;留空 = 取 desktop\package.json 里的 version
   [switch]$SkipAndroid,
   [switch]$SkipDesktop,
   [switch]$SkipTests,
   [switch]$Release,                   # 发布到 GitHub 用:APK 不内置 Lossless.dll(版权),另出自动更新用的 -update.zip,产物放 dist\release\
   [switch]$Both,                      # 自用版和发布版一次打完(桌面端只编译一次)
+  [string]$ReleaseDirectory = '',    # 可指定候选目录，验证完成后再替换正式交付目录
   [switch]$Changed                    # 只打有改动的那一端(见上面的说明)
 )
 $ErrorActionPreference = 'Stop'
@@ -43,7 +44,8 @@ if (-not $ServerVersion) { $ServerVersion = (Get-Content (Join-Path $Root 'deskt
 $Dist = Join-Path $Root 'dist'
 $Stage = Join-Path $Dist 'stage'
 New-Item -ItemType Directory -Force $Dist | Out-Null
-$RelDir = Join-Path $Dist 'release'   # -Release 的产物(要上传到 GitHub 的文件)
+$RelDir = if ($ReleaseDirectory) { [IO.Path]::GetFullPath($ReleaseDirectory) } else { Join-Path $Dist 'release' }   # -Release 的产物(要上传到 GitHub 的文件)
+if (-not $RelDir.StartsWith(([IO.Path]::GetFullPath($Dist) + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw '发布目录必须位于当前项目 dist 内' }
 if ($Release) { if (Test-Path $RelDir) { Remove-Item -LiteralPath $RelDir -Recurse -Force }; New-Item -ItemType Directory -Force $RelDir | Out-Null }
 
 # 更新日志:根目录 CHANGELOG.md 是唯一来源,打包时同步一份到手机端 assets 和管理程序 src(程序里「更新说明」显示它)
@@ -81,7 +83,7 @@ if (-not $SkipAndroid) {
   $androidLog = Join-Path $Dist 'logs\android-variants.log'
   New-Item -ItemType Directory -Force (Split-Path -Parent $androidLog) | Out-Null
   $aa = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'android-variants.ps1'), '-Version', $Version)
-  if ($Release) { $aa += '-Release' }
+  if ($Release) { $aa += @('-Release', '-ReleaseDirectory', ('"' + $RelDir + '"')) }
   if ($Personal) { $aa += '-Personal' }
   # 用 Start-Process + 文件重定向,不用 Start-Job:Job 的输出是管道,Gradle 守护进程继承了这根管道,守护进程不退出管道就不关,这里会一直等
   $procAndroid = Start-Process -FilePath 'powershell.exe' -ArgumentList $aa -NoNewWindow -PassThru -RedirectStandardOutput $androidLog -RedirectStandardError "$androidLog.err"

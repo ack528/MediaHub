@@ -11,9 +11,9 @@ import (
 	"net"
 	"net/http"
 	"runtime/debug"
-	"sync"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"mediahub/internal/auth"
@@ -56,15 +56,17 @@ type Server struct {
 	// LoginDelay 登录失败后的延迟(测试里置 0)
 	LoginDelay time.Duration
 	// LoginLock 任何设备登录失败后,所有设备在这段时间内都不能再验证密码(0 = 不锁定,见 loginlock.go)
-	LoginLock time.Duration
-	loginG    loginGuard
-	compatOnce sync.Once // 兼容版本(只转需要转的部分),见 compat.go
-	compatJ    *compatJobs
+	LoginLock    time.Duration
+	loginG       loginGuard
+	compatOnce   sync.Once // 兼容版本(只转需要转的部分),见 compat.go
+	compatJ      *compatJobs
 	posterWarned sync.Map // 封面生成失败已经警告过的媒体 id
 	// AdminKey:桌面管理程序用的本机密钥。仅当请求来自回环地址且带正确的 X-Admin-Key 时放行。
 	AdminKey string
 	// StartedAt:服务启动时间,用于状态页显示运行时长
 	StartedAt time.Time
+	Restart   func() error
+	configMu  sync.Mutex
 	// Update:自动更新(可为空)
 	Update *update.Updater
 }
@@ -103,7 +105,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/random", authd(s.random))
 	mux.Handle("POST /api/v1/random/reset", authd(s.randomReset))
 	mux.Handle("GET /api/v1/server/addresses", authd(s.serverAddresses))
-	mux.Handle("GET /api/v1/app/update", authd(s.appUpdate))     // 手机端安装包:服务端缓存的最新版本(见 update/app.go)
+	mux.Handle("GET /api/v1/manage/status", authd(s.remoteStatus))
+	mux.Handle("GET /api/v1/manage/config", authd(s.remoteAdmin(s.remoteConfig)))
+	mux.Handle("PUT /api/v1/manage/config", authd(s.remoteAdmin(s.remoteSaveConfig)))
+	mux.Handle("POST /api/v1/manage/restart", authd(s.remoteAdmin(s.remoteRestart)))
+	mux.Handle("POST /api/v1/manage/rescan", authd(s.remoteAdmin(s.adminRescan)))
+	mux.Handle("GET /api/v1/app/update", authd(s.appUpdate))        // 手机端安装包:服务端缓存的最新版本(见 update/app.go)
 	mux.Handle("GET /api/v1/app/update.apk", authd(s.appUpdateApk)) // 下载缓存好的安装包(支持断点续传)
 	mux.Handle("GET /api/v1/admin/clients", s.adminOnly(s.adminClients))
 	mux.Handle("POST /api/v1/admin/clients/kick", s.adminOnly(s.adminClientKick))
@@ -408,7 +415,8 @@ func (s *Server) capabilities() map[string]any {
 		max = 6_000_000
 	}
 	return map[string]any{
-		"codecs": codecs, "qsvH264": qsv264, "qsvH265": qsv265, "maxTranscodeBitrate": max,
+		"serverManagement": true,
+		"codecs":           codecs, "qsvH264": qsv264, "qsvH265": qsv265, "maxTranscodeBitrate": max,
 		"probing": probing, "speedtest": true, "playerPrefs": true, "hlsPrepare": true, "compat": s.Cfg.Tools.FFmpeg != "", "gzip": true, "optimize": true, "thumbWebp": s.Render != nil && s.Cfg.Images.FallbackConvert,
 	}
 }
