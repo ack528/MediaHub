@@ -2,6 +2,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
@@ -24,6 +25,7 @@ type Service struct {
 	DB        *sql.DB
 	TokenDays int
 	iter      int
+	touchSlot chan struct{}
 }
 
 // SetIterations 仅供测试降低 PBKDF2 迭代次数。
@@ -33,7 +35,7 @@ func New(db *sql.DB, tokenDays int) *Service {
 	if tokenDays <= 0 {
 		tokenDays = 180
 	}
-	return &Service{DB: db, TokenDays: tokenDays, iter: iterations}
+	return &Service{DB: db, TokenDays: tokenDays, iter: iterations, touchSlot: make(chan struct{}, 1)}
 }
 
 // HashPassword 返回 "pbkdf2-sha256$迭代次数$盐$哈希"。
@@ -139,23 +141,41 @@ func (s *Service) Verify(token string) (userID int64, ok bool) {
 
 // VerifyInfo 同 Verify,另外返回令牌的标识(哈希前 12 位十六进制,不可逆,用来区分是哪台设备登录的)和登录时填的设备名。
 func (s *Service) VerifyInfo(token string) (userID int64, id string, device string, ok bool) {
+	userID, id, device, ok, _ = s.VerifyInfoContext(context.Background(), token)
+	return
+}
+
+// Last-seen maintenance must never turn an otherwise valid token into a blocking write request.
+func (s *Service) VerifyInfoContext(ctx context.Context, token string) (userID int64, id string, device string, ok bool, err error) {
 	if token == "" {
-		return 0, "", "", false
+		return 0, "", "", false, nil
 	}
 	h := tokenHash(token)
 	var exp, seen int64
 	var dev sql.NullString
-	if err := s.DB.QueryRow(`SELECT user_id, expires, last_seen, device FROM tokens WHERE hash=?`, h).Scan(&userID, &exp, &seen, &dev); err != nil {
-		return 0, "", "", false
+	if err = s.DB.QueryRowContext(ctx, `SELECT user_id, expires, last_seen, device FROM tokens WHERE hash=?`, h).Scan(&userID, &exp, &seen, &dev); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			err = nil
+		}
+		return 0, "", "", false, err
 	}
 	now := time.Now()
 	if exp < now.Unix() {
-		return 0, "", "", false
+		return 0, "", "", false, nil
 	}
 	if now.Unix()-seen > 3600 {
-		_, _ = s.DB.Exec(`UPDATE tokens SET last_seen=?, expires=? WHERE hash=?`, now.Unix(), now.AddDate(0, 0, s.TokenDays).Unix(), h)
+		select {
+		case s.touchSlot <- struct{}{}:
+			go func() {
+				defer func() { <-s.touchSlot }()
+				touchCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				_, _ = s.DB.ExecContext(touchCtx, `UPDATE tokens SET last_seen=?, expires=? WHERE hash=? AND last_seen<?`, now.Unix(), now.AddDate(0, 0, s.TokenDays).Unix(), h, now.Unix()-3600)
+			}()
+		default:
+		}
 	}
-	return userID, h[:12], dev.String, true
+	return userID, h[:12], dev.String, true, nil
 }
 
 // UserName 用户名(不存在返回空)。

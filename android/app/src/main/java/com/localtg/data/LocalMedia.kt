@@ -288,6 +288,18 @@ class LocalMedia(private val ctx: Context) {
         return s to e
     }
 
+    fun shuffle(types: Set<String>, seed: Long, cursor: String?, dialog: String?, query: String?, limit: Int): HistoryResp {
+        ensure()
+        val multiplier = (seed * 48271L) % 2147483646L + 1L
+        fun key(i: LItem) = (((i.id % 2147483647L) * multiplier) % 2147483647L + seed) % 2147483647L
+        val list = all.filter { it.type in types && (dialog == null || it.bucketId.toString() == dialog) && (query.isNullOrBlank() || it.name.contains(query, ignoreCase = true)) }
+            .sortedWith(compareBy<LItem> { key(it) }.thenBy { it.id })
+        val after = cursor?.split(':')
+        val at = if (after == null) 0 else list.indexOfFirst { key(it) > after[0].toLong() || key(it) == after[0].toLong() && it.id > after[1].toLong() }.let { if (it < 0) list.size else it }
+        val page = list.drop(at).take(limit.coerceIn(1, 120))
+        return HistoryResp(page.map { toItem(it, it.bucketId.toString()) }, nextCursor = if (at + page.size < list.size) page.last().let { "${key(it)}:${it.id}" } else null)
+    }
+
     fun search(q: String, types: Set<String>, cursor: String?, limit: Int, dialog: String? = null): HistoryResp {
         ensure()
         val term = q.trim().lowercase()
@@ -444,6 +456,7 @@ class LocalInterceptor(private val local: LocalMedia) : Interceptor {
             p == listOf("search") -> json(
                 req, AppJson.encodeToString(local.search(q.queryParameter("q").orEmpty(), types(), q.queryParameter("cursor"), q.queryParameter("limit")?.toIntOrNull() ?: 60, q.queryParameter("dialog"))),
             )
+            p == listOf("shuffle") -> json(req, AppJson.encodeToString(local.shuffle(types(), q.queryParameter("seed")?.toLongOrNull() ?: 1L, q.queryParameter("cursor"), q.queryParameter("dialog"), q.queryParameter("q"), q.queryParameter("limit")?.toIntOrNull() ?: 60)))
             p == listOf("random", "reset") -> json(req, """{"ok":true}""")
             p == listOf("random") -> json(req, AppJson.encodeToString(local.random(types(), q.queryParameter("limit")?.toIntOrNull() ?: 60, q.queryParameter("seed")?.toLongOrNull() ?: 0L, q.queryParameter("batch")?.toIntOrNull() ?: 0)))
             p.size >= 3 && p[0] == "media" -> {

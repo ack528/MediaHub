@@ -303,6 +303,16 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     }
 
     /** 让服务端清除所有历史随机序列并重新生成(服务端 1.8.0 起)。 */
+    suspend fun shuffle(scope: SlideScope, seed: Long, cursor: String?): HistoryResp {
+        val url = "$base/api/v1/shuffle".toHttpUrl().newBuilder()
+            .addQueryParameter("types", scope.mediaTypes).addQueryParameter("seed", seed.toString()).addQueryParameter("limit", "60")
+        scope.dialog?.let { url.addQueryParameter("dialog", it) }
+        scope.roots?.let { url.addQueryParameter("roots", it) }
+        scope.search?.let { url.addQueryParameter("q", it) }
+        cursor?.let { url.addQueryParameter("cursor", it) }
+        return call(Request.Builder().url(url.build()).build())
+    }
+
     suspend fun randomReset() {
         send(Request.Builder().url("$base/api/v1/random/reset").post("".toRequestBody()).build())
     }

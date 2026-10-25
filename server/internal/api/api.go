@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/state/playback", authd(s.clearPlayback))
 	mux.Handle("GET /api/v1/search", authd(s.search))
 	mux.Handle("GET /api/v1/random", authd(s.random))
+	mux.Handle("GET /api/v1/shuffle", authd(s.shuffle))
 	mux.Handle("POST /api/v1/random/reset", authd(s.randomReset))
 	mux.Handle("GET /api/v1/server/addresses", authd(s.serverAddresses))
 	mux.Handle("GET /api/v1/manage/status", authd(s.remoteStatus))
@@ -252,11 +253,18 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeErr(w, 401, "auth.required", "需要登录")
 			return
 		}
-		uid, tokID, device, ok := s.Auth.VerifyInfo(strings.TrimSpace(tok))
+		verifyCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		uid, tokID, device, ok, err := s.Auth.VerifyInfoContext(verifyCtx, strings.TrimSpace(tok))
+		cancel()
+		if err != nil {
+			writeErr(w, 503, "auth.busy", "服务器数据库暂时繁忙，请稍后重试")
+			return
+		}
 		if !ok {
 			writeErr(w, 401, "auth.expired", "令牌无效或已过期")
 			return
 		}
+		s.Gov.ClientActivity()
 		if ri := riFrom(r.Context()); ri != nil && s.Clients != nil { // 登记这个客户端,并通知 governor
 			s.Clients.begin(ri, r, uid, tokID, device)
 		}
@@ -415,8 +423,8 @@ func (s *Server) capabilities() map[string]any {
 		max = 6_000_000
 	}
 	return map[string]any{
-		"serverManagement": true,
-		"codecs":           codecs, "qsvH264": qsv264, "qsvH265": qsv265, "maxTranscodeBitrate": max,
+		"serverManagement": true, "shuffleQueue": true,
+		"codecs": codecs, "qsvH264": qsv264, "qsvH265": qsv265, "maxTranscodeBitrate": max,
 		"probing": probing, "speedtest": true, "playerPrefs": true, "hlsPrepare": true, "compat": s.Cfg.Tools.FFmpeg != "", "gzip": true, "optimize": true, "thumbWebp": s.Render != nil && s.Cfg.Images.FallbackConvert,
 	}
 }

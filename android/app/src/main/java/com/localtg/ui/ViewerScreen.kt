@@ -19,6 +19,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
@@ -63,62 +64,126 @@ import me.saket.telephoto.zoomable.coil3.ZoomableAsyncImage
 /** 全屏查看器:左右滑动切换;图片可缩放;视频自动开始播放(当前页),带宽只在翻到该页时才使用。 */
 @Composable
 fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent: (Item) -> Unit = {}) {
-    val feed = c.viewerFeed
+    var feed by remember { mutableStateOf(c.viewerFeed) }
     val items = feed.items
     if (items.isEmpty()) { onBack(); return }
     val cfg = LocalSettings.current
     val ctx = LocalContext.current
     val act = remember(ctx) { ctx.findActivity() }
     val pager = rememberPagerState(initialPage = startIndex.coerceIn(0, items.lastIndex)) { items.size }
-    val ui = remember { ViewerUi().apply { slideshowMode = feed.slideshow != null } }
+    val ui = remember { ViewerUi() }
     val scope = rememberCoroutineScope()
     val inPip by c.inPip.collectAsState()
-    val cur = items[pager.currentPage]
+    val cur = items[pager.currentPage.coerceIn(0, items.lastIndex)]
     var slideReady by remember { mutableStateOf<String?>(null) }
-    var slideMessage by remember { mutableStateOf("") }
     var advancing by remember { mutableStateOf(false) }
     var waitingForNext by remember { mutableStateOf(false) }
-    var slidesFinished by remember { mutableStateOf(false) }
-    suspend fun advanceSlide() {
-        if (advancing) return
+    var videoEnded by remember { mutableStateOf<String?>(null) }
+    var startJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var menuGrace by remember { mutableStateOf(false) }
+    val slides = ui.slides
+    val namespace = c.session.ns()
+    fun notify(text: String) { android.widget.Toast.makeText(ctx, text, android.widget.Toast.LENGTH_SHORT).show() }
+    suspend fun advanceSlide(manual: Boolean = false) {
+        if (!slides.active || advancing || slides.preparing) return
         advancing = true
+        val expectedFeed = feed
         try {
             val next = pager.settledPage + 1
-            if (next >= items.size && !feed.exhausted) feed.loadMore()
+            // Empty or duplicate pages are not proof of exhaustion. Bound one attempt, then allow retry.
+            var attempts = 0
+            while (next >= items.size && !feed.exhausted && attempts++ < 3) feed.loadMore()
+            if (!slides.active || feed !== expectedFeed || slides.preparing) return
+            if (!manual && (ui.menuOpen || ui.touching || pager.isScrollInProgress)) return
             if (next < items.size) {
-                waitingForNext = false; slidesFinished = false; slideMessage = ""; slideReady = null
-                pager.scrollToPage(next)
+                videoEnded = null; waitingForNext = false
+                slides.ready()
+                pager.animateScrollToPage(next)
+            } else if (feed.exhausted) {
+                slides.end(); ui.chrome = true; notify("本轮已播放完毕")
             } else {
-                ui.slideshowPlaying = false
-                slidesFinished = feed.exhausted
-                waitingForNext = !feed.exhausted
-                slideMessage = if (feed.exhausted) "本轮已播放完毕" else "加载下一批失败，点击继续重试"
+                waitingForNext = true; slides.pause("加载下一项失败，可点击继续重试"); ui.chrome = true; notify("加载下一项失败，可在幻灯片菜单重试")
             }
         } finally { advancing = false }
     }
+    androidx.compose.runtime.SideEffect {
+        ui.slideSource = feed.slideSource
+        ui.startSlides = { options ->
+            if (!slides.preparing) {
+                val anchor = cur
+                val source = feed.slideSource ?: com.localtg.data.SlideSource(
+                    com.localtg.data.SlideScope(items.map { it.type }.distinct().joinToString(",")),
+                    sequence = com.localtg.data.SlideSequence(items.toList()))
+                slides.preparing = true
+                startJob = scope.launch {
+                    try {
+                        val queue = com.localtg.data.createSlideshow(source, com.localtg.data.ApiSlideLibrary(c.api), anchor, options, kotlin.random.Random.nextLong(1, 2147483647))
+                        if (c.session.ns() != namespace) return@launch
+                        ui.slideResume = if (anchor.isVideo) ui.capturePosition()?.takeIf { it.first == anchor.id } else null
+                        pager.requestScrollToPage(0)
+                        feed = queue; c.viewerFeed = queue; videoEnded = null; waitingForNext = false
+                        slides.start(options)
+                        c.settings.update { copy(slideshowSeconds = options.imageSeconds, slideshowOrder = options.order) }
+                        ui.dismissMenus++
+                        ui.chrome = false
+                    } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (e: Exception) {
+                        val text = if (e is com.localtg.data.ApiException && e.http == 404) "随机播放需要升级服务端到 3.4.1" else com.localtg.data.friendlyError(e)
+                        notify(text); AppLog.w("slideshow", "创建播放队列失败", e)
+                    } finally { slides.preparing = false }
+                }
+            }
+        }
+        ui.stopSlides = { startJob?.cancel(); slides.stop(); videoEnded = null; ui.chrome = true }
+        ui.nextSlide = { scope.launch { advanceSlide(true) } }
+        ui.toggleSlides = {
+            when {
+                slides.finished -> scope.launch { pager.scrollToPage(0); videoEnded = null; ui.restartVideo++; slides.start(slides.options!!); ui.chrome = false }
+                waitingForNext -> { slides.resume(); scope.launch { advanceSlide(true) } }
+                slides.failed -> { ui.chrome = true; notify("当前文件未能加载，可切换下一项") }
+                slides.playing -> slides.pause()
+                else -> { slides.resume() }
+            }
+        }
+    }
+    LaunchedEffect(cur.id) { startJob?.cancel(); slides.preparing = false; ui.photoZoomed = false; ui.menuOpen = false; if (!cur.isVideo) ui.locked = false }
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, feed) {
+    DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (ui.slideshowMode && event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) ui.slideshowPlaying = false
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) { slides.pause(); startJob?.cancel() }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer); startJob?.cancel() }
     }
-    val slideView = androidx.compose.ui.platform.LocalView.current
-    DisposableEffect(ui.slideshowMode, ui.slideshowPlaying) {
-        val old = slideView.keepScreenOn
-        if (ui.slideshowMode) slideView.keepScreenOn = ui.slideshowPlaying
-        onDispose { slideView.keepScreenOn = old }
-    }
-    LaunchedEffect(cur.id, slideReady, ui.slideshowPlaying, pager.isScrollInProgress) {
-        if (ui.slideshowMode && ui.slideshowPlaying && !pager.isScrollInProgress && !cur.isVideo && slideReady == cur.id) {
-            kotlinx.coroutines.delay(feed.slideshow!!.imageSeconds.coerceIn(3, 60) * 1000L)
-            advanceSlide()
+    LaunchedEffect(ui.sleepAt, slides.active) {
+        val at = ui.sleepAt
+        if (slides.active && at > 0) {
+            kotlinx.coroutines.delay((at - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0))
+            slides.pause(); ui.sleepAt = 0; notify("睡眠定时到点，已暂停")
         }
     }
-
-    // 翻到接近已加载内容的末尾时,继续取更多(聊天历史 / 搜索结果),不会只能翻到第一页
-    LaunchedEffect(pager.currentPage, items.size) { if (pager.currentPage >= items.size - 5) feed.loadMore() }
+    val slideView = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(slides.playing) {
+        val old = slideView.keepScreenOn
+        if (slides.active) slideView.keepScreenOn = slides.playing
+        onDispose { slideView.keepScreenOn = old }
+    }
+    // A menu is a temporary hold, not a user pause. Give the picture a full interval when it closes.
+    LaunchedEffect(ui.menuOpen) { menuGrace = true; if (!ui.menuOpen) { kotlinx.coroutines.delay(300); menuGrace = false } }
+    LaunchedEffect(cur.id, slideReady, slides.playing, slides.epoch, slides.options?.imageSeconds, pager.isScrollInProgress, ui.menuOpen, ui.touching, ui.photoZoomed, menuGrace, slides.preparing) {
+        if (slides.canAdvance(ui.menuOpen, ui.touching, pager.isScrollInProgress, ui.photoZoomed) && !menuGrace && !cur.isVideo && slideReady == cur.id) {
+            kotlinx.coroutines.delay(slides.options!!.imageSeconds.coerceIn(3, 60) * 1000L)
+            if (ui.sleepAt == -1L) { ui.sleepAt = 0L; slides.pause() } else scope.launch { advanceSlide() }
+        }
+    }
+    LaunchedEffect(cur.id, videoEnded, slides.playing, ui.menuOpen, ui.touching, pager.isScrollInProgress, slides.preparing) {
+        if (slides.canAdvance(ui.menuOpen, ui.touching, pager.isScrollInProgress) && videoEnded == cur.id) scope.launch { advanceSlide() }
+    }
+    LaunchedEffect(cur.id) { if (videoEnded != cur.id) videoEnded = null }
+    // Prefetch never runs concurrently with starting/replacing a slideshow queue.
+    LaunchedEffect(feed, pager.currentPage, items.size, slides.preparing) {
+        if (!slides.preparing && pager.currentPage >= items.size - 5) feed.loadMore()
+    }
     val hapV = LocalHaptics.current
     LaunchedEffect(pager) { // 翻到另一项时轻震一下(第一次是打开时的初始页,不震)
         var first = true
@@ -189,7 +254,11 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
     // 翻页方向:向右滑 = 上一个(设置里可改)。列表序号和屏幕上的先后可能相反(聊天流最新在底部),所以按"上一个是不是序号更大的一项"决定
     val prevDelta = if (feed.prevIsHigherIndex) 1 else -1
     val reverse = feed.prevIsHigherIndex == cfg.rightSwipePrev
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) ui.touching = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial).changes.any { it.pressed }
+        }
+    }) {
         HorizontalPager(
             pager, Modifier.fillMaxSize(), beyondViewportPageCount = if (settled) cfg.viewerPreload else 0, key = { items[it].id }, reverseLayout = reverse,
             userScrollEnabled = !ui.locked && !videoSwipeSeek,
@@ -199,20 +268,23 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
             if (item.isVideo) {
                 VideoPage(
                     item, c, isCurrent, ui, onBack = onBack,
-                    onPrev = if (page + prevDelta in items.indices) { { scope.launch { pager.animateScrollToPage(page + prevDelta) } } } else null,
-                    onNext = if (page - prevDelta in items.indices) { { scope.launch { pager.animateScrollToPage(page - prevDelta) } } } else null,
+                    onPrev = if (page + (if (slides.active) -1 else prevDelta) in items.indices) { { scope.launch { pager.animateScrollToPage(page + (if (slides.active) -1 else prevDelta)) } } } else null,
+                    onNext = if (slides.active && !slides.finished) { { scope.launch { advanceSlide(true) } } } else if (page - prevDelta in items.indices) { { scope.launch { pager.animateScrollToPage(page - prevDelta) } } } else null,
                     onEnded = {
-                        if (ui.slideshowMode) { if (ui.slideshowPlaying) scope.launch { advanceSlide() } }
+                        if (ui.slideshowMode) {
+                            if (ui.sleepAt == -1L) { ui.sleepAt = 0L; slides.pause() }
+                            videoEnded = item.id
+                        }
                         else if (ui.sleepAt == -1L) { ui.sleepAt = 0L; AppLog.i("player", "睡眠定时:播完停止") }
                         else if (c.settings.value.autoNext && page - prevDelta in items.indices) scope.launch { pager.animateScrollToPage(page - prevDelta) }
                     },
-                    onSlideError = { ui.slideshowPlaying = false; slideMessage = "视频无法播放，可重试或跳过" },
+                    onSlideError = { slides.fail("视频无法播放，可重试或跳过"); ui.chrome = true },
                 )
             } else {
                 PhotoPage(item, c, ui, shared = pager.settledPage == page, onSlideReady = { ok ->
                     if (pager.settledPage == page) {
                         slideReady = item.id
-                        if (!ok && ui.slideshowMode) { ui.slideshowPlaying = false; slideMessage = "图片加载失败，可跳过" }
+                        if (!ok) { slides.fail("图片加载失败，可跳过"); ui.chrome = true } else slides.ready()
                     }
                 })
             }
@@ -220,7 +292,8 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
         // 图片的顶栏 / 底栏:和视频页同一套风格(渐变底、图标按钮、小字号),不再是一整块半透明黑条
         if (!cur.isVideo) {
             var panel by remember { mutableStateOf("") } // 右上角菜单(和视频页同一套):"" 关闭 / main / info
-            LaunchedEffect(cur.id) { panel = "" }
+            LaunchedEffect(cur.id, ui.dismissMenus) { panel = "" }
+            androidx.compose.runtime.SideEffect { ui.menuOpen = panel.isNotEmpty() }
             AnimatedVisibility(
                 rememberChromeState(ui, ui.chrome && !inPip), Modifier.align(Alignment.TopStart),
                 enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
@@ -254,6 +327,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
                             color = Color(0xB3FFFFFF), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
                         )
                     }
+                    if (slides.active) ViewerIcon(if (slides.playing) TgIcons.Pause else TgIcons.Play, if (slides.playing) "暂停幻灯片" else "继续幻灯片") { ui.toggleSlides() }
                     Pill("${pager.currentPage + 1} / ${items.size}", sizeSp = 12)
                 }
             }
@@ -262,37 +336,20 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
             val page = panel.ifEmpty { lastPage[0] }
             PlayerMenuHost(
                 open = panel.isNotEmpty() && !inPip,
-                title = if (page == "info") "图片信息" else null,
+                title = when (page) { "info" -> "图片信息"; "slides" -> "幻灯片播放"; else -> null },
                 onBack = { panel = "main" },
                 onClose = { panel = "" },
             ) {
-                if (page == "info") {
+                if (page == "slides") {
+                    SlideshowMenu(c, ui, feed.slideSource)
+                } else if (page == "info") {
                     photoInfoRows(cur).forEach { (k, v) -> MenuInfo(k, v) }
                 } else {
                     if (!c.isLocal && cur.size > 0L && !cur.flags.corrupt) {
                         MenuRow("保存到手机", arrow = false) { panel = ""; scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, cur) } }
                     }
+                    MenuRow("幻灯片播放", slideshowSummary(ui)) { panel = "slides" }
                     MenuRow("图片信息") { panel = "info" }
-                }
-            }
-        }
-        if (ui.slideshowMode && !inPip) {
-            Column(
-                Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp, start = 12.dp, end = 12.dp)
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(14.dp)).background(Color(0xCC101820)).padding(horizontal = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(slideMessage.ifEmpty { "幻灯片 · ${pager.settledPage + 1}${if (feed.exhausted) "/${items.size}" else ""} · 图片 ${feed.slideshow!!.imageSeconds}秒" }, color = Color.White, fontSize = 12.sp)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = {
-                        if (slidesFinished) {
-                            slidesFinished = false; slideMessage = ""
-                            scope.launch { pager.scrollToPage(0); ui.slideshowPlaying = true }
-                        } else if (waitingForNext) { ui.slideshowPlaying = true; scope.launch { advanceSlide() } }
-                        else { slideMessage = ""; ui.slideshowPlaying = !ui.slideshowPlaying }
-                    }) { Text(if (slidesFinished) "重播" else if (ui.slideshowPlaying) "暂停" else "继续", color = Color.White) }
-                    TextButton(enabled = !advancing, onClick = { scope.launch { advanceSlide() } }) { Text("下一项", color = Color.White) }
-                    TextButton(onClick = onBack) { Text("结束", color = Color.White) }
                 }
             }
         }
@@ -353,7 +410,7 @@ private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean
     // 放大了就告诉外层:这时上下拖是平移图片,不是拖拽关闭
     val zoomedNow = (zs.zoomableState.zoomFraction ?: 0f) > 0.01f
     val zoomReport = LocalViewerZoomReport.current
-    androidx.compose.runtime.SideEffect { zoomReport(item.id, zoomedNow) }
+    androidx.compose.runtime.SideEffect { zoomReport(item.id, zoomedNow); if (shared) ui.photoZoomed = zoomedNow }
     // 占位的缩略图或原图画出来了:告诉打开动画可以交接了
     // 最底下先垫上内存里的缩略图(第一帧就有,和打开动画同一张);大图显示出来以后就拿掉
     val based = if (!zs.isImageDisplayed) ViewerBaseThumb(item) else false

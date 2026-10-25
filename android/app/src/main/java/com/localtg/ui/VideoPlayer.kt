@@ -101,8 +101,23 @@ import kotlin.math.roundToInt
 /** 查看器级别的界面状态,所有页共享(控制条显示、锁定、方向、睡眠定时)。 */
 class ViewerUi {
     /** 当前这一页的视频正在用的转码码率(bps);null = 没在转码。查看器底部的信息条据此显示转码后的预估体积。 */
-    var slideshowMode by mutableStateOf(false)
-    var slideshowPlaying by mutableStateOf(true)
+    val slides = com.localtg.data.SlideshowPlayback()
+    val slideshowMode get() = slides.active
+    var slideshowPlaying: Boolean
+        get() = slides.playing
+        set(value) { if (value) slides.resume() else slides.pause() }
+    var menuOpen by mutableStateOf(false)
+    var photoZoomed by mutableStateOf(false)
+    var touching by mutableStateOf(false)
+    var dismissMenus by mutableIntStateOf(0)
+    var restartVideo by mutableIntStateOf(0)
+    var startSlides: (com.localtg.data.SlideshowOptions) -> Unit = {}
+    var stopSlides: () -> Unit = {}
+    var toggleSlides: () -> Unit = {}
+    var nextSlide: () -> Unit = {}
+    var slideSource: com.localtg.data.SlideSource? = null
+    var capturePosition: () -> Pair<String, Long>? = { null }
+    var slideResume: Pair<String, Long>? = null
     var transcodeBps by mutableStateOf<Int?>(null)
     var chrome by mutableStateOf(true)
     var locked by mutableStateOf(false)
@@ -198,6 +213,12 @@ fun VideoPage(
     val ns = remember { c.session.ns() }
     val base0 = remember { c.session.session.value?.baseUrl } // 打开时是哪台服务器(进度要同步回它)
     var player by remember { mutableStateOf<ExoPlayer?>(null) }
+    androidx.compose.runtime.SideEffect {
+        if (isCurrent) {
+            ui.capturePosition = { item.id to (player?.currentPosition ?: 0L) }
+            if (player != null && !ui.slides.preparing && ui.slideResume?.first == item.id) ui.slideResume = null
+        }
+    }
     var firstFrame by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var useSoftware by remember(item.id) { mutableStateOf(false) }       // 硬解失败后自动改软解重试一次
@@ -217,6 +238,9 @@ fun VideoPage(
     val lastSeek = remember(item.id) { longArrayOf(0L) }                    // 最近一次用户拖动进度的时间:拖动引起的缓冲不算卡顿
     var tCodec by remember(item.id) { mutableStateOf(com.localtg.data.DeviceCodecs.resolveCodec(c.settings.value.playerCodec, c.api.caps.codecs)) }
     var resumeMs by remember(item.id) { mutableLongStateOf(-1L) }        // -1 = 还没读取保存的进度
+    var preservePosition by remember { mutableStateOf(false) }
+    var appliedRestart by remember { mutableIntStateOf(ui.restartVideo) }
+
     var stats by remember { mutableStateOf("") }
     var enhStats by remember { mutableStateOf("") }
     var frcText by remember { mutableStateOf("") }
@@ -240,6 +264,9 @@ fun VideoPage(
     var hudTick by remember { mutableIntStateOf(0) }
     var dialog by remember { mutableStateOf("") }   // audio / text / speed / sleep / jump / info
     var panel by remember { mutableStateOf("") }   // 右上角菜单:"" 关闭 / main / speed / sub / audio / loop / enhance / quality / sleep / more
+    androidx.compose.runtime.SideEffect { if (isCurrent) ui.menuOpen = panel.isNotEmpty() }
+    LaunchedEffect(ui.dismissMenus) { panel = "" }
+
     var remaining by remember { mutableStateOf(false) }
 
     fun showHud(h: Hud) { hud = h; hudTick++ }
@@ -276,7 +303,8 @@ fun VideoPage(
     LaunchedEffect(isCurrent, item.id) {
         if (isCurrent && resumeMs < 0) {
             // 服务器和本机各有一份进度时,以"最后更新的时间"为准(哪个终端最后看的就接着哪个);没有记录或连不上就用本机的
-            resumeMs = if (ui.slideshowMode || !cfg.resume) 0L else {
+            val carry = ui.slideResume?.takeIf { it.first == item.id }
+            resumeMs = if (carry != null) { ui.slideResume = null; preservePosition = true; carry.second } else if (ui.slideshowMode || !cfg.resume) 0L else {
                 val (lp, lt) = c.playback.getWithTime(item.id, ns)
                 val remote = if (c.isLocal) null else kotlinx.coroutines.withTimeoutOrNull(2000) { c.api.getPlaybackRemote(item.id) }
                 when {
@@ -290,6 +318,7 @@ fun VideoPage(
 
     DisposableEffect(isCurrent, item.id, useSoftware, modeOverride, transcodeBitrate, tCodec, blocked, resumeMs >= 0, compatChecked, compatUrl) {
         var p: ExoPlayer? = null
+        var disposed = false
         val loudness = arrayOfNulls<android.media.audiofx.LoudnessEnhancer>(1)
         if (isCurrent && resumeMs >= 0 && !blocked && compatChecked) {
             meter.reset()
@@ -310,12 +339,18 @@ fun VideoPage(
             pl.playbackParameters = pl.playbackParameters.withSpeed(speed)
             pl.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             pl.addListener(object : Player.Listener {
-                override fun onRenderedFirstFrame() { firstFrame = true; error = null; netRetries = 0; AppLog.i("player", "首帧 ${item.name}") }
-                override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying; c.videoPlaying = isPlaying }
+                override fun onRenderedFirstFrame() { if (disposed) return; firstFrame = true; error = null; netRetries = 0; AppLog.i("player", "首帧 ${item.name}") }
+                override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                    if (!disposed && ui.slideshowMode && isCurrent && !ui.menuOpen && !ui.slides.preparing && pl.playbackState != Player.STATE_ENDED) {
+                        if (!playWhenReady) ui.slides.pause() else ui.slides.resume()
+                    }
+                }
+                override fun onIsPlayingChanged(isPlaying: Boolean) { if (disposed) return; playing = isPlaying; c.videoPlaying = isPlaying }
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                     if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) lastSeek[0] = android.os.SystemClock.elapsedRealtime()
                 }
                 override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (disposed) return
                     state = playbackState
                     // 自动画质:出过首帧之后又进入缓冲(不是用户拖动进度)= 一次卡顿
                     val nowMs = android.os.SystemClock.elapsedRealtime()
@@ -339,6 +374,7 @@ fun VideoPage(
                     if (c.settings.value.autoLandscape && v.width > v.height && ui.orientation == 0) { ui.orientation = 1; ui.autoRotated = true }
                 }
                 override fun onPlayerError(e: PlaybackException) {
+                    if (disposed) return
                     AppLog.e("player", "播放错误 ${e.errorCodeName} item=${item.name} 软解重试=$useSoftware", e)
                     // 网络类错误(断网 / 连接超时,ExoPlayer 已经按退避重试了十次):不当作"播放错误"弹出来,等网络回来自动继续
                     val netErr = e.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
@@ -401,17 +437,20 @@ fun VideoPage(
             } else {
                 pl.setMediaItem(MediaItem.fromUri(compatUrl ?: c.api.fileUrl(item)))
             }
-            if (resumeMs > 0) pl.seekTo((resumeMs - c.settings.value.resumeRewindSec * 1000L).coerceAtLeast(0L))
+            if (resumeMs > 0) pl.seekTo(if (preservePosition) resumeMs else (resumeMs - c.settings.value.resumeRewindSec * 1000L).coerceAtLeast(0L))
+            preservePosition = false
             pl.prepare()
             pl.playWhenReady = if (ui.slideshowMode) ui.slideshowPlaying else c.settings.value.autoplay
             player = pl
             AppLog.i("player", "播放 ${item.name} (${item.ext}, ${item.w}x${item.h}) 从 ${resumeMs}ms")
         }
         onDispose {
+            disposed = true
             runCatching { loudness[0]?.release() }
             p?.let { pl ->
                 // 保存进度:播放不足 5 秒或快播完时视为没看,清除记录
                 val pos = pl.currentPosition
+                if (ui.slideResume?.first == item.id) { resumeMs = pos; preservePosition = true }
                 val dur = pl.duration
                 val keep = pos > 5000 && (dur <= 0 || pos < dur - 5000)
                 if (c.settings.value.resume && firstFrame) c.scope.launch {
@@ -429,18 +468,25 @@ fun VideoPage(
         }
     }
 
-    LaunchedEffect(player, ui.slideshowMode, ui.slideshowPlaying) {
+    LaunchedEffect(ui.slideshowMode) {
+        if (ui.slideshowMode) { loop = false; abA = null; abB = null; player?.repeatMode = Player.REPEAT_MODE_OFF }
+    }
+    LaunchedEffect(player, ui.slideshowMode, ui.slideshowPlaying, ui.menuOpen, ui.slides.preparing, ui.restartVideo) {
         if (ui.slideshowMode) {
             player?.repeatMode = Player.REPEAT_MODE_OFF
-            if (ui.slideshowPlaying) {
-                if (player?.playbackState == Player.STATE_ENDED) player?.seekTo(0)
-                player?.play()
-            } else player?.pause()
+            if (ui.slideshowPlaying && !ui.menuOpen && !ui.slides.preparing) player?.play() else player?.pause()
         }
     }
     LaunchedEffect(isCurrent, blocked, error) {
         if (ui.slideshowMode && isCurrent && (blocked || error != null)) onSlideError()
     }
+
+    LaunchedEffect(player, ui.restartVideo) {
+        if (player != null && appliedRestart != ui.restartVideo && isCurrent && ui.slideshowMode) {
+            player?.seekTo(0); appliedRestart = ui.restartVideo
+        }
+    }
+    LaunchedEffect(error, blocked) { if (error == null && !blocked && isCurrent) ui.slides.ready() }
 
     // 自动画质:网速不够时自动降一档转码。卡顿中每秒检查一次:45 秒内第二次卡顿,或者一次卡了超过 8 秒 → 降档。
     // 降档只是这个视频的临时调整,不改「记住的播放设置」;一个视频最多降 3 次,降完 25 秒内不再动。
@@ -534,7 +580,8 @@ fun VideoPage(
     }
 
     // 睡眠定时 / A-B 循环 / 技术信息
-    LaunchedEffect(player, ui.sleepAt) {
+    LaunchedEffect(player, ui.sleepAt, ui.slideshowMode) {
+        if (ui.slideshowMode) return@LaunchedEffect
         val pl = player ?: return@LaunchedEffect
         val at = ui.sleepAt
         if (at > 0) {
@@ -749,7 +796,7 @@ fun VideoPage(
                             val side = when { off.x < w / 3f -> -1; off.x > w * 2f / 3f -> 1; else -> 0 }
                             if (side == 0) {
                                 hap.perform(Hap.Click)
-                                pl?.let { if (it.isPlaying) it.pause() else it.play() }
+                                pl?.let { if (it.playWhenReady) it.pause() else it.play() }
                                 showHud(Hud(if (pl?.isPlaying == true) TgIcons.Play else TgIcons.Pause, if (pl?.isPlaying == true) "播放" else "暂停"))
                             } else {
                                 tapSide = side; tapAccum = 1; tapUntil = android.os.SystemClock.elapsedRealtime() + 600
@@ -967,7 +1014,7 @@ fun VideoPage(
                             CtrlIcon(TgIcons.SkipPrev, "上一个", enabled = onPrev != null) { onPrev?.invoke() }
                             TextCtrl("−${cfg.seekBackSec}") { pl?.let { it.seekTo((it.currentPosition - cfg.seekBackSec * 1000L).coerceAtLeast(0)) } }
                             RoundBtn(if (playing) TgIcons.Pause else TgIcons.Play, if (playing) "暂停" else "播放", 56.dp) {
-                                pl?.let { if (it.playbackState == Player.STATE_ENDED) { it.seekTo(0); it.play() } else if (it.isPlaying) it.pause() else it.play() }
+                                pl?.let { if (it.playbackState == Player.STATE_ENDED) { it.seekTo(0); it.play() } else if (it.playWhenReady) it.pause() else it.play() }
                             }
                             TextCtrl("+${cfg.seekForwardSec}") { pl?.let { it.seekTo(it.currentPosition + cfg.seekForwardSec * 1000L) } }
                             CtrlIcon(TgIcons.SkipNext, "下一个", enabled = onNext != null) { onNext?.invoke() }
@@ -1039,6 +1086,7 @@ fun VideoPage(
             PlayerMenuHost(
                 open = panel.isNotEmpty() && !inPip,
                 title = when (page) {
+                    "slides" -> "幻灯片播放";
                     "speed" -> "倍速"; "sub" -> "字幕"; "audio" -> "音轨"; "loop" -> "循环"; "enhance" -> "画质增强"
                     "quality" -> "画质与解码"; "more" -> "更多"; "sleep" -> "睡眠定时"; "info" -> "媒体信息"; else -> null
                 },
@@ -1046,6 +1094,7 @@ fun VideoPage(
                 onClose = { panel = "" },
             ) {
                 when (page) {
+                    "slides" -> SlideshowMenu(c, ui, ui.slideSource)
                     "speed" -> {
                         val row1 = listOf(0.5f, 0.75f, 1f, 1.25f); val row2 = listOf(1.5f, 2f, 3f, 4f)
                         Spacer(Modifier.height(4.dp))
@@ -1217,6 +1266,7 @@ fun VideoPage(
                         MenuRow("媒体信息") { panel = "info" }
                     }
                     else -> {
+                        MenuRow("幻灯片播放", slideshowSummary(ui)) { panel = "slides" }
                         MenuRow("倍速", speedText) { panel = "speed" }
                         MenuRow("字幕", if (subOpts.isEmpty()) "无" else if (subOff) "关闭" else subOpts.firstOrNull { it.selected }?.label) { panel = "sub" }
                         MenuRow("音轨", audioOpts.firstOrNull { it.selected }?.label ?: "—") { panel = "audio" }

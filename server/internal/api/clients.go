@@ -141,7 +141,7 @@ func routeOf(remote string) string {
 	return "wan"
 }
 
-func (c *Clients) mediaMetaOf(id int64) mediaMeta {
+func (c *Clients) mediaMetaOf(ctx context.Context, id int64) mediaMeta {
 	c.mu.Lock()
 	m, ok := c.meta[id]
 	c.mu.Unlock()
@@ -150,7 +150,9 @@ func (c *Clients) mediaMetaOf(id int64) mediaMeta {
 	}
 	var name string
 	var typ int
-	if err := c.s.DB.QueryRow(`SELECT name, type FROM media WHERE id=?`, id).Scan(&name, &typ); err != nil {
+	lookupCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := c.s.DB.QueryRowContext(lookupCtx, `SELECT name, type FROM media WHERE id=?`, id).Scan(&name, &typ); err != nil {
 		return mediaMeta{typ: -1}
 	}
 	m = mediaMeta{name, typ}
@@ -212,9 +214,9 @@ func (c *Clients) classify(r *http.Request) (act activity, heavy bool) {
 				d += " H.264"
 			}
 			act.Detail = d
-			act.Name = c.mediaMetaOf(id).name
+			act.Name = c.mediaMetaOf(r.Context(), id).name
 		case "file":
-			m := c.mediaMetaOf(id)
+			m := c.mediaMetaOf(r.Context(), id)
 			act.Name = m.name
 			if m.typ == 1 || m.typ == 3 { // 视频 / 音频:大文件流
 				act.Kind, heavy = "file", true
@@ -257,7 +259,10 @@ func (c *Clients) begin(ri *reqInfo, r *http.Request, uid int64, id, device stri
 	needUser := rec.User == ""
 	c.mu.Unlock()
 	if needUser {
-		name := c.s.Auth.UserName(uid)
+		name := ""
+		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+		_ = c.s.DB.QueryRowContext(ctx, `SELECT name FROM users WHERE id=?`, uid).Scan(&name)
+		cancel()
 		c.mu.Lock()
 		rec.User = name
 		c.mu.Unlock()

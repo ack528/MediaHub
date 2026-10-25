@@ -394,8 +394,6 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
     val ready by vm.ready.collectAsState()
     var menu by remember { mutableStateOf(false) }
     var datePicker by remember { mutableStateOf(false) }
-    var slidesDialog by remember { mutableStateOf(false) }
-    var slidesLoading by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var searchJumpGen by remember { mutableStateOf<Int?>(null) } // 选中了一条结果:列表重建定位好之前面板先留着,定位好再淡出
@@ -438,20 +436,12 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
         val snap = lazyItems.itemSnapshotList.items
         vm.viewerOpenedId = item.id
         c.viewerReturn.value = null // 清掉上一次遗留的返回信号,以这一次打开为准
-        c.viewerFeed = com.localtg.data.ViewerFeed(snap, prevIsHigherIndex = !grid, originDialogId = dialogId, loader = vm.moreLoader())
+        c.viewerFeed = com.localtg.data.ViewerFeed(snap, prevIsHigherIndex = !grid, originDialogId = dialogId,
+            slideSource = com.localtg.data.SlideSource(
+                com.localtg.data.SlideScope(types.joinToString(","), dialog = dialogId),
+                com.localtg.data.SlideGroupOrder(sortKey, if (if (grid) ascGrid else !ascChat) "asc" else "desc")),
+            loader = vm.moreLoader())
         onOpenViewer(snap.indexOfFirst { it.id == item.id }.coerceAtLeast(0))
-    }
-
-    if (slidesDialog) SlideshowDialog(c.settings.value, false, { slidesDialog = false }) { options ->
-        slidesDialog = false
-        slidesLoading = true
-        scope.launch {
-            try {
-                openSlideshow(ctx, c, options, onOpenViewer) {
-                    com.localtg.data.groupSlideshow(c.api, dialogId, sortKey, if (if (grid) ascGrid else ascChat) "asc" else "desc", options)
-                }
-            } finally { slidesLoading = false }
-        }
     }
 
     // 从查看器返回:查看器里滑到了别的条目,就把列表定位到最后停留的那一项。已经加载在列表里的直接滚过去;
@@ -501,39 +491,15 @@ fun ChatScreen(c: AppContainer, dialogId: String, titleHint: String? = null, act
                 }
                 Box {
                     BarIcon(TgIcons.More, "更多") { menu = true }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text(if (slidesLoading) "正在准备幻灯片…" else "幻灯片播放") }, enabled = !slidesLoading, onClick = { menu = false; slidesDialog = true })
-                        HorizontalDivider()
-
-                        SORT_KEYS.forEach { (k, label) ->
-                            DropdownMenuItem(text = { Text((if (k == sortKey) "✓  " else "     ") + label) }, onClick = { hap.perform(Hap.Tick); vm.change(null) { vm.sortKey.value = k; vm.ascGrid.value = (k == "name" || k == "type") } })
-                        }
-                        if (sortKey == "taken") {
-                            DropdownMenuItem(text = { Text("跳转到日期…") }, onClick = { menu = false; datePicker = true })
-                        }
-                        HorizontalDivider()
-                        val asc = if (grid) ascGrid else ascChat
-                        DropdownMenuItem(
-                            text = { Text(if (grid) (if (asc) "顺序:从前到后" else "顺序:从后到前") else (if (asc) "顺序:旧 → 新(最新在底部)" else "顺序:新 → 旧")) },
-                            onClick = { vm.change(null) { if (grid) vm.ascGrid.value = !asc else vm.ascChat.value = !asc } },
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(280.dp)) {
+                        ChatOptionsMenu(sortKey, if (grid) ascGrid else ascChat, types, mode, columns,
+                            onSort = { key -> hap.perform(Hap.Tick); vm.change(null) { vm.sortKey.value = key; vm.ascGrid.value = key == "name" || key == "type" } },
+                            onDirection = { asc -> vm.change(null) { if (grid) vm.ascGrid.value = asc else vm.ascChat.value = asc } },
+                            onType = { key -> val next = if (key in types) types - key else types + key; if (next.isNotEmpty()) vm.change(null) { vm.types.value = next } },
+                            onMode = { value -> if (value != mode) { hap.perform(Hap.Tick); vm.change(vm.currentItemId(), force = true) { vm.grid.value = value != 0; vm.feed.value = value == 2 } } },
+                            onColumns = vm::setColumns,
+                            onDate = { menu = false; datePicker = true },
                         )
-                        HorizontalDivider()
-                        listOf("photo" to "图片", "video" to "视频", "gif" to "GIF").forEach { (k, label) ->
-                            DropdownMenuItem(text = { Text((if (k in types) "✓  " else "     ") + label) }, onClick = {
-                                val n = if (k in types) types - k else types + k
-                                if (n.isNotEmpty()) vm.change(null) { vm.types.value = n }
-                            })
-                        }
-                        HorizontalDivider()
-                        listOf(0 to "视图:聊天流", 1 to "视图:网格", 2 to "视图:瀑布流(小红书式卡片)").forEach { (m, label) ->
-                            DropdownMenuItem(text = { Text((if (m == mode) "✓  " else "     ") + label) }, onClick = {
-                                menu = false
-                                if (m != mode) { hap.perform(Hap.Tick); vm.change(vm.currentItemId(), force = true) { vm.grid.value = m != 0; vm.feed.value = m == 2 } }
-                            })
-                        }
-                        if (mode == 1) {
-                            DropdownMenuItem(text = { Text("网格列数:$columns(点击切换)") }, onClick = { vm.setColumns(if (columns >= 5) 3 else columns + 1) })
-                        }
                     }
                 }
             }

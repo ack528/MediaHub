@@ -19,7 +19,8 @@ class ViewerFeed(
     val prevIsHigherIndex: Boolean = false,
     /** 从哪个群组打开的(搜索结果等没有就是 null):在查看器里滑到哪一项,退出后这个群组要定位到那一项。 */
     val originDialogId: String? = null,
-    val slideshow: SlideshowOptions? = null,
+    val slideSource: SlideSource? = null,
+    private val onLoadError: (Exception) -> Unit = { com.localtg.AppLog.w("viewer", "加载更多失败", it) },
     private val loader: (suspend (cursor: String?, lastId: String?) -> Pair<List<Item>, String?>)? = null,
 ) {
     val items = mutableStateListOf<Item>().apply { addAll(initial) }
@@ -39,12 +40,12 @@ class ViewerFeed(
             val added = more.filter { known.add(it.id) }
             items.addAll(added)
             cursor = next
-            if (next == null || added.isEmpty()) exhausted = true
+            if (next == null) exhausted = true
             added.isNotEmpty()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            com.localtg.AppLog.w("viewer", "加载更多失败", e)
+            onLoadError(e)
             false
         }
     }

@@ -9,7 +9,7 @@ class ViewerFeedTest {
 
     @Test fun paginationKeepsMixedItemsAndDeduplicates() = runBlocking {
         var page = 0
-        val feed = ViewerFeed(listOf(item("1")), slideshow = SlideshowOptions()) { _, _ ->
+        val feed = ViewerFeed(listOf(item("1"))) { _, _ ->
             if (page++ == 0) listOf(item("1"), item("2").copy(type = "video")) to "next"
             else listOf(item("3")) to null
         }

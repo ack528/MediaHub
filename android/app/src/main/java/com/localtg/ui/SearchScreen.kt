@@ -148,11 +148,17 @@ fun SearchScreen(c: AppContainer, onBack: (() -> Unit)?, onOpenViewer: (Int) -> 
                                     val snapshot = results
                                     val q = query.trim()
                                     var firstCursor = nextCursor
-                                    c.viewerFeed = ViewerFeed(snapshot) { cursor, _ ->
-                                        // 查看器继续往后取:从聊天页当前的搜索游标接着翻
-                                        val use = cursor ?: firstCursor
-                                        if (use == null) emptyList<Item>() to null
-                                        else c.api.search(q, types, use).let { r -> r.items to r.nextCursor }
+                                    val sequence = com.localtg.data.SlideSequence(snapshot) {
+                                        val use = firstCursor
+                                        if (use == null) emptyList<Item>() to false else {
+                                            val r = c.api.search(q, types, use)
+                                            firstCursor = r.nextCursor
+                                            r.items to (firstCursor != null)
+                                        }
+                                    }
+                                    val source = com.localtg.data.SlideSource(com.localtg.data.SlideScope(types, search = q), sequence = sequence)
+                                    c.viewerFeed = ViewerFeed(snapshot, slideSource = source) { _, _ ->
+                                        val (page, more) = sequence.more(); page to if (more) "more" else null
                                     }
                                     onOpenViewer(snapshot.indexOfFirst { it.id == item.id }.coerceAtLeast(0))
                                 },
