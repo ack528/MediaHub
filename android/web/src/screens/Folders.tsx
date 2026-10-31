@@ -1,4 +1,4 @@
-import { Avatar, Button, Card, Tabs } from "@heroui/react";
+import { Avatar, Button, Chip, Tabs } from "@heroui/react";
 import { ArrowsRotateRight, Magnifier, Shuffle } from "@gravity-ui/icons";
 import { useCallback, useEffect, useMemo, useRef, useState, type Key } from "react";
 import { api, call, errorText, haptic, peek, query } from "../lib/bridge";
@@ -108,21 +108,21 @@ export function FoldersScreen() {
       </PageHeader>
 
       <div className="flex flex-col gap-4 px-4 pt-2">
-        <Card className="flex-row items-center gap-3 rounded-3xl">
-          <span className="grid size-10 shrink-0 place-items-center rounded-full bg-accent-soft text-accent"><Shuffle className="size-5" /></span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-medium">{label === "all" ? "随机浏览" : `随机浏览 · ${label}`}</span>
-            <span className="block truncate text-xs text-muted">{label === "all" ? "从所有盘符里随机取图片和视频" : `只随机 ${label} 里的图片和视频`}</span>
-          </span>
-          <Button size="sm" variant="secondary" onPress={() => nav.push({ name: "random", params: { label: label === "all" ? null : label, roots } })}>开始</Button>
-        </Card>
-
         {shown.length === 0 ? (
           <StateView loading={loading} error={error} empty="没有可显示的文件夹" onRetry={load} />
         ) : (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-3xl bg-surface p-1.5 shadow-surface">
+            {/* 置顶的特殊"会话":随机浏览(全部页随机所有盘符,盘符页只随机这个盘符) */}
+            <button type="button" onClick={() => nav.push({ name: "random", params: { label: label === "all" ? null : label, roots } })}
+              className="flex w-full items-center gap-3 rounded-2xl px-2.5 text-left transition-colors active:bg-default">
+              <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-accent text-accent-foreground"><Shuffle className="size-6" /></span>
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5 py-3">
+                <span className="truncate font-medium">{label === "all" ? "随机浏览" : `随机浏览 · ${label}`}</span>
+                <span className="truncate text-sm text-muted">{label === "all" ? "随机所有盘符里的图片或视频" : `只随机 ${label} 里的图片或视频`}</span>
+              </span>
+            </button>
             {shown.map((d) => (
-              <FolderCard key={d.id} d={d} recent={recent[d.id]} onOpen={() => nav.push({ name: "chat", params: { id: d.id, title: d.title } })} />
+              <DialogRow key={d.id} d={d} first={false} recent={recent[d.id]} onOpen={() => nav.push({ name: "chat", params: { id: d.id, title: d.title } })} />
             ))}
           </div>
         )}
@@ -132,29 +132,29 @@ export function FoldersScreen() {
   );
 }
 
-/** 文件夹卡片:封面、名称、数量,底部一行是最近浏览的文件(或路径)。 */
-function FolderCard({ d, recent, onOpen }: { d: Dialog; recent?: string; onOpen: () => void }) {
+/** 一个文件夹 = 一行"会话":封面头像、名称、最近一项的时间,第二行最近浏览的文件(或路径)和数量。 */
+function DialogRow({ d, recent, first, onOpen }: { d: Dialog; recent?: string; first: boolean; onOpen: () => void }) {
   const { settings } = useApp();
   const cover = settings.avatarCover ? dialogCover(d) : undefined;
   const sub = settings.dialogSubtitle === "path" ? d.pathDisplay : settings.dialogSubtitle === "none" ? null : recent ?? "暂无浏览记录";
   return (
     <button type="button" onClick={onOpen}
-      className="tile flex min-w-0 flex-col items-start gap-3 rounded-3xl bg-surface p-4 text-left shadow-surface transition-transform active:scale-[0.98]"
-      style={{ containIntrinsicSize: "auto 170px" }}>
-      <Avatar className="size-14 rounded-2xl">
+      className="tile flex w-full items-center gap-3 rounded-2xl px-2.5 text-left transition-colors active:bg-default"
+      style={{ containIntrinsicSize: "auto 72px" }}>
+      <Avatar className="size-12 shrink-0 rounded-2xl">
         {cover && <Avatar.Image src={cover} alt="" loading="lazy" className="object-cover" />}
-        <Avatar.Fallback className="rounded-2xl text-lg">{d.title.slice(0, 1)}</Avatar.Fallback>
+        <Avatar.Fallback className="rounded-2xl">{d.title.slice(0, 1)}</Avatar.Fallback>
       </Avatar>
-      <span className="w-full min-w-0">
-        <span className="block truncate font-medium">{d.title}</span>
-        <span className="block text-sm text-muted tabular-nums">{mediaCount(d)} 项{d.last?.takenAt ? ` · ${formatShortTime(d.last.takenAt)}` : ""}</span>
-      </span>
-      {sub && (
-        <span className="flex w-full min-w-0 items-center gap-1.5 text-xs text-muted">
-          <span className="size-3.5 shrink-0 rounded-full bg-gradient-to-br from-accent to-accent-soft" />
-          <span className="truncate">{sub}</span>
+      <span className={`flex min-w-0 flex-1 flex-col gap-0.5 py-3 ${first ? "" : "border-t border-separator"}`}>
+        <span className="flex items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate font-medium">{d.title}</span>
+          <span className="shrink-0 text-xs text-muted tabular-nums">{formatShortTime(d.last?.takenAt)}</span>
         </span>
-      )}
+        <span className="flex items-center gap-2">
+          <span className="min-w-0 flex-1 truncate text-sm text-muted">{sub}</span>
+          <Chip size="sm" variant="soft" className="shrink-0 tabular-nums">{mediaCount(d)}</Chip>
+        </span>
+      </span>
     </button>
   );
 }
