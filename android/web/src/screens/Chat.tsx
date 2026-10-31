@@ -408,21 +408,26 @@ function FeedCard({ item, width, onOpen }: { item: Item; width: number; onOpen: 
   );
 }
 
-/** 时间线:一列大图,按天分组(按时间排序且开了日期分隔时),每张图下面是文件名、时间和大小。 */
+/**
+ * 时间线(原来的聊天流):每一项是一个没有外框的圆角媒体"气泡",宽度 / 间距跟设置里的气泡宽度、气泡间距;
+ * 时间叠在图片右下角,文件名是图片下面一行小字。按时间排序时按天插入日期胶囊。
+ */
 function TimelineView({ items, dated, onOpen }: { items: Item[]; dated: boolean; onOpen: (i: Item) => void }) {
   const { settings: s } = useApp();
+  const bubble = Math.min(100, Math.max(40, Number(s.bubbleWidth ?? 72)));
+  const gap = Math.max(4, Number(s.chatSpacing ?? 3) * 2);
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-4 px-4 pt-1">
+    <div className="mx-auto flex max-w-xl flex-col px-3 pt-1" style={{ gap }}>
       {items.map((it, i) => {
         const showDay = dated && (i === 0 || dayKey(items[i - 1].takenAt) !== dayKey(it.takenAt));
         return (
           <Fragment key={it.id}>
             {showDay && (
-              <div className="sticky top-[calc(var(--sat)+60px)] z-10 flex justify-center py-1">
+              <div className="sticky top-[calc(var(--sat)+60px)] z-10 flex justify-center py-1.5">
                 <Chip size="sm" variant="secondary" className="shadow-surface backdrop-blur">{dayLabel(it.takenAt)}</Chip>
               </div>
             )}
-            <TimelineCard item={it} width={s.chatImageWidth} onOpen={() => onOpen(it)} />
+            <TimelineBubble item={it} width={s.chatImageWidth} widthPct={bubble} onOpen={() => onOpen(it)} />
           </Fragment>
         );
       })}
@@ -430,29 +435,28 @@ function TimelineView({ items, dated, onOpen }: { items: Item[]; dated: boolean;
   );
 }
 
-/** 时间线卡片:白色大圆角卡片,上方文件名和时间,中间是圆角图片,下方大小 / 时长。 */
-function TimelineCard({ item, width, onOpen }: { item: Item; width: number; onOpen: () => void }) {
+function TimelineBubble({ item, width, widthPct, onOpen }: { item: Item; width: number; widthPct: number; onOpen: () => void }) {
   const ratio = Math.min(2.2, Math.max(0.6, aspectOf(item)));
   const press = useLongPress(onOpen);
-  const meta = [item.type === "video" ? formatDuration(item.durationMs) : item.type === "gif" ? "动图" : "", formatSize(item.size)].filter(Boolean).join(" · ");
   return (
-    <article data-item={item.id} className="tile rounded-3xl bg-surface p-3 shadow-surface" style={{ containIntrinsicSize: `auto ${Math.round(340 / ratio) + 76}px` }}>
-      <div className="flex items-baseline gap-2 px-1 pb-2.5">
-        <p className="min-w-0 flex-1 truncate text-sm font-medium">{item.name}</p>
-        <span className="shrink-0 text-xs text-muted tabular-nums">{formatShortTime(item.takenAt)}</span>
-      </div>
-      <button type="button" className="relative block w-full overflow-hidden rounded-2xl active:opacity-90" style={{ aspectRatio: String(ratio) }} {...press}>
+    <div data-item={item.id} className="tile" style={{ width: `${widthPct}%`, containIntrinsicSize: `auto ${Math.round(300 / ratio) + 22}px` }}>
+      <button type="button" className="relative block w-full overflow-hidden rounded-2xl bg-surface-tertiary active:opacity-90" style={{ aspectRatio: String(ratio) }} {...press}>
         <Thumb item={item} width={width} className="absolute inset-0" />
         {item.type === "video" && (
-          <span className="absolute inset-0 grid place-items-center">
-            <span className="grid size-14 place-items-center rounded-full bg-black/40 text-white backdrop-blur-sm">
-              <svg viewBox="0 0 24 24" className="ml-1 size-7 fill-current"><path d="M8 5.5v13l11-6.5z" /></svg>
+          <>
+            <span className="absolute inset-0 grid place-items-center">
+              <span className="grid size-12 place-items-center rounded-full bg-black/40 text-white backdrop-blur-sm">
+                <svg viewBox="0 0 24 24" className="ml-0.5 size-6 fill-current"><path d="M8 5.5v13l11-6.5z" /></svg>
+              </span>
             </span>
-          </span>
+            {item.durationMs ? <span className="absolute top-2 left-2 rounded-full bg-black/45 px-1.5 py-0.5 text-[11px] text-white tabular-nums">{formatDuration(item.durationMs)}</span> : null}
+          </>
         )}
+        {item.type === "gif" && <span className="absolute top-2 left-2 rounded-full bg-black/45 px-1.5 py-0.5 text-[11px] text-white">GIF</span>}
+        <span className="absolute right-2 bottom-2 rounded-full bg-black/45 px-1.5 py-0.5 text-[11px] text-white tabular-nums">{formatShortTime(item.takenAt)}</span>
       </button>
-      {meta && <p className="px-1 pt-2 text-xs text-muted tabular-nums">{meta}</p>}
-    </article>
+      <p className="truncate px-1 pt-1 text-xs text-muted">{item.name}</p>
+    </div>
   );
 }
 
