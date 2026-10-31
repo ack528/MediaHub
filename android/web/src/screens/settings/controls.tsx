@@ -4,6 +4,7 @@ import { errorText, haptic } from "../../lib/bridge";
 import { useSettings } from "../../lib/app";
 import { ListGroup, ListRow } from "../../components/List";
 import type { OptionValue, SettingRow } from "./types";
+import type { Tone } from "../../lib/tones";
 import { toast } from "@heroui/react";
 
 /** 只属于旧版 Compose 界面的设置(液态玻璃、Activity 转场、聊天气泡…):新界面里不显示,值原样保留。 */
@@ -93,8 +94,8 @@ export function ChoiceField({ title, desc, options, selected, fallback, onSelect
 }
 
 /** 操作行:可选二次确认(危险操作红色)。action 抛错时提示。 */
-export function ActionRow({ title, description, confirm, danger, icon, action, end }: {
-  title: string; description?: ReactNode; confirm?: string; danger?: boolean; icon?: ReactNode; end?: ReactNode; action: () => unknown | Promise<unknown>;
+export function ActionRow({ title, description, confirm, danger, icon, tone, action, end }: {
+  title: string; description?: ReactNode; confirm?: string; danger?: boolean; icon?: ReactNode; tone?: Tone; end?: ReactNode; action: () => unknown | Promise<unknown>;
 }) {
   const [ask, setAsk] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -104,7 +105,7 @@ export function ActionRow({ title, description, confirm, danger, icon, action, e
   };
   return (
     <>
-      <ListRow icon={icon} title={title} description={description} danger={danger} disabled={busy} end={end}
+      <ListRow icon={icon} tone={tone} title={title} description={description} danger={danger} disabled={busy} end={end}
         onPress={() => (confirm ? setAsk(true) : run())} chevron={false} />
       {confirm && (
         <AlertDialog.Backdrop isOpen={ask} onOpenChange={setAsk}>

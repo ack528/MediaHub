@@ -424,7 +424,7 @@ function TimelineView({ items, dated, onOpen }: { items: Item[]; dated: boolean;
           <Fragment key={it.id}>
             {showDay && (
               <div className="sticky top-[calc(var(--sat)+60px)] z-10 flex justify-center py-1.5">
-                <Chip size="sm" variant="secondary" className="shadow-surface backdrop-blur">{dayLabel(it.takenAt)}</Chip>
+                <Chip size="sm" variant="soft" color="accent" className="shadow-surface backdrop-blur">{dayLabel(it.takenAt)}</Chip>
               </div>
             )}
             <TimelineBubble item={it} width={s.chatImageWidth} widthPct={bubble} onOpen={() => onOpen(it)} />

@@ -42,7 +42,7 @@ export function Home() {
           <Tabs.ListContainer>
             <Tabs.List aria-label="主导航" className="shadow-overlay">
               {TABS.map((t) => (
-                <Tabs.Tab key={t.id} id={t.id} className="h-12 min-w-20 flex-col gap-0.5 px-4 text-[11px] font-medium">
+                <Tabs.Tab key={t.id} id={t.id} className="h-12 min-w-20 flex-col gap-0.5 px-4 text-[11px] font-medium data-[selected=true]:text-accent">
                   <t.icon className="size-5" />
                   {t.label}
                   <Tabs.Indicator />

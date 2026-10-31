@@ -1,6 +1,7 @@
 import { Button, EmptyState, Spinner } from "@heroui/react";
 import { ChevronRight } from "@gravity-ui/icons";
 import type { ReactNode } from "react";
+import { TONE_BADGE, type Tone } from "../lib/tones";
 
 /**
  * 一组行:白色大圆角卡片(HeroUI Surface 层级),组标题写在卡片里面的左上角(小号弱化色),
@@ -18,11 +19,12 @@ export function ListGroup({ title, footer, children, className = "" }: { title?:
   );
 }
 
-/** 列表行:线条图标 + 标题 / 说明 + 右侧内容;可点的行按下时整行变灰,带右箭头。 */
+/** 列表行:图标 + 标题 / 说明 + 右侧内容;可点的行按下时整行变灰,带右箭头。tone = 图标放进柔和底色的圆里。 */
 export function ListRow({
-  icon, title, description, end, onPress, danger, chevron = true, disabled, className = "",
+  icon, tone, title, description, end, onPress, danger, chevron = true, disabled, className = "",
 }: {
   icon?: ReactNode;
+  tone?: Tone;
   title: ReactNode;
   description?: ReactNode;
   end?: ReactNode;
@@ -34,7 +36,9 @@ export function ListRow({
 }) {
   const body = (
     <>
-      {icon && <span className={`grid size-5 shrink-0 place-items-center self-start pt-0.5 ${danger ? "text-danger" : "text-muted"}`}>{icon}</span>}
+      {icon && (tone
+        ? <span className={`grid size-9 shrink-0 place-items-center rounded-full ${TONE_BADGE[danger ? "danger" : tone]}`}>{icon}</span>
+        : <span className={`grid size-5 shrink-0 place-items-center self-start pt-0.5 ${danger ? "text-danger" : "text-muted"}`}>{icon}</span>)}
       <span className="min-w-0 flex-1">
         <span className={`block text-sm font-medium ${danger ? "text-danger" : "text-foreground"}`}>{title}</span>
         {description && <span className="mt-0.5 block text-xs leading-relaxed text-muted">{description}</span>}
@@ -78,7 +82,7 @@ export function StateView({
     );
   return (
     <EmptyState className={`min-h-64 ${className}`}>
-      {icon && <span className="grid size-12 place-items-center rounded-full bg-default text-muted">{icon}</span>}
+      {icon && <span className="grid size-14 place-items-center rounded-full bg-accent-soft text-accent">{icon}</span>}
       <p className="max-w-72 text-center text-sm text-muted">{empty ?? "这里什么也没有"}</p>
     </EmptyState>
   );

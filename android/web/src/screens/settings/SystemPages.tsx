@@ -1,5 +1,5 @@
 import { Button, Chip, Disclosure, ProgressBar, Spinner, ToggleButton, ToggleButtonGroup, toast } from "@heroui/react";
-import { ArrowDownToLine, ArrowsRotateRight, Copy, LogoGithub } from "@gravity-ui/icons";
+import { ArrowDownToLine, ArrowRotateLeft, ArrowUpFromSquare, ArrowsRotateRight, Bookmark, Copy, FileText, Globe, LogoGithub, Picture, Play, Shuffle, TrashBin } from "@gravity-ui/icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { call, errorText, on } from "../../lib/bridge";
 import { useApp } from "../../lib/app";
@@ -18,7 +18,7 @@ export function NetworkPage() {
     <>
       <ListGroup title="连接线路">
         <InfoRow title="当前线路" value={line} />
-        <ListRow title="重新检测线路" description="马上重新探测服务器的内网 / IPv6 地址" end={probing ? <Spinner size="sm" /> : undefined} chevron={false}
+        <ListRow icon={<Globe className="size-4" />} tone="cyan" title="重新检测线路" description="马上重新探测服务器的内网 / IPv6 地址" end={probing ? <Spinner size="sm" /> : undefined} chevron={false}
           onPress={async () => {
             setProbing(true);
             try { const r = await call<string>("route.probe"); toast(r ? `已改走内网直连 ${r.replace(/^https?:\/\//, "")}` : "没有更快的内网线路,使用服务器地址"); }
@@ -141,23 +141,23 @@ export function StoragePage() {
   return (
     <>
       <ListGroup title="缓存">
-        <ActionRow title="清除图片缓存" description={info ? `当前占用 ${formatSize(info.images)}` : "计算中…"} confirm="删除手机里已缓存的缩略图和图片?之后需要重新从服务器下载。"
+        <ActionRow icon={<Picture className="size-4" />} tone="cyan" title="清除图片缓存" description={info ? `当前占用 ${formatSize(info.images)}` : "计算中…"} confirm="删除手机里已缓存的缩略图和图片?之后需要重新从服务器下载。"
           action={() => call("storage.clearImages").then(done("图片缓存已清除"))} />
       </ListGroup>
       <ListGroup title="记录">
-        <ActionRow title="清除浏览位置记录" description="所有文件夹下次打开都从开头开始(同时清除服务器上同步的记录)" confirm="清除所有文件夹的浏览位置?"
+        <ActionRow icon={<Bookmark className="size-4" />} tone="accent" title="清除浏览位置记录" description="所有文件夹下次打开都从开头开始(同时清除服务器上同步的记录)" confirm="清除所有文件夹的浏览位置?"
           action={() => call("storage.clearViews").then(done("浏览位置已清除"))} />
-        <ActionRow title="清除播放进度记录" description={`所有视频下次都从头播放(同时清除服务器上的记录)${info ? ` · 本机 ${info.playback} 条` : ""}`} confirm="清除所有视频的播放进度?"
+        <ActionRow icon={<Play className="size-4" />} tone="warning" title="清除播放进度记录" description={`所有视频下次都从头播放(同时清除服务器上的记录)${info ? ` · 本机 ${info.playback} 条` : ""}`} confirm="清除所有视频的播放进度?"
           action={() => call("storage.clearPlayback").then(done("播放进度已清除"))} />
       </ListGroup>
       {!session.local && (
         <ListGroup title="随机浏览">
-          <ActionRow title="重新生成随机序列" description="让服务器清除所有历史随机序列并重新生成" confirm="清除服务器上所有的随机序列并重新生成?"
+          <ActionRow icon={<Shuffle className="size-4" />} tone="violet" title="重新生成随机序列" description="让服务器清除所有历史随机序列并重新生成" confirm="清除服务器上所有的随机序列并重新生成?"
             action={() => call("random.reset").then(() => { update({ randomSeed: 0 }); toast.success("已让服务器重新生成随机序列"); })} />
         </ListGroup>
       )}
       <ListGroup title="设置">
-        <ActionRow danger title="恢复默认设置" description="不影响登录状态和浏览记录" confirm="把所有设置恢复为默认值?"
+        <ActionRow danger icon={<ArrowRotateLeft className="size-4" />} tone="danger" title="恢复默认设置" description="不影响登录状态和浏览记录" confirm="把所有设置恢复为默认值?"
           action={() => call("settings.reset").then(() => toast.success("已恢复默认设置"))} />
       </ListGroup>
     </>
@@ -174,17 +174,17 @@ export function LogPage({ onView }: { onView: () => void }) {
     <>
       <SchemaRows rows={SETTING_PAGES.log} />
       <ListGroup>
-        <ListRow title="查看日志" description={info ? `已占用 ${formatSize(info.size)}` : undefined} onPress={onView} />
+        <ListRow icon={<FileText className="size-4" />} tone="accent" title="查看日志" description={info ? `已占用 ${formatSize(info.size)}` : undefined} onPress={onView} />
       </ListGroup>
       <ListGroup title="发给开发者">
-        <ActionRow title="分享日志文件" description="打包成 zip:设备信息、应用日志、崩溃报告、系统日志" action={() => call("log.share")} />
-        <ActionRow title="复制最近日志" description="设备信息 + 最近一次崩溃 + 最近的日志,可直接粘贴" action={() => call<number>("log.copy").then((n) => toast.success(`已复制 ${n} 字`))} />
+        <ActionRow icon={<ArrowUpFromSquare className="size-4" />} tone="success" title="分享日志文件" description="打包成 zip:设备信息、应用日志、崩溃报告、系统日志" action={() => call("log.share")} />
+        <ActionRow icon={<Copy className="size-4" />} tone="cyan" title="复制最近日志" description="设备信息 + 最近一次崩溃 + 最近的日志,可直接粘贴" action={() => call<number>("log.copy").then((n) => toast.success(`已复制 ${n} 字`))} />
       </ListGroup>
       <ListGroup title="崩溃报告">
         <InfoRow title="崩溃记录" value={!info ? "…" : info.crashes.length ? `${info.crashes.length} 份,最近一次:${info.crashes[info.crashes.length - 1]}` : "无"} />
       </ListGroup>
       <ListGroup title="清理">
-        <ActionRow danger title="清除日志" description="删除应用日志和崩溃报告" confirm="清除所有日志和崩溃报告?" action={() => call("log.clear").then(() => { toast.success("日志已清除"); reload(); })} />
+        <ActionRow danger icon={<TrashBin className="size-4" />} tone="danger" title="清除日志" description="删除应用日志和崩溃报告" confirm="清除所有日志和崩溃报告?" action={() => call("log.clear").then(() => { toast.success("日志已清除"); reload(); })} />
       </ListGroup>
     </>
   );
@@ -277,11 +277,11 @@ export function AboutPage() {
         <InfoRow title="服务端" value={server} />
         <InfoRow title="系统" value={boot.android} />
         <InfoRow title="设备" value={boot.device} />
-        <ListRow icon={<LogoGithub className="size-4" />} title="项目主页" description="github.com/ack528/MediaHub" onPress={() => call("app.open", { url: "https://github.com/ack528/MediaHub" })} />
+        <ListRow icon={<LogoGithub className="size-4" />} tone="neutral" title="项目主页" description="github.com/ack528/MediaHub" onPress={() => call("app.open", { url: "https://github.com/ack528/MediaHub" })} />
       </ListGroup>
 
       <ListGroup title="软件更新">
-        <ListRow title={checking ? "正在检查…" : "检查更新"} description={checkText} end={checking ? <Spinner size="sm" /> : undefined} chevron={false} onPress={checking ? undefined : doCheck} />
+        <ListRow icon={<ArrowsRotateRight className="size-4" />} tone="accent" title={checking ? "正在检查…" : "检查更新"} description={checkText} end={checking ? <Spinner size="sm" /> : undefined} chevron={false} onPress={checking ? undefined : doCheck} />
         {pending?.downloading && (
           <div className="px-3 py-2.5">
             <ProgressBar value={pending.progress} aria-label="下载进度">
@@ -292,9 +292,9 @@ export function AboutPage() {
           </div>
         )}
         {pending?.error && <InfoRow title="下载状态" value={`${pending.error},已保留断点,可重试`} />}
-        {pending?.pending && <ListRow icon={<ArrowDownToLine className="size-4" />} title={`安装已下载的 v${pending.pending}`} description="安装取消或失败后会保留,装上后自动清理" onPress={install} />}
+        {pending?.pending && <ListRow icon={<ArrowDownToLine className="size-4" />} tone="success" title={`安装已下载的 v${pending.pending}`} description="安装取消或失败后会保留,装上后自动清理" onPress={install} />}
         {check?.newer && pending?.pending !== check.version && !pending?.downloading && (
-          <ListRow icon={<ArrowDownToLine className="size-4" />} title={`下载 v${check.version}`} description={`${check.fromServer ? "优先从服务器下载 · " : ""}支持断点续传,校验后保存在本地`}
+          <ListRow icon={<ArrowDownToLine className="size-4" />} tone="accent" title={`下载 v${check.version}`} description={`${check.fromServer ? "优先从服务器下载 · " : ""}支持断点续传,校验后保存在本地`}
             onPress={() => call("update.download").catch((e) => toast.danger(errorText(e)))} />
         )}
       </ListGroup>

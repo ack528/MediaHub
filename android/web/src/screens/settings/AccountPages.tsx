@@ -21,7 +21,7 @@ export function AccountPage() {
         </Accordion>
       </section>
       <ListGroup>
-        <ActionRow icon={<Plus className="size-4" />} title="添加服务器" description="连接另一台服务器;现有的登录都保留,随时可以切换回来" action={() => call("session.deactivate")} />
+        <ActionRow icon={<Plus className="size-4" />} tone="accent" title="添加服务器" description="连接另一台服务器;现有的登录都保留,随时可以切换回来" action={() => call("session.deactivate")} />
       </ListGroup>
       {session.local ? (
         <ListGroup title="当前模式"><InfoRow title="模式" value="本地媒体(读取这部手机上的照片和视频)" /></ListGroup>

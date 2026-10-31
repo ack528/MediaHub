@@ -68,7 +68,7 @@ export function Onboarding() {
     <div className="page pt-safe pb-safe">
       <div className="mx-auto flex min-h-full max-w-md flex-col gap-6 px-5 py-10">
         <div className="flex flex-col items-center gap-3 pt-6 text-center">
-          <div className="grid size-16 place-items-center rounded-full bg-accent text-accent-foreground shadow-overlay">
+          <div className="grid size-16 place-items-center rounded-full bg-gradient-to-br from-violet-500 to-accent text-white shadow-overlay">
             <Picture className="size-8" />
           </div>
           <div>
@@ -91,7 +91,7 @@ export function Onboarding() {
               {session.servers.map((e) => (
                 <div key={e.id}>
                   <button type="button" onClick={() => pick(e)} className="flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left active:bg-default">
-                    <span className="grid size-9 place-items-center rounded-full bg-default"><Server className="size-4" /></span>
+                    <span className="grid size-9 place-items-center rounded-full bg-accent-soft text-accent"><Server className="size-4" /></span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium">{e.name}</span>
                       <span className="block truncate text-xs text-muted">{e.host}</span>
@@ -112,7 +112,7 @@ export function Onboarding() {
         <Card className="rounded-3xl p-6">
           {!info ? (
             <div className="flex flex-col items-center gap-4 text-center">
-              <span className="grid size-12 place-items-center rounded-full bg-default"><Server className="size-5" /></span>
+              <span className="grid size-12 place-items-center rounded-full bg-accent-soft text-accent"><Server className="size-5" /></span>
               <div>
                 <h2 className="font-semibold">连接服务器</h2>
                 <p className="mt-1 text-sm text-muted">输入 MediaHub 服务器地址,默认端口 8480、加密传输</p>

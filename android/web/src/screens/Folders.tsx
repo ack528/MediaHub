@@ -9,6 +9,7 @@ import type { Dialog, DialogsResp } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
 import { StateView } from "../components/List";
 import { TAB_BAR_SPACE } from "./Home";
+import { gradientFor } from "../lib/tones";
 
 const FIRST = "/api/v1/dialogs" + query({ group: "all", sort: "last", limit: 100 });
 
@@ -77,7 +78,12 @@ export function FoldersScreen() {
       <PageHeader
         large
         title="本地浏览"
-        subtitle={session.local ? "本地媒体" : session.servers.find((s) => s.id === session.activeId)?.name}
+        subtitle={
+          <span className="inline-flex items-center gap-1.5">
+            <span className={`size-1.5 rounded-full ${session.local ? "bg-warning" : "bg-success"}`} />
+            {session.local ? "本地媒体" : session.servers.find((s) => s.id === session.activeId)?.name}
+          </span>
+        }
         actions={
           <>
             <Button isIconOnly variant="ghost" aria-label="刷新" isPending={loading && all.length > 0} onPress={() => { haptic("Click"); load(); }}>
@@ -115,7 +121,7 @@ export function FoldersScreen() {
             {/* 置顶的特殊"会话":随机浏览(全部页随机所有盘符,盘符页只随机这个盘符) */}
             <button type="button" onClick={() => nav.push({ name: "random", params: { label: label === "all" ? null : label, roots } })}
               className="flex w-full items-center gap-3 rounded-2xl px-2.5 text-left transition-colors active:bg-default">
-              <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-accent text-accent-foreground"><Shuffle className="size-6" /></span>
+              <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-violet-500 to-accent text-white shadow-surface"><Shuffle className="size-6" /></span>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5 py-3">
                 <span className="truncate font-medium">{label === "all" ? "随机浏览" : `随机浏览 · ${label}`}</span>
                 <span className="truncate text-sm text-muted">{label === "all" ? "随机所有盘符里的图片或视频" : `只随机 ${label} 里的图片或视频`}</span>
@@ -143,7 +149,7 @@ function DialogRow({ d, recent, first, onOpen }: { d: Dialog; recent?: string; f
       style={{ containIntrinsicSize: "auto 72px" }}>
       <Avatar className="size-12 shrink-0 rounded-2xl">
         {cover && <Avatar.Image src={cover} alt="" loading="lazy" className="object-cover" />}
-        <Avatar.Fallback className="rounded-2xl">{d.title.slice(0, 1)}</Avatar.Fallback>
+        <Avatar.Fallback className={`rounded-2xl font-semibold text-white ${gradientFor(d.title)}`}>{d.title.slice(0, 1)}</Avatar.Fallback>
       </Avatar>
       <span className={`flex min-w-0 flex-1 flex-col gap-0.5 py-3 ${first ? "" : "border-t border-separator"}`}>
         <span className="flex items-baseline gap-2">
@@ -152,7 +158,7 @@ function DialogRow({ d, recent, first, onOpen }: { d: Dialog; recent?: string; f
         </span>
         <span className="flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-sm text-muted">{sub}</span>
-          <Chip size="sm" variant="soft" className="shrink-0 tabular-nums">{mediaCount(d)}</Chip>
+          <Chip size="sm" variant="soft" color={recent ? "accent" : "default"} className="shrink-0 tabular-nums">{mediaCount(d)}</Chip>
         </span>
       </span>
     </button>
