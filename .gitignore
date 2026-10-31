@@ -65,3 +65,7 @@ probe/app/src/main/assets/lsfg/
 probe/app/src/main/assets/play_src.mp4
 
 probe/app/src/main/assets/shaders/
+
+# ---- 手机端网页界面(android/web,React + HeroUI):依赖和构建产物(构建时由 Gradle 调 npm 生成进 assets/web)----
+android/web/node_modules/
+android/app/src/main/assets/web/

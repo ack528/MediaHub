@@ -71,6 +71,21 @@ android {
     }
 }
 
+// 界面是 android/web 下的 React + HeroUI 网页,构建 APK 前先用 npm 打包进 src/main/assets/web(见 web/vite.config.ts)
+val webDir = rootProject.file("web")
+val buildWeb by tasks.registering(Exec::class) {
+    group = "build"
+    description = "npm 构建网页界面到 assets/web"
+    workingDir = webDir
+    inputs.dir(webDir.resolve("src"))
+    inputs.files(webDir.resolve("package.json"), webDir.resolve("package-lock.json"), webDir.resolve("index.html"), webDir.resolve("vite.config.ts"))
+    outputs.dir(file("src/main/assets/web"))
+    // 第一次构建(没有 node_modules)先按 package-lock.json 安装依赖
+    val script = if (webDir.resolve("node_modules").isDirectory) "npm run build" else "npm ci && npm run build"
+    commandLine(if (System.getProperty("os.name").lowercase().contains("windows")) listOf("cmd", "/c", script) else listOf("sh", "-c", script))
+}
+tasks.named("preBuild") { dependsOn(buildWeb) }
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
     implementation(composeBom)

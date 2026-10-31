@@ -1,0 +1,47 @@
+@import "tailwindcss";
+@import "@heroui/styles";
+
+/* 安全区:原生把状态栏 / 导航栏高度推过来(--sat / --sab),浏览器里退回 env() */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+@utility pt-safe { padding-top: var(--sat); }
+@utility pb-safe { padding-bottom: var(--sab); }
+@utility px-safe { padding-left: var(--sal); padding-right: var(--sar); }
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+input, textarea, .selectable { -webkit-user-select: text; user-select: text; }
+img { -webkit-user-drag: none; }
+
+/* 每一页是自己的滚动容器:被盖住时保留滚动位置 */
+.page { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* 推入新页面:轻微右侧滑入 + 淡入 */
+.page-enter { animation: page-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+@keyframes page-in { from { transform: translateX(28px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* 大列表:屏幕外的格子不参与布局 / 绘制 */
+.tile { content-visibility: auto; contain-intrinsic-size: auto 160px; }
+
+.img-fade { animation: img-in 220ms ease-out; }
+@keyframes img-in { from { opacity: 0; } to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter, .img-fade { animation: none; }
+}

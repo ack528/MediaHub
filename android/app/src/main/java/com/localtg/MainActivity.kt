@@ -14,6 +14,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
 import com.localtg.ui.AppRoot
 import com.localtg.ui.RandomScreen
 import com.localtg.ui.SearchScreen
@@ -164,11 +166,50 @@ abstract class TgActivity : ComponentActivity() {
     }
 }
 
+/** 主界面:React + HeroUI 网页界面(见 [com.localtg.web.WebAppHost]);以前的 Compose 页面不再从这里进入。 */
 class MainActivity : TgActivity() {
     override val customTransitions = false
 
+    /** 和网页的 HeroUI 背景色(--background)一致:WebView 第一帧画出来之前不闪。 */
+    override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable =
+        ColorDrawable(if (night) 0xFF09090B.toInt() else 0xFFF5F5F5.toInt())
+
     @Composable
-    override fun Content() = AppRoot(container)
+    override fun Content() = com.localtg.web.WebAppHost(container)
+}
+
+/**
+ * 全屏查看器 / 播放器(原生:图片缩放、ExoPlayer、超分 / 补帧都要原生的 Surface / OpenGL)。
+ * 网页把条目放进 [AppContainer.viewerFeed] 后打开它;关闭时把最后停留的条目回调给网页,列表定位到那一项。
+ */
+class ViewerActivity : TgActivity() {
+    override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable = ColorDrawable(0xFF000000.toInt())
+
+    private var last: com.localtg.data.Item? = null
+
+    @Composable
+    override fun Content() {
+        FinishWhenLoggedOut()
+        val index = intent.getIntExtra(EXTRA_INDEX, 0)
+        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black)) {
+            com.localtg.ui.ViewerScreen(container, startIndex = index, onBack = { finish() }, onCurrent = { last = it })
+        }
+    }
+
+    override fun onDestroy() {
+        if (isFinishing) { onClosed?.invoke(last); onClosed = null }
+        super.onDestroy()
+    }
+
+    companion object {
+        private const val EXTRA_INDEX = "index"
+        @Volatile private var onClosed: ((com.localtg.data.Item?) -> Unit)? = null
+
+        fun start(ctx: Context, index: Int, closed: (com.localtg.data.Item?) -> Unit) {
+            onClosed = closed
+            ctx.startActivity(Intent(ctx, ViewerActivity::class.java).putExtra(EXTRA_INDEX, index))
+        }
+    }
 }
 
 /** 聊天页(一个文件夹):返回 = finish(),动画由系统负责;里面的"缩略图 ↔ 查看器"用共享元素。 */

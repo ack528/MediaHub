@@ -29,10 +29,11 @@ data class AppSettings(
     val slideshowBarPosition: String = "top",
     val slideshowPhotoIndicator: String = "bar",
     // ---- 外观
-    val theme: String = "dark",                // dark(默认)/ light / system
+    val theme: String = "light",               // light(默认,HeroUI 浅色界面)/ dark / system
     val chatBackground: String = "gradient",   // gradient / plain
     val motion: String = "slide",              // 界面动画:slide(系统风格,默认) / parallax(整屏滑动+视差) / axis(Material 共享轴) / fade(淡入淡出) / off(关闭)
     val darkDefaultApplied: Boolean = false,   // 4.0.0 起默认深色:老用户原来的"跟随系统"(当时的默认值)升级时改成深色,只做一次
+    val heroLightApplied: Boolean = false,     // 5.0.0 起界面换成 HeroUI,默认浅色:老用户升级时改一次浅色,之后自己改的不受影响
     val glass: String = "on",                 // 液态玻璃:on(按设备能力,默认) / frosted(只要毛玻璃) / off(关,只画半透明膜)
     val fineMotion: Boolean = true,            // 细节动效:弹簧按压回弹、列表入场、标签指示条跟手滑动、登录页入场(页面转场不受影响;界面动画选关闭时也一并关闭)
     val fontScale: Float = 1f,                 // 界面文字缩放(在系统字号之上再乘)
@@ -163,13 +164,16 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
     }?.let { s ->
         // 4.0.0 起默认深色主题:以前的默认值是"跟随系统",没改过的老用户升级后也换成深色(只做一次,之后用户自己改回跟随系统不受影响)
         if (!s.darkDefaultApplied) s.copy(theme = if (s.theme == "system") "dark" else s.theme, darkDefaultApplied = true) else s
+    }?.let { s ->
+        // 5.0.0 起新界面(HeroUI)默认浅色:只改一次
+        if (!s.heroLightApplied) s.copy(theme = "light", heroLightApplied = true) else s
     }?.let { it.copy(
         slideshowSeconds = slideSeconds(it.slideshowSeconds),
         slideshowBarThickness = slideBarThickness(it.slideshowBarThickness),
         slideshowBarColor = parseSlideBarColor(it.slideshowBarColor) ?: DEFAULT_SLIDE_BAR_COLOR,
         slideshowBarPosition = slideBarPosition(it.slideshowBarPosition),
         slideshowPhotoIndicator = slidePhotoIndicator(it.slideshowPhotoIndicator),
-    ) } ?: AppSettings(darkDefaultApplied = true)
+    ) } ?: AppSettings(darkDefaultApplied = true, heroLightApplied = true)
 
     val value: AppSettings get() = state.value
 
