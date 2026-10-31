@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"mediahub/internal/store"
 	"path/filepath"
 	"strings"
 	"time"
@@ -108,6 +109,9 @@ func (ix *Indexer) Watch(ctx context.Context, r Root, lock func() func(), opt Wa
 			changed, err := ix.RescanDirs(ctx, r, dirs)
 			unlock()
 			if err != nil {
+				if store.IsCorruption(err) {
+					return err // caller stops the service and repairs offline at startup
+				}
 				if retryDelay == 0 {
 					retryDelay = 30 * time.Second
 				} else {

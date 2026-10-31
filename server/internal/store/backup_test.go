@@ -71,3 +71,30 @@ func TestBackupRotateAndRestore(t *testing.T) {
 		t.Fatal("还原标记应该只生效一次")
 	}
 }
+
+func TestInvalidBackupDoesNotRotateGoodBackups(t *testing.T) {
+	for _, kind := range []string{"corrupt-fts", "missing-fts-row"} {
+		t.Run(kind, func(t *testing.T) {
+			path, db := repairFixture(t)
+			dir := filepath.Dir(path)
+			good, err := Backup(db, dir, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := `UPDATE media_fts_data SET block=x'00' WHERE id=10`
+			if kind == "missing-fts-row" {
+				q = `DELETE FROM media_fts WHERE rowid=63452`
+			}
+			if _, err := db.Exec(q); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Backup(db, dir, 1); err == nil {
+				t.Fatal("invalid backup was accepted")
+			}
+			list := ListBackups(dir)
+			if len(list) != 1 || list[0].Name != good {
+				t.Fatalf("good backup was rotated: %v", list)
+			}
+		})
+	}
+}

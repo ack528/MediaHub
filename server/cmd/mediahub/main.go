@@ -46,7 +46,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "3.4.2"
+const version = "3.4.3"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -190,7 +190,7 @@ func run(args []string, serve bool) int {
 	}
 	// 同一个数据目录只允许一个服务进程:以前重复启动(更新重启的间隙、手动又点了一次)会让两个进程抢管理端口和数据库,
 	// 日志里出现过"管理端口被占用"和"database is locked"。新进程等旧进程退出最多 20 秒,等不到就退出。
-	if serve {
+	{
 		var release func()
 		var lerr error
 		for i := 0; i < 40; i++ {
@@ -213,7 +213,7 @@ func run(args []string, serve bool) int {
 			log.Warn("数据库已用备份还原", "backup", name)
 		}
 	}
-	db, err := store.OpenMigrated(filepath.Join(cfg.DataDir, "hub.sqlite"))
+	db, err := store.OpenMigratedWithRepair(filepath.Join(cfg.DataDir, "hub.sqlite"))
 	if err != nil {
 		log.Error("打开数据库失败", "err", err)
 		return 1
@@ -304,7 +304,23 @@ func run(args []string, serve bool) int {
 		})
 	}
 	// first = 本次启动后的第一轮:被中断的扫描续扫,近期已完整扫描过的根目录直接跳过;之后的定时 / 手动扫描总是执行
-	scanOne := func(r index.Root, first bool) bool {
+	var repairRestart sync.Once
+	restartForCorruption := func(root string, err error) bool {
+		if !store.IsCorruption(err) {
+			return false
+		}
+		repairRestart.Do(func() {
+			log.Error("检测到数据库损坏,停止重复扫描; 重启时将保存现场并自修复", "root", root, "err", err)
+			if serve {
+				if err := update.Restart(projectRoot(), cfg.Path, stop); err != nil {
+					log.Error("无法自动重启进行数据库修复,请手动启动服务", "err", err)
+				}
+			}
+			stop()
+		})
+		return true
+	}
+	scanOne := func(r index.Root, first bool) error {
 		defer ix.LockRoot(r.ID)() // 和增量索引互斥:同一个根目录同一时间只做一件事
 		skipAge := time.Duration(cfg.Scan.SkipWithinHours) * time.Hour
 		skipped := first && (r.Reused || !ix.ScanDue(r, skipAge))
@@ -319,12 +335,12 @@ func run(args []string, serve bool) int {
 				if !errors.Is(err, context.Canceled) {
 					log.Error("扫描失败", "root", r.Path, "err", err)
 				}
-				return false
+				return err
 			}
 		}
 		if err := ix.Enrich(ctx, r); err != nil && !errors.Is(err, context.Canceled) {
 			log.Error("补全元数据失败", "root", r.Path, "err", err)
-			return false
+			return err
 		}
 		if jf != nil && !skipped {
 			rc, c0 := context.WithTimeout(ctx, 10*time.Second)
@@ -339,7 +355,7 @@ func run(args []string, serve bool) int {
 		if n := poster.Warm(ctx, r.ID); n > 0 {
 			log.Info("封面预热完成", "root", r.Path, "videos", n)
 		}
-		return true
+		return nil
 	}
 	// 升级后 / 启动后先把对话计数整理一遍,手机马上看到正确的列表(不用等扫描)
 	for _, r := range roots {
@@ -371,6 +387,9 @@ func run(args []string, serve bool) int {
 						unlock := ix.LockRoot(rr.ID)
 						defer unlock()
 						if err := ix.Enrich(ctx, rr); err != nil && !errors.Is(err, context.Canceled) {
+							if restartForCorruption(rr.Path, err) {
+								return
+							}
 							log.Warn("增量索引后补全元数据失败", "root", rr.Path, "err", err)
 						}
 						syncJF()
@@ -379,6 +398,9 @@ func run(args []string, serve bool) int {
 						}
 					},
 				})
+				if restartForCorruption(rr.Path, err) {
+					return
+				}
 				if err != nil {
 					log.Info("这个根目录的变更监视不可用(网络盘 / 权限?),只用定时扫描", "root", rr.Path, "err", err)
 				} else {
@@ -401,12 +423,15 @@ func run(args []string, serve bool) int {
 			first := true
 			fails := 0
 			for {
-				ok := scanOne(r, first)
+				scanErr := scanOne(r, first)
 				first = false
+				if restartForCorruption(r.Path, scanErr) {
+					return
+				}
 				if !serve {
 					return
 				}
-				if !ok && ctx.Err() == nil {
+				if scanErr != nil && ctx.Err() == nil {
 					// 扫描 / 补全失败(数据库忙、磁盘读不了…):隔一会儿自动重试(扫描可续扫,不会从头来),不再停在那里等下一个定时周期
 					fails++
 					wait := time.Duration(min(fails, 10)) * 30 * time.Second

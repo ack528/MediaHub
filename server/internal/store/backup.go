@@ -33,12 +33,48 @@ func Backup(db *sql.DB, dataDir string, keep int) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	name := backupPrefix + time.Now().Format("20060102-150405") + backupSuffix
-	dst := filepath.Join(dir, name)
-	_ = os.Remove(dst)
+	name := backupPrefix + time.Now().Format("20060102-150405.000000000") + backupSuffix
+	// Pending files are not listed/restorable until validation has completed.
+	f, err := os.CreateTemp(dir, ".pending-backup-*")
+	if err != nil {
+		return "", err
+	}
+	dst := f.Name()
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	defer os.Remove(dst)
 	if _, err := db.Exec("VACUUM INTO '" + strings.ReplaceAll(dst, "'", "''") + "'"); err != nil {
-		_ = os.Remove(dst)
 		return "", fmt.Errorf("备份失败:%w", err)
+	}
+	// Validate the actual output, not just VACUUM's exit status. In particular,
+	// corrupt FTS shadow tables can be copied successfully. Never rotate older
+	// backups until the new backup has passed validation.
+	copyDB, err := Open(dst)
+	if err == nil {
+		err = integrityCheck(copyDB)
+		if err == nil {
+			tx, txErr := copyDB.Begin()
+			if txErr == nil {
+				var broken bool
+				broken, txErr = checkSearchIndex(tx)
+				_ = tx.Rollback()
+				if txErr == nil && broken {
+					txErr = fmt.Errorf("搜索索引不完整")
+				}
+			}
+			err = txErr
+		}
+		closeErr := copyDB.Close()
+		if err == nil {
+			err = closeErr
+		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("备份校验失败,旧备份已保留: %w", err)
+	}
+	if err := os.Rename(dst, filepath.Join(dir, name)); err != nil {
+		return "", fmt.Errorf("保存已验证备份失败: %w", err)
 	}
 	if keep > 0 {
 		list := ListBackups(dataDir)

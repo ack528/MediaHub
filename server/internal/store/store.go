@@ -18,14 +18,34 @@ func Open(path string) (*sql.DB, error) {
 	}
 	// 6 个盘同时扫描 + 补元数据各占着连接,8 个不够,接口请求(浏览 / 播放)拿不到连接就要排队等 —— 32 个连接对 SQLite 文件库几乎没有成本
 	db.SetMaxOpenConns(32)
-	return db, db.Ping()
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
 }
 
 // OpenMigrated 打开并迁移到最新模式。
 func OpenMigrated(path string) (*sql.DB, error) {
+	return openMigrated(path, false)
+}
+
+// OpenMigratedWithRepair is for startup, before background workers are started.
+// The caller must hold the data-directory process lock for the entire service.
+func OpenMigratedWithRepair(path string) (*sql.DB, error) {
+	return openMigrated(path, true)
+}
+
+func openMigrated(path string, repair bool) (*sql.DB, error) {
 	db, err := Open(path)
 	if err != nil {
 		return nil, err
+	}
+	if repair {
+		if err := ensureDatabase(db, path); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	if err := Migrate(db); err != nil {
 		db.Close()
