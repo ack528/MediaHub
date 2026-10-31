@@ -95,6 +95,9 @@ fun WebAppHost(c: AppContainer) {
         }
     }
 
+    // 读取已保存的服务器和登录(以前由 AppRoot 做);网页的 boot 要等它读完
+    LaunchedEffect(Unit) { if (!c.session.loaded.value) c.session.load() }
+
     LaunchedEffect(Unit) {
         web.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(v: WebView, request: WebResourceRequest): WebResourceResponse? = media.handle(request)
