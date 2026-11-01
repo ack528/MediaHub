@@ -321,7 +321,7 @@ fn start_service_blocking() -> Result<(), String> {
     // An existing process may be checking a large database before it listens.
     // Wait for that process instead of spawning a competing instance.
     if !find_pids().is_empty() {
-        return if wait_for(&cfg, true, 180) { Ok(()) } else { Err("服务仍在启动或未响应，请查看日志后再试".into()) };
+        return if wait_for(&cfg, true, 600) { Ok(()) } else { Err("服务仍在启动或未响应，请查看日志后再试".into()) };
     }
     let mut child = Command::new(&exe)
         .arg("serve")
@@ -336,7 +336,7 @@ fn start_service_blocking() -> Result<(), String> {
         .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
         .spawn()
         .map_err(|e| format!("启动失败:{e}"))?;
-    for _ in 0..720 {
+    for _ in 0..2400 {
         if ping(&cfg).is_some() { return Ok(()); }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             return Err(format!("服务启动失败({status})，请查看日志"));
