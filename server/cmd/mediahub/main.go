@@ -46,7 +46,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "3.4.4"
+const version = "3.4.5"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -497,6 +497,7 @@ func run(args []string, serve bool) int {
 	}
 	srv.WarmRandom(ctx)
 	srv.Restart = func() error { return update.Restart(projectRoot(), cfg.Path, stop) }
+	srv.Shutdown = stop
 	srv.Render.Gov = gov                        // 播放 / 传输期间图片转换最多 2 路同时
 	srv.StartOptimizeWorker(ctx)                // 存储优化:视频压缩队列(没有任务时什么都不做)
 	srv.StartClients(ctx)                       // 客户端连接追踪:速度采样、过期清理

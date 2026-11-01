@@ -203,17 +203,15 @@ fn ping(cfg: &Value) -> Option<Value> {
     http_get(&format!("{}/api/v1/server/info", base_url(cfg)), None, 800).ok()
 }
 
+// Match the full server executable path and its serve command. Windows image
+// names are case-insensitive: taskkill /IM mediahub.exe also kills MediaHub.exe.
 fn find_pids() -> Vec<u32> {
-    let out = Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq mediahub.exe", "/FO", "CSV", "/NH"])
+    let out = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", r#"Get-CimInstance Win32_Process -Filter "Name='mediahub.exe'" | Where-Object { $_.ExecutablePath -ieq $env:MEDIAHUB_SERVER_EXE -and $_.CommandLine -match '(?i)(?:^|\s)serve(?:\s|$)' } | ForEach-Object { $_.ProcessId }"#])
+        .env("MEDIAHUB_SERVER_EXE", server_exe())
         .creation_flags(CREATE_NO_WINDOW)
         .output();
-    let Ok(out) = out else { return vec![] };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| l.starts_with("\"mediahub.exe\""))
-        .filter_map(|l| l.split("\",\"").nth(1).and_then(|p| p.trim_matches('"').parse().ok()))
-        .collect()
+    out.ok().map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|s| s.trim().parse().ok()).collect()).unwrap_or_default()
 }
 
 fn wait_for(cfg: &Value, up: bool, secs: u64) -> bool {
@@ -320,7 +318,12 @@ fn start_service_blocking() -> Result<(), String> {
     if !exe.exists() {
         return Err(format!("找不到服务程序:{}", exe.display()));
     }
-    Command::new(&exe)
+    // An existing process may be checking a large database before it listens.
+    // Wait for that process instead of spawning a competing instance.
+    if !find_pids().is_empty() {
+        return if wait_for(&cfg, true, 180) { Ok(()) } else { Err("服务仍在启动或未响应，请查看日志后再试".into()) };
+    }
+    let mut child = Command::new(&exe)
         .arg("serve")
         .arg("-config")
         .arg(config_path())
@@ -330,25 +333,40 @@ fn start_service_blocking() -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        // 与管理程序脱离(新进程组),关闭管理界面后服务继续运行。
-        // 不能用 DETACHED_PROCESS:无控制台的进程启动 ffmpeg / ExifTool 时,Windows 会为每个子进程新建一个可见的 cmd 窗口;
-        // 只用 CREATE_NO_WINDOW,服务端带一个隐藏的控制台,子进程继承它,不再弹窗。
         .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
         .spawn()
         .map_err(|e| format!("启动失败:{e}"))?;
-    if wait_for(&cfg, true, 12) {
-        Ok(())
-    } else {
-        Err("服务在 12 秒内没有响应,请查看日志".into())
+    for _ in 0..720 {
+        if ping(&cfg).is_some() { return Ok(()); }
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!("服务启动失败({status})，请查看日志"));
+        }
+        std::thread::sleep(Duration::from_millis(250));
     }
+    Err("服务仍在启动或未响应，请查看日志后再试".into())
 }
 
 fn stop_service_blocking() -> Result<(), String> {
     let cfg = read_json(&config_path());
-    let _ = Command::new("taskkill")
-        .args(["/F", "/IM", "mediahub.exe"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+    // Newer servers stop their workers and close SQLite before exiting.
+    if let Some(key) = admin_key(&cfg) {
+        let url = format!("{}/api/v1/admin/local-shutdown", base_url(&cfg));
+        if http_post_empty(&url, &key).is_ok() {
+            for _ in 0..80 {
+                if find_pids().is_empty() { return Ok(()); }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            return Err("服务正在关闭，请稍候再试".into());
+        }
+    }
+    // Compatibility fallback for older servers or a process stuck before HTTP starts.
+    for pid in find_pids() {
+        let status = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status().map_err(|e| e.to_string())?;
+        if !status.success() { return Err(format!("无法停止服务进程 {pid}")); }
+    }
     if wait_for(&cfg, false, 8) {
         Ok(())
     } else {

@@ -66,6 +66,7 @@ type Server struct {
 	// StartedAt:服务启动时间,用于状态页显示运行时长
 	StartedAt time.Time
 	Restart   func() error
+	Shutdown  func()
 	configMu  sync.Mutex
 	// Update:自动更新(可为空)
 	Update *update.Updater
@@ -118,6 +119,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/app/update.apk", authd(s.appUpdateApk)) // 下载缓存好的安装包(支持断点续传)
 	mux.Handle("GET /api/v1/admin/clients", s.adminOnly(s.adminClients))
 	mux.Handle("POST /api/v1/admin/clients/kick", s.adminOnly(s.adminClientKick))
+	mux.HandleFunc("POST /api/v1/admin/local-shutdown", s.localShutdown)
 	mux.Handle("GET /api/v1/admin/tunnel", s.adminOnly(s.adminTunnelStatus))
 	mux.Handle("POST /api/v1/admin/tunnel/{action}", s.adminOnly(s.adminTunnelAction))
 	mux.Handle("GET /api/v1/speedtest/ping", authd(s.speedPing))
@@ -242,6 +244,21 @@ func (w *statusWriter) Flush() {
 	}
 }
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// localShutdown is restricted to the local management key, not remote admins.
+func (s *Server) localShutdown(w http.ResponseWriter, r *http.Request) {
+	key := r.Header.Get("X-Admin-Key")
+	if !isLoopback(r.RemoteAddr) || key == "" || s.AdminKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(s.AdminKey)) != 1 {
+		writeErr(w, 403, "forbidden", "仅允许本机管理程序停止服务")
+		return
+	}
+	if s.Shutdown == nil {
+		writeErr(w, 503, "unavailable", "无法停止服务")
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	go s.Shutdown()
+}
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { bridge } from "./bridge";
+import { applyChanges } from "./configMerge";
 import { DEFAULT_CONFIG, mergeConfig, type Config, type Env, type LocalIp, type ServiceStatus } from "./types";
 
 interface Toast { id: number; text: string; kind: "ok" | "err" }
@@ -36,6 +37,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const cfgRef = useRef(config);
   const saveTimer = useRef<number | undefined>(undefined);
+  const savedRef = useRef(config);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const runningRef = useRef(false);
 
   const toast = useCallback((text: string, kind: "ok" | "err" = "ok") => {
@@ -61,6 +64,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setEnv(e); setIps(i);
         const merged = mergeConfig(c);
         cfgRef.current = merged;
+        savedRef.current = merged;
         setConfig(merged);
       } catch (e) { toast("读取配置失败:" + String(e), "err"); }
       setLoaded(true);
@@ -75,12 +79,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     cfgRef.current = next;
     setConfig(next);
     window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(async () => {
-      try {
-        await bridge.writeConfig(cfgRef.current);
-        toast("已保存");
+    saveTimer.current = window.setTimeout(() => {
+      saveQueue.current = saveQueue.current.then(async () => {
+        const base = savedRef.current;
+        const snapshot = cfgRef.current;
+        const latest = mergeConfig(await bridge.readConfig());
+        const merged = applyChanges(base, snapshot, latest) as Config;
+        await bridge.writeConfig(merged);
+        savedRef.current = merged;
+        const current = applyChanges(snapshot, cfgRef.current, merged) as Config;
+        cfgRef.current = current;
+        setConfig(current);
+        toast("???");
         if (runningRef.current) setRestartPending(true);
-      } catch (e) { toast("保存失败:" + String(e), "err"); }
+      }).catch((e) => { toast("????:" + String(e), "err"); });
     }, 500);
   }, [toast]);
 
