@@ -199,6 +199,7 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
 
         "viewer.open" -> { openViewer(a); JsonNull }
         "viewer.bounds" -> { heroSrc(a)?.let { onHeroBounds(a.s("id"), it) }; JsonNull }
+        "viewer.revealed" -> { revealed?.complete(Unit); JsonNull }
 
         "nav.open" -> { com.localtg.WebPageActivity.start(web.context, a["route"] ?: JsonNull); JsonNull }
         "nav.close" -> { (web.context as? android.app.Activity)?.finish(); JsonNull }
@@ -495,6 +496,20 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
             a.sOrNull("thumb")?.let { withTimeoutOrNull(250) { media.warmThumb(first, it) } }
         }
         openViewerAt(index)
+    }
+
+    private var revealed: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
+    /**
+     * 返回动画已经落到缩略图上:让网页把藏起来的那一格显示出来,等它画好(最多 [timeoutMs])再移走查看器 ——
+     * 否则查看器先消失、网页晚一两帧才显示,中间那一格是空的,看起来闪一下。
+     */
+    suspend fun revealTile(timeoutMs: Long = 150) {
+        val d = kotlinx.coroutines.CompletableDeferred<Unit>()
+        revealed = d
+        emit("viewerReveal")
+        withTimeoutOrNull(timeoutMs) { d.await() }
+        if (revealed === d) revealed = null
     }
 
     /** 查看器关掉了:告诉网页最后看的是哪一项(列表定位过去;随机浏览并入查看器里多取的几批)。 */

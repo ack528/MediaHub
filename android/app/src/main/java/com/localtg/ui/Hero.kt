@@ -264,9 +264,12 @@ private fun lerp(a: Rect, b: Rect, t: Float) = Rect(lerp(a.left, b.left, t), ler
  *    不依赖系统的预测性返回(很多国产 ROM 的侧滑返回只在松手时发一个"返回",不给进度);
  *  - **可打断**:打开没结束就返回,从当前位置直接收回;弹回途中可以再抓住;返回动画用 Animatable,随时接着当前值走。
  *  - 视频:动画期间不创建播放器(SurfaceView 不跟着裁剪和缩放),动画结束才开始播;返回前先截图盖住画面。视频页不做拖拽关闭(上下滑是亮度 / 音量)。
+ *
+ * [beforeFinish]:返回动画落到缩略图上之后、移走查看器之前调用 —— 列表不是 Compose 画的(网页)时,
+ * 等它把藏起来的那一格重新显示出来,否则中间有一帧那一格是空的(闪一下)。
  */
 @Composable
-fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, root: @Composable (openViewer: (Int) -> Unit) -> Unit) {
+fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish: suspend () -> Unit = {}, root: @Composable (openViewer: (Int) -> Unit) -> Unit) {
     val hero = remember { HeroState() }
     var index by remember { mutableIntStateOf(-1) } // -1 = 查看器没开(旋转屏幕不重建 Activity,不用存)
     var current by remember { mutableStateOf<Item?>(null) }
@@ -356,7 +359,9 @@ fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, root: @Compos
                 hero.phase = HeroState.Phase.Closing
                 hero.dragging = false
                 hero.p.animateTo(0f, if (interrupt) CLOSE_SPRING else CLOSE_TWEEN)
-                finishClose()
+                beforeFinish()
+                // 等待期间又点开了(同一张从当前位置展开 / 换了一张):不要把它关掉
+                if (hero.phase == HeroState.Phase.Closing && hero.p.value == 0f) finishClose()
             }
         }
 

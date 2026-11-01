@@ -63,3 +63,9 @@ on("viewerCurrent", (id: string) => {
     if (info) call("viewer.bounds", { id, hero: info }).catch(() => {});
   }, 32);
 });
+
+// 返回动画已经落到缩略图上:先把这一格显示出来,画好之后(两帧)告诉原生再移走查看器,中间不会有一帧是空的
+on("viewerReveal", () => {
+  if (style) style.textContent = "";
+  requestAnimationFrame(() => requestAnimationFrame(() => { call("viewer.revealed").catch(() => {}); }));
+});
