@@ -2,46 +2,34 @@
 @import "@heroui/styles";
 
 /*
- * 配色:HeroUI 默认是纯中性灰(浅色几乎纯白、深色几乎纯黑),显得单薄。
- * 改成带一点冷调(蓝灰 / 深海军蓝)的中性色,背景、卡片、次级表面、分隔线拉开层次;
- * 页面顶部再铺一层很淡的品牌色光晕(固定在背景上,列表在上面滚动),整体更有"质感"。
+ * 配色:中性色(不带色调)。浅色是灰白的底 + 白色卡片;深色是偏浅的深灰(不是接近纯黑),卡片再亮一档。
+ * 背景、卡片、次级表面、分隔线之间拉开层次。
  */
 :root, .light, [data-theme="light"] {
-  --background: oklch(0.955 0.011 258);
-  --surface: oklch(0.993 0.003 258);
-  --surface-secondary: oklch(0.966 0.008 258);
-  --surface-tertiary: oklch(0.946 0.01 258);
-  --overlay: oklch(0.993 0.003 258);
-  --default: oklch(0.935 0.011 258);
-  --field-background: oklch(0.993 0.003 258);
-  --segment: oklch(0.995 0.002 258);
-  --muted: oklch(0.54 0.022 258);
-  --border: oklch(0.9 0.012 258);
-  --separator: oklch(0.915 0.01 258);
-  --glow-a: oklch(0.72 0.14 250 / 0.22); /* 左上:品牌蓝 */
-  --glow-b: oklch(0.72 0.14 300 / 0.16); /* 右上:淡紫 */
+  --background: #ededef;
+  --surface: #ffffff;
+  --surface-secondary: #f4f4f5;
+  --surface-tertiary: #eaeaec;
+  --overlay: #ffffff;
+  --default: #e6e6e9;
+  --field-background: #ffffff;
+  --segment: #ffffff;
+  --muted: #71717a;
+  --border: #dcdce0;
+  --separator: #e4e4e7;
 }
 .dark, [data-theme="dark"] {
-  --background: oklch(0.185 0.02 262);
-  --surface: oklch(0.235 0.022 262);
-  --surface-secondary: oklch(0.268 0.022 262);
-  --surface-tertiary: oklch(0.29 0.022 262);
-  --overlay: oklch(0.25 0.022 262);
-  --default: oklch(0.285 0.022 262);
-  --field-background: oklch(0.235 0.022 262);
-  --segment: oklch(0.37 0.024 262);
-  --muted: oklch(0.72 0.022 262);
-  --border: oklch(0.33 0.02 262);
-  --separator: oklch(0.3 0.018 262);
-  --glow-a: oklch(0.55 0.16 255 / 0.34);
-  --glow-b: oklch(0.5 0.16 300 / 0.24);
-}
-body {
-  background-image:
-    radial-gradient(110% 55% at 0% 0%, var(--glow-a), transparent 62%),
-    radial-gradient(90% 45% at 100% 0%, var(--glow-b), transparent 60%);
-  background-repeat: no-repeat;
-  background-attachment: fixed;
+  --background: #232326;
+  --surface: #2e2e32;
+  --surface-secondary: #37373c;
+  --surface-tertiary: #3d3d42;
+  --overlay: #303035;
+  --default: #3a3a3f;
+  --field-background: #2e2e32;
+  --segment: #4a4a50;
+  --muted: #a1a1aa;
+  --border: #46464c;
+  --separator: #3c3c41;
 }
 
 /* 安全区:原生把状态栏 / 导航栏高度推过来(--sat / --sab),浏览器里退回 env() */
@@ -99,7 +87,7 @@ img { -webkit-user-drag: none; }
 
 /* 首页底部导航(照 IT 之家):液态玻璃胶囊 + 镜片(平时浅灰,按下变成透明的玻璃泡) */
 :root { --tabbar-cut: #fff; } /* 实心图标里挖出来的细节色 */
-.dark { --tabbar-cut: #1a2030; }
+.dark { --tabbar-cut: #2e2e32; }
 .tabbar-glass {
   background: rgb(255 255 255 / 0.5);
   box-shadow:
@@ -135,7 +123,7 @@ img { -webkit-user-drag: none; }
   opacity: 0.8;
 }
 .dark .tabbar-glass {
-  background: rgb(30 38 54 / 0.5);
+  background: rgb(52 52 57 / 0.55);
   box-shadow:
     0 10px 30px rgb(0 0 0 / 0.45),
     inset 1.5px 1.5px 0 rgb(255 255 255 / 0.18), inset -1px -1px 0 rgb(255 255 255 / 0.06),
