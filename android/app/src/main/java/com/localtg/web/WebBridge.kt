@@ -7,7 +7,6 @@ import android.webkit.WebView
 import coil3.SingletonImageLoader
 import com.localtg.AppContainer
 import com.localtg.AppLog
-import com.localtg.ViewerActivity
 import com.localtg.data.ApiDiskCache
 import com.localtg.data.ApiException
 import com.localtg.data.AppJson
@@ -34,7 +33,11 @@ import com.localtg.ui.Hap
 import com.localtg.ui.probeDeviceCodecs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
@@ -69,9 +72,10 @@ import java.io.IOException
  * 原生主动推送用 `window.__lb.emit(name, json)`(登录状态、设置、返回键、查看器关闭、下载进度…)。
  * 数据层(登录 / 证书指纹 / 令牌 / 内网直连 / 本地媒体 / 浏览记录)全部沿用原来的 Kotlin 实现,网页只负责界面。
  */
-class WebBridge(private val c: AppContainer, private val web: WebView) {
+class WebBridge(private val c: AppContainer, private val web: WebView, private val media: WebMedia) {
     private val app = web.context.applicationContext
-    private val scope = c.scope
+    /** 跟着这个 WebView(页面)的生命周期:页面关掉后不再推送事件。 */
+    private val scope = CoroutineScope(c.scope.coroutineContext + SupervisorJob(c.scope.coroutineContext[Job]))
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
     /** 读取媒体权限:由宿主界面注入(要用 Activity 的权限弹窗)。 */
@@ -80,6 +84,17 @@ class WebBridge(private val c: AppContainer, private val web: WebView) {
     var onBackEnabled: (Boolean) -> Unit = {}
     /** 状态栏 / 导航栏图标深浅(浅色界面要深色图标)。 */
     var onSystemBars: (Boolean) -> Unit = {}
+    /** 网页第一屏已经渲染好(新页面的 Activity 转场等它,不会先滑进来一块空白)。 */
+    var onReady: () -> Unit = {}
+    /** 打开查看器(缩略图展开的转场在宿主的 ViewerNavHost 里)。 */
+    var openViewerAt: (Int) -> Unit = {}
+    /** 网页报告缩略图的位置(打开 / 返回动画的起点和终点)。 */
+    var onHeroBounds: (String, com.localtg.ui.HeroSrc) -> Unit = { _, _ -> }
+
+    /** 这个 WebView 显示的页面(null = 首页);每个二级页面是一个 Activity,和以前一样用系统的转场和返回手势。 */
+    var page: JsonElement = JsonNull
+
+    private var feed: ViewerFeed? = null
 
     private var speedJob: Job? = null
 
@@ -87,6 +102,7 @@ class WebBridge(private val c: AppContainer, private val web: WebView) {
     @Volatile var insets: JsonElement = JsonNull
 
     init {
+        live += this
         // 登录状态、服务器列表变化:推给网页(令牌不出原生)
         scope.launch {
             combine(c.session.servers, c.session.activeId, c.session.session, c.session.local) { _, _, _, _ -> sessionJson() }
@@ -125,6 +141,9 @@ class WebBridge(private val c: AppContainer, private val web: WebView) {
 
     private fun reply(id: String, ok: Boolean, data: JsonElement) =
         js("window.__lb&&window.__lb.resolve(${JsonPrimitive(id)},$ok,$data)")
+
+    /** 页面关掉:停止推送,不再接收别的页面的广播。 */
+    fun dispose() { live -= this; scope.cancel() }
 
     fun emit(name: String, data: JsonElement = JsonNull) = js("window.__lb&&window.__lb.emit(${JsonPrimitive(name)},$data)")
 
@@ -179,6 +198,10 @@ class WebBridge(private val c: AppContainer, private val web: WebView) {
         "caps" -> { if (!c.isLocal) runCatching { c.api.refreshCaps() }; AppJson.encodeToJsonElement(c.api.caps) }
 
         "viewer.open" -> { openViewer(a); JsonNull }
+        "viewer.bounds" -> { heroSrc(a)?.let { onHeroBounds(a.s("id"), it) }; JsonNull }
+
+        "nav.open" -> { com.localtg.WebPageActivity.start(web.context, a["route"] ?: JsonNull); JsonNull }
+        "nav.close" -> { (web.context as? android.app.Activity)?.finish(); JsonNull }
 
         "view.load" -> loadView(a.s("dialogId"))
         "view.save" -> { saveView(a.s("dialogId"), AppJson.decodeFromJsonElement(a["view"]!!), a.b("now")); JsonNull }
@@ -232,6 +255,9 @@ class WebBridge(private val c: AppContainer, private val web: WebView) {
         "app.haptic" -> { c.haptics.perform(runCatching { Hap.valueOf(a.s("kind")) }.getOrDefault(Hap.Tick)); JsonNull }
         "app.back" -> { onBackEnabled(a.b("enabled")); JsonNull }
         "app.bars" -> { onSystemBars(a.b("light")); JsonNull }
+        "app.ready" -> { onReady(); JsonNull }
+        // 发给所有打开着的页面(例如文件夹内搜索选中一条 → 文件夹页定位过去)
+        "app.broadcast" -> { val n = a.s("name"); val d = a["data"] ?: JsonNull; live.toList().forEach { it.emit(n, d) }; JsonNull }
         "app.changelog" -> changelog()
 
         "speed.start" -> { startSpeedTest(a.i("seconds") ?: 15, a.i("threads") ?: 1); JsonNull }
@@ -298,7 +324,8 @@ class WebBridge(private val c: AppContainer, private val web: WebView) {
             put("route", Route.current.value ?: "")
             put("notice", c.notice.value ?: "")
             put("crash", crash?.let { AppLog.crashSummary(it) } ?: "")
-            put("hasCrash", crash != null)
+            put("hasCrash", crash != null && page is JsonNull)
+            put("page", page)
             put("insets", insets)
         }
     }
@@ -424,7 +451,7 @@ class WebBridge(private val c: AppContainer, private val web: WebView) {
      * 打开全屏查看器 / 播放器:图片缩放、视频播放、超分 / 补帧都在原生里(OpenGL / ExoPlayer),网页只传条目和"怎么继续加载"。
      * source.kind:dialog(群里的历史)/ search(搜索结果)/ random(随机浏览)。
      */
-    private fun openViewer(a: JsonObject) {
+    private suspend fun openViewer(a: JsonObject) {
         val items = AppJson.decodeFromJsonElement<List<Item>>(a["items"]!!)
         val index = a.i("index") ?: 0
         val src = a["source"]?.takeIf { it is JsonObject }?.jsonObject
@@ -460,19 +487,37 @@ class WebBridge(private val c: AppContainer, private val web: WebView) {
             else -> ViewerFeed(items)
         }
         c.viewerFeed = feed
-        // 网页传来的缩略图位置是 CSS 像素,换成 WebView 里的像素
-        val from = a["from"]?.takeIf { it is JsonObject }?.jsonObject?.let { r ->
-            val d = web.resources.displayMetrics.density
-            fun f(k: String) = r[k]?.jsonPrimitive?.doubleOrNull?.toFloat() ?: 0f
-            android.graphics.Rect((f("x") * d).toInt(), (f("y") * d).toInt(), ((f("x") + f("w")) * d).toInt(), ((f("y") + f("h")) * d).toInt())
+        this.feed = feed
+        // 点开的缩略图:位置交给转场;图片先放进原生的内存缓存,查看器第一帧就有缩略图垫底(不是一片黑)
+        val first = items.getOrNull(index)
+        if (first != null) {
+            heroSrc(a)?.let { onHeroBounds(first.id, it) }
+            a.sOrNull("thumb")?.let { withTimeoutOrNull(250) { media.warmThumb(first, it) } }
         }
-        ViewerActivity.start(web.context, index, web, from) { last ->
-            emit("viewerClosed", buildJsonObject {
-                put("origin", feed.originDialogId ?: "")
-                put("itemId", last?.let { feed.returnPosition(it)?.second ?: it.id } ?: "")
-                put("items", if (feed.originDialogId == "random") AppJson.encodeToJsonElement(feed.items.toList()) else JsonNull)
-            })
+        openViewerAt(index)
+    }
+
+    /** 查看器关掉了:告诉网页最后看的是哪一项(列表定位过去;随机浏览并入查看器里多取的几批)。 */
+    fun viewerClosed(last: Item?) {
+        val f = feed ?: return
+        emit("viewerClosed", buildJsonObject {
+            put("origin", f.originDialogId ?: "")
+            put("itemId", last?.let { f.returnPosition(it)?.second ?: it.id } ?: "")
+            put("items", if (f.originDialogId == "random") AppJson.encodeToJsonElement(f.items.toList()) else JsonNull)
+        })
+    }
+
+    /** 网页传来的缩略图位置(CSS 像素:full 完整格子、visible 看得见的部分、r 圆角)换成像素。 */
+    private fun heroSrc(a: JsonObject): com.localtg.ui.HeroSrc? {
+        val h = a["hero"]?.takeIf { it is JsonObject }?.jsonObject ?: return null
+        val d = web.resources.displayMetrics.density
+        fun rect(k: String): androidx.compose.ui.geometry.Rect? {
+            val r = h[k]?.takeIf { it is JsonObject }?.jsonObject ?: return null
+            fun f(n: String) = (r[n]?.jsonPrimitive?.doubleOrNull?.toFloat() ?: 0f) * d
+            return androidx.compose.ui.geometry.Rect(f("x"), f("y"), f("x") + f("w"), f("y") + f("h")).takeIf { it.width > 0f && it.height > 0f }
         }
+        val full = rect("full") ?: return null
+        return com.localtg.ui.HeroSrc(full, rect("visible") ?: full, (h["r"]?.jsonPrimitive?.doubleOrNull?.toFloat() ?: 0f) * d)
     }
 
     // ---------------------------------------------------------------- 测速 / 更新 / 其它
@@ -575,6 +620,11 @@ class WebBridge(private val c: AppContainer, private val web: WebView) {
         val i = app.packageManager.getLaunchIntentForPackage(app.packageName)?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK) ?: return
         app.startActivity(i)
         android.os.Process.killProcess(android.os.Process.myPid())
+    }
+
+    companion object {
+        /** 所有打开着的页面(每个二级页面一个 WebView),广播用。只在主线程读写。 */
+        private val live = mutableSetOf<WebBridge>()
     }
 }
 

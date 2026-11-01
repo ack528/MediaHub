@@ -3,7 +3,8 @@ import { ArrowUpArrowDown, Bookmark, Calendar as CalendarIcon, ClockArrowRotateL
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Key } from "react";
 import { api, BridgeError, call, errorText, haptic, on, query } from "../lib/bridge";
 import { useApp } from "../lib/app";
-import { aspectOf, dayKey, dayLabel, formatDuration, formatShortTime, formatSize, stripExt, tileRect } from "../lib/media";
+import { aspectOf, dayKey, dayLabel, formatDuration, formatShortTime, formatSize, stripExt } from "../lib/media";
+import { heroArgs } from "../lib/hero";
 import { useBackHandler, useNav } from "../lib/nav";
 import type { Dialog, DialogView, HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
@@ -243,14 +244,15 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
     const list = itemsRef.current;
     const o = optsRef.current;
     call("viewer.open", {
-      items: list, index: Math.max(0, list.findIndex((x) => x.id === item.id)), from: tileRect(item.id),
+      items: list, index: Math.max(0, list.findIndex((x) => x.id === item.id)), ...heroArgs(item.id),
       source: { kind: "dialog", dialogId: id, sort: o.sort, dir: o.asc ? "asc" : "desc", types: o.types.join(",") },
     }).catch((e) => toast.danger(errorText(e)));
   };
   useEffect(() => on("viewerClosed", (d: { origin: string; itemId: string }) => {
     if (d.origin !== id || !d.itemId) return;
-    if (!scrollToItem({ id: d.itemId, offset: 0 })) reload(d.itemId);
-  }), [id, scrollToItem, reload]);
+    // 看的过程中列表已经跟着滚到了那一项(返回动画落在那里);查看器里翻到了列表还没加载的部分时,围绕它重新加载
+    if (!scroller.current?.querySelector(`[data-item="${CSS.escape(d.itemId)}"]`)) reload(d.itemId);
+  }), [id, reload]);
   // 文件夹内搜索选中了一条:围绕它重新加载
   useEffect(() => on("jumpTo", (d: { dialogId: string; itemId: string }) => { if (d.dialogId === id) reload(d.itemId); }), [id, reload]);
 
@@ -394,7 +396,7 @@ function FeedCard({ item, width, onOpen }: { item: Item; width: number; onOpen: 
   const ratio = Math.min(2, Math.max(0.5, aspectOf(item)));
   return (
     <button type="button" data-item={item.id} onClick={onOpen} className="tile rounded-3xl bg-surface p-2 text-left shadow-surface transition-transform active:scale-[0.98]" style={{ containIntrinsicSize: `auto ${Math.round(180 / ratio) + 56}px` }}>
-      <div className="relative overflow-hidden rounded-2xl" style={{ aspectRatio: String(ratio) }}>
+      <div data-hero className="relative overflow-hidden rounded-2xl" style={{ aspectRatio: String(ratio) }}>
         <Thumb item={item} width={width} className="absolute inset-0" />
         {item.type === "video" && (
           <span className="absolute right-1.5 bottom-1.5 rounded-full bg-black/55 px-2 py-0.5 text-[11px] text-white">{formatDuration(item.durationMs) || "视频"}</span>
@@ -440,7 +442,7 @@ function TimelineBubble({ item, width, widthPct, onOpen }: { item: Item; width: 
   const press = useLongPress(onOpen);
   return (
     <div data-item={item.id} className="tile" style={{ width: `${widthPct}%`, containIntrinsicSize: `auto ${Math.round(300 / ratio) + 22}px` }}>
-      <button type="button" className="relative block w-full overflow-hidden rounded-2xl bg-surface-tertiary active:opacity-90" style={{ aspectRatio: String(ratio) }} {...press}>
+      <button type="button" data-hero className="relative block w-full overflow-hidden rounded-2xl bg-surface-tertiary active:opacity-90" style={{ aspectRatio: String(ratio) }} {...press}>
         <Thumb item={item} width={width} className="absolute inset-0" />
         {item.type === "video" && (
           <>

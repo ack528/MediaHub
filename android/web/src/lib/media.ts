@@ -130,13 +130,3 @@ export function typesLabel(types: string[]): string {
   const m: Record<string, string> = { photo: "照片", video: "视频", gif: "动图" };
   return types.map((t) => m[t] ?? t).join("、");
 }
-
-/** 条目缩略图在屏幕上的位置(CSS 像素):打开原生查看器时从这里放大。被盖住 / 不在屏幕里的格子不算。 */
-export function tileRect(id: string): { x: number; y: number; w: number; h: number } | null {
-  for (const el of document.querySelectorAll<HTMLElement>(`[data-item="${CSS.escape(id)}"]`)) {
-    if (el.closest("[inert]")) continue;
-    const r = (el.querySelector("img") ?? el).getBoundingClientRect();
-    if (r.width > 0 && r.bottom > 0 && r.top < innerHeight) return { x: r.x, y: r.y, w: r.width, h: r.height };
-  }
-  return null;
-}

@@ -1,14 +1,14 @@
 import { SearchField, Spinner, Tabs, toast } from "@heroui/react";
 import { Magnifier } from "@gravity-ui/icons";
 import { useCallback, useEffect, useRef, useState, type Key } from "react";
-import { api, call, emitLocal, errorText, query } from "../lib/bridge";
+import { api, call, errorText, query } from "../lib/bridge";
 import { useApp } from "../lib/app";
 import { useNav } from "../lib/nav";
 import type { HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
 import { StateView } from "../components/List";
 import { MediaTile } from "../components/Thumb";
-import { tileRect } from "../lib/media";
+import { heroArgs } from "../lib/hero";
 
 const TYPE_TABS = [["all", "全部", "photo,video,gif"], ["photo", "照片", "photo,gif"], ["video", "视频", "video"]] as const;
 
@@ -63,15 +63,16 @@ export function SearchScreen({ dialogId, dialogTitle }: { dialogId?: string; dia
 
   const open = (it: Item) => {
     call("viewer.open", {
-      items, index: Math.max(0, items.findIndex((x) => x.id === it.id)), from: tileRect(it.id),
+      items, index: Math.max(0, items.findIndex((x) => x.id === it.id)), ...heroArgs(it.id),
       source: { kind: "search", q: searched, types, dialog: dialogId ?? null, cursor: next },
     }).catch((e) => toast.danger(errorText(e)));
   };
 
   const pick = (it: Item) => {
     if (!dialogId) return open(it);
+    // 文件夹页在另一个页面(Activity)里:广播给它,再关掉搜索页
+    call("app.broadcast", { name: "jumpTo", data: { dialogId, itemId: it.id } }).catch(() => {});
     nav.pop();
-    emitLocal("jumpTo", { dialogId, itemId: it.id });
   };
 
   return (

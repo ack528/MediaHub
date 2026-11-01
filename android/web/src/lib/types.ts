@@ -150,4 +150,6 @@ export interface BootInfo {
   crash: string;
   hasCrash: boolean;
   insets: Insets | null;
+  /** 这个 WebView 显示的二级页面(每个页面一个原生 Activity);null = 首页。 */
+  page?: import("./nav").Route | null;
 }

@@ -54,6 +54,7 @@ export function MediaTile({
     <button
       type="button"
       data-item={item.id}
+      data-hero
       className={`tile group relative block w-full overflow-hidden text-left outline-none focus-visible:ring-2 focus-visible:ring-accent ${className}`}
       style={style}
       {...press}

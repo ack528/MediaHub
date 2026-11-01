@@ -8,7 +8,7 @@ import type { HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
 import { StateView } from "../components/List";
 import { MediaTile } from "../components/Thumb";
-import { tileRect } from "../lib/media";
+import { heroArgs } from "../lib/hero";
 import { TAB_BAR_SPACE } from "./Home";
 
 /** 服务端每个范围 × 类型预先准备了 12 份随机序列,种子 1..12 就是用哪一份;换一批 = 换成另一份。 */
@@ -75,18 +75,17 @@ export function RandomScreen({ label, roots, asTab }: { label: string | null; ro
     return () => io.disconnect();
   }, [items.length, more]);
 
-  // 从查看器返回:并入查看器里多取的几批,定位到最后看的那一项
+  // 从查看器返回:并入查看器里多取的几批(看的过程中列表已经跟着滚到了那一项)
   useEffect(() => on("viewerClosed", (d: { origin: string; itemId: string; items: Item[] | null }) => {
     if (d.origin !== "random") return;
     if (d.items && d.items.length > itemsRef.current.length) {
       setItems((cur) => { const known = new Set(cur.map((x) => x.id)); return [...cur, ...d.items!.filter((x) => !known.has(x.id))]; });
       batch.current = Math.max(batch.current, Math.ceil(d.items.length / 60));
     }
-    requestAnimationFrame(() => scroller.current?.querySelector(`[data-item="${CSS.escape(d.itemId)}"]`)?.scrollIntoView({ block: "center" }));
   }), []);
 
   const open = (it: Item) => call("viewer.open", {
-    items, index: Math.max(0, items.findIndex((x) => x.id === it.id)), from: tileRect(it.id),
+    items, index: Math.max(0, items.findIndex((x) => x.id === it.id)), ...heroArgs(it.id),
     source: { kind: "random", types, roots, seed, batch: batch.current },
   }).catch((e) => toast.danger(errorText(e)));
 

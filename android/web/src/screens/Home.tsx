@@ -33,7 +33,7 @@ export function Home() {
   return (
     <div className="absolute inset-0">
       {TABS.map((t) => (
-        <div key={t.id} className={`absolute inset-0 ${tab === t.id && visited.size > 1 ? "tab-in" : ""}`} style={{ visibility: tab === t.id ? "visible" : "hidden" }} inert={tab !== t.id || undefined}>
+        <div key={t.id} className="absolute inset-0" style={{ visibility: tab === t.id ? "visible" : "hidden" }} inert={tab !== t.id || undefined}>
           {visited.has(t.id) && (t.id === "folders" ? <FoldersScreen /> : t.id === "random" ? <RandomScreen label={null} roots={null} asTab /> : <SettingsHome />)}
         </div>
       ))}

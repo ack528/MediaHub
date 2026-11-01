@@ -1,8 +1,9 @@
 import { AlertDialog, Button, Toast, toast } from "@heroui/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { call, errorText, on } from "./lib/bridge";
 import { AppProvider, useApp } from "./lib/app";
 import { NavProvider, type Route } from "./lib/nav";
+import "./lib/hero";
 import type { BootInfo } from "./lib/types";
 import { Onboarding } from "./screens/Onboarding";
 import { Home } from "./screens/Home";
@@ -31,15 +32,26 @@ function renderRoute(r: Route) {
 }
 
 function Shell() {
-  const { session, settings } = useApp();
-  // 服务端太旧不支持同步:提示一次
-  useEffect(() => on("syncUnsupported", () => toast.warning("服务端版本太旧,浏览位置和播放进度没有同步,请更新服务端")), []);
-  if (!session.loggedIn) return <Onboarding />;
-  // 切换服务器 = 换一个导航栈(页面里的数据都属于原来的服务器)
+  const { boot, session, settings } = useApp();
+  const firstView = useRef(session.loggedIn ? `home-${session.activeId}` : "onboarding");
+  // 服务端太旧不支持同步:提示一次(只在首页提示)
+  useEffect(() => boot.page ? undefined : on("syncUnsupported", () => toast.warning("服务端版本太旧,浏览位置和播放进度没有同步,请更新服务端")), [boot.page]);
+  // 第一屏渲染好了:原生这时才画第一帧(新页面的系统转场滑进来的是完整的页面)
+  useEffect(() => { const t = setTimeout(() => call("app.ready").catch(() => {}), 0); return () => clearTimeout(t); }, []);
+  // 二级页面:这个 WebView 只显示一个页面(原生 Activity),登录失效时原生会关掉它
+  if (boot.page) return <NavProvider render={renderRoute}><div className="absolute inset-0">{renderRoute(boot.page)}</div></NavProvider>;
+  // 登录页 ↔ 首页:淡出再淡入 + 轻微放大(以前版本的 fade through;启动时的第一屏不做)
+  const view = session.loggedIn ? `home-${session.activeId}` : "onboarding";
+  if (view !== firstView.current) firstView.current = "";
+  const fade = settings.motion === "off" || view === firstView.current ? "" : "fade-through";
+  if (!session.loggedIn) return <div key={view} className={`absolute inset-0 ${fade}`}><Onboarding /></div>;
+  // 切换服务器 = 重新挂载首页(页面里的数据都属于原来的服务器)
   return (
-    <NavProvider key={session.activeId} render={renderRoute} animate={settings.motion !== "off"}>
-      <Home />
-    </NavProvider>
+    <div key={view} className={`absolute inset-0 ${fade}`}>
+      <NavProvider render={renderRoute}>
+        <Home />
+      </NavProvider>
+    </div>
   );
 }
 

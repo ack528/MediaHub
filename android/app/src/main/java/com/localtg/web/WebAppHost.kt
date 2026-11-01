@@ -11,7 +11,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.activity.compose.PredictiveBackHandler
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.WindowInsets
@@ -25,6 +25,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.snapshotFlow
+import com.localtg.ui.LocalBackdrop
+import com.localtg.ui.LocalHero
+import com.localtg.ui.ViewerNavHost
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -35,19 +40,22 @@ import androidx.core.view.WindowCompat
 import com.localtg.AppContainer
 import com.localtg.AppLog
 import com.localtg.data.LocalMedia
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
- * 主界面:整个应用的界面是一个 WebView(React + HeroUI,源码在 android/web,打包进 assets/web)。
- * 原生只负责数据层、全屏查看器 / 播放器和系统集成(返回键、状态栏、权限、安全区)。
+ * 一个页面的界面:WebView(React + HeroUI,源码在 android/web,打包进 assets/web)。
+ * 和以前一样每个页面是一个 Activity([page] = 要显示的页面,JsonNull = 首页),转场和返回手势都是系统的;
+ * 点开媒体时原生的查看器从缩略图位置展开(以前的 [ViewerNavHost],列表退后、拖拽关闭都一样)。
+ * 原生负责数据层、查看器 / 播放器和系统集成(返回键、状态栏、权限、安全区)。
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun WebAppHost(c: AppContainer) {
+fun WebAppHost(c: AppContainer, page: JsonElement = JsonNull, onReady: () -> Unit = {}) {
     val ctx = LocalContext.current
     val view = LocalView.current
     var backEnabled by remember { mutableStateOf(false) }
@@ -82,7 +90,8 @@ fun WebAppHost(c: AppContainer) {
     }
     val media = remember { WebMedia(ctx, c) }
     val bridge = remember {
-        WebBridge(c, web).also { b ->
+        WebBridge(c, web, media).also { b ->
+            b.page = page
             web.addJavascriptInterface(b, "LB")
             b.requestMediaPermission = {
                 val d = CompletableDeferred<Boolean>()
@@ -93,6 +102,7 @@ fun WebAppHost(c: AppContainer) {
         }
     }
     bridge.onBackEnabled = { backEnabled = it }
+    bridge.onReady = onReady
     bridge.onSystemBars = { light ->
         (ctx as? android.app.Activity)?.window?.let { w ->
             WindowCompat.getInsetsController(w, view).apply { isAppearanceLightStatusBars = light; isAppearanceLightNavigationBars = light }
@@ -150,20 +160,36 @@ fun WebAppHost(c: AppContainer) {
         c.settings.state.collect { s -> web.settings.textZoom = (s.fontScale * 100).toInt() }
     }
 
-    // 返回:系统侧滑返回的进度推给网页,页面跟着手指走(很多 ROM 只在松手时发一次,网页照常播放返回动画)
-    PredictiveBackHandler(enabled = backEnabled) { progress ->
-        var started = false
-        try {
-            progress.collect { e ->
-                if (!started) { started = true; bridge.emit("backStart") }
-                bridge.emit("backProgress", JsonPrimitive(e.progress))
+    // 返回键:网页有弹层 / 非首个标签时交给网页;否则是系统的返回(关掉这个页面,系统的预测性返回动画)
+    BackHandler(enabled = backEnabled) { bridge.emit("back") }
+
+    // 页面回到前台 / 被盖住(例如从文件夹返回后,首页刷新"最近浏览")
+    val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val o = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            when (e) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> bridge.emit("pageActive", JsonPrimitive(true))
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> bridge.emit("pageActive", JsonPrimitive(false))
+                else -> {}
             }
-            bridge.emit("back")
-        } catch (e: CancellationException) {
-            if (started) bridge.emit("backCancel")
-            throw e
         }
+        owner.lifecycle.addObserver(o)
+        onDispose { owner.lifecycle.removeObserver(o) }
     }
-    DisposableEffect(Unit) { onDispose { web.destroy() } }
-    AndroidView({ web }, Modifier.fillMaxSize().imePadding())
+    DisposableEffect(Unit) { onDispose { bridge.dispose(); web.destroy() } }
+
+    val st = c.settings.state.collectAsState().value
+    val night = when (st.theme) { "dark" -> true; "light" -> false; else -> androidx.compose.foundation.isSystemInDarkTheme() }
+    ViewerNavHost(c, onClosed = { bridge.viewerClosed(it) }) { open ->
+        bridge.openViewerAt = open
+        val hero = LocalHero.current
+        bridge.onHeroBounds = { id, src -> hero?.bounds?.set(id, src) }
+        // 查看器正在看的那一项:网页把列表里的这一格藏起来、滚到看得见的地方并报告位置(返回动画落到这里)
+        LaunchedEffect(hero) {
+            if (hero != null) snapshotFlow { hero.hiddenId }.collect { bridge.emit("viewerCurrent", JsonPrimitive(it ?: "")) }
+        }
+        // 列表退后缩小时四周露出的底色:和网页背景(HeroUI --background)一样
+        LocalBackdrop.current?.below = listOf(androidx.compose.ui.graphics.Color(if (night) 0xFF09090B else 0xFFF5F5F5))
+        AndroidView({ web }, Modifier.fillMaxSize().imePadding())
+    }
 }

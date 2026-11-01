@@ -166,61 +166,55 @@ abstract class TgActivity : ComponentActivity() {
     }
 }
 
-/** 主界面:React + HeroUI 网页界面(见 [com.localtg.web.WebAppHost]);以前的 Compose 页面不再从这里进入。 */
+/** 首页:React + HeroUI 网页界面(见 [com.localtg.web.WebAppHost]);以前的 Compose 页面不再从这里进入。 */
 class MainActivity : TgActivity() {
     override val customTransitions = false
 
     /** 和网页的 HeroUI 背景色(--background)一致:WebView 第一帧画出来之前不闪。 */
-    override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable =
-        ColorDrawable(if (night) 0xFF09090B.toInt() else 0xFFF5F5F5.toInt())
+    override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable = webBackground(night)
 
     @Composable
     override fun Content() = com.localtg.web.WebAppHost(container)
 }
 
+private fun webBackground(night: Boolean) = ColorDrawable(if (night) 0xFF09090B.toInt() else 0xFFF5F5F5.toInt())
+
 /**
- * 全屏查看器 / 播放器(原生:图片缩放、ExoPlayer、超分 / 补帧都要原生的 Surface / OpenGL)。
- * 网页把条目放进 [AppContainer.viewerFeed] 后打开它;关闭时把最后停留的条目回调给网页,列表定位到那一项。
+ * 网页界面的二级页面(文件夹 / 搜索 / 随机浏览 / 设置的各个分类):和以前一样每个页面一个 Activity,
+ * 打开 / 返回都是系统的转场(设置 → 外观 → 动画 → 界面动画),侧滑返回是系统的预测性返回。
  */
-class ViewerActivity : TgActivity() {
-    override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable = ColorDrawable(0xFF000000.toInt())
+class WebPageActivity : TgActivity() {
+    override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable = webBackground(night)
 
-    // 打开:网页点的缩略图位置放大(ActivityOptions,见 start);关闭:缩小淡出,露出下面的列表
-    override val customTransitions = false
+    /** 网页第一屏渲染好了:之前不画第一帧(系统转场等它),滑进来的就是完整的页面,不是一块空白。最多等 [HOLD_MS]。 */
+    @Volatile private var ready = false
 
-    override fun finish() {
-        if (android.os.Build.VERSION.SDK_INT >= 34) overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, R.anim.hold, R.anim.viewer_close_exit)
-        super.finish()
-        @Suppress("DEPRECATION") if (android.os.Build.VERSION.SDK_INT < 34) overridePendingTransition(R.anim.hold, R.anim.viewer_close_exit)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val content = findViewById<android.view.View>(android.R.id.content)
+        val start = android.os.SystemClock.uptimeMillis()
+        content.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (!ready && android.os.SystemClock.uptimeMillis() - start < HOLD_MS) return false
+                content.viewTreeObserver.removeOnPreDrawListener(this)
+                return true
+            }
+        })
     }
-
-    private var last: com.localtg.data.Item? = null
 
     @Composable
     override fun Content() {
         FinishWhenLoggedOut()
-        val index = intent.getIntExtra(EXTRA_INDEX, 0)
-        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black)) {
-            com.localtg.ui.ViewerScreen(container, startIndex = index, onBack = { finish() }, onCurrent = { last = it })
-        }
-    }
-
-    override fun onDestroy() {
-        if (isFinishing) { onClosed?.invoke(last); onClosed = null }
-        super.onDestroy()
+        val page = remember { runCatching { com.localtg.data.AppJson.parseToJsonElement(intent.getStringExtra(EXTRA_PAGE) ?: "null") }.getOrDefault(kotlinx.serialization.json.JsonNull) }
+        com.localtg.web.WebAppHost(container, page, onReady = { ready = true })
     }
 
     companion object {
-        private const val EXTRA_INDEX = "index"
-        @Volatile private var onClosed: ((com.localtg.data.Item?) -> Unit)? = null
+        private const val EXTRA_PAGE = "page"
+        private const val HOLD_MS = 450L
 
-        /** [from] = 缩略图在 [source] 里的位置(像素):查看器从那里放大打开;null 时用系统默认的转场。 */
-        fun start(ctx: Context, index: Int, source: android.view.View? = null, from: android.graphics.Rect? = null, closed: (com.localtg.data.Item?) -> Unit) {
-            onClosed = closed
-            val opts = if (source != null && from != null && from.width() > 0 && from.height() > 0)
-                android.app.ActivityOptions.makeScaleUpAnimation(source, from.left, from.top, from.width(), from.height()).toBundle() else null
-            ctx.startActivity(Intent(ctx, ViewerActivity::class.java).putExtra(EXTRA_INDEX, index), opts)
-        }
+        fun start(ctx: Context, page: kotlinx.serialization.json.JsonElement) =
+            ctx.startActivity(Intent(ctx, WebPageActivity::class.java).putExtra(EXTRA_PAGE, page.toString()))
     }
 }
 

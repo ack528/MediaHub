@@ -266,7 +266,7 @@ private fun lerp(a: Rect, b: Rect, t: Float) = Rect(lerp(a.left, b.left, t), ler
  *  - 视频:动画期间不创建播放器(SurfaceView 不跟着裁剪和缩放),动画结束才开始播;返回前先截图盖住画面。视频页不做拖拽关闭(上下滑是亮度 / 音量)。
  */
 @Composable
-fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit) -> Unit) {
+fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, root: @Composable (openViewer: (Int) -> Unit) -> Unit) {
     val hero = remember { HeroState() }
     var index by remember { mutableIntStateOf(-1) } // -1 = 查看器没开(旋转屏幕不重建 Activity,不用存)
     var current by remember { mutableStateOf<Item?>(null) }
@@ -282,11 +282,13 @@ fun ViewerNavHost(c: AppContainer, root: @Composable (openViewer: (Int) -> Unit)
         val full = Rect(0f, 0f, w, h)
 
         fun finishClose() {
+            val last = current
             index = -1; current = null
             hero.phase = HeroState.Phase.Idle; hero.hiddenId = null; hero.drag = 0f
             hero.exiting = false; hero.exitReady = false
             hero.closeFrom = null; hero.bgMul = 1f; hero.backMul = 1f; hero.dragOffset = Offset.Zero; hero.dragging = false
             AppLog.i("nav", "离开查看器")
+            onClosed(last)
         }
 
         var openSeq by remember { mutableIntStateOf(0) } // 每次打开 +1:查看器重新创建(翻到的页从这次点的那一项开始)

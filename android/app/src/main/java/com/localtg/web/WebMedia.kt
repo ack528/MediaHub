@@ -4,6 +4,7 @@ import android.content.Context
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import com.localtg.AppContainer
+import coil3.asImage
 import com.localtg.AppLog
 import okhttp3.Cache
 import okhttp3.OkHttpClient
@@ -46,6 +47,27 @@ class WebMedia(private val ctx: Context, private val c: AppContainer) {
         } catch (e: java.io.IOException) {
             WebResourceResponse("text/plain", "utf-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
         }
+    }
+
+    /**
+     * 把网页列表里显示的那张缩略图([src] = 网页里的图片地址)解码放进原生图片的内存缓存(键和以前的列表一样):
+     * 查看器展开动画的第一帧就有缩略图垫底,不是一片黑。网页刚显示过,一般直接命中磁盘缓存。
+     */
+    suspend fun warmThumb(item: com.localtg.data.Item, src: String) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val loader = coil3.SingletonImageLoader.get(ctx)
+        val key = coil3.memory.MemoryCache.Key(com.localtg.ui.thumbKey(item))
+        val cache = loader.memoryCache ?: return@withContext
+        if (cache[key] != null) return@withContext
+        val path = android.net.Uri.parse(src).let { u -> if (u.host == HOST) (u.encodedPath ?: "") + (u.encodedQuery?.let { "?$it" } ?: "") else return@withContext }
+        if (!path.startsWith("/srv/")) return@withContext
+        val base = c.session.session.value?.baseUrl ?: return@withContext
+        runCatching {
+            client.newCall(Request.Builder().url(base.trimEnd('/') + path.removePrefix("/srv")).build()).execute().use { r ->
+                if (!r.isSuccessful) return@use
+                val bmp = android.graphics.BitmapFactory.decodeStream(r.body.byteStream()) ?: return@use
+                cache[key] = coil3.memory.MemoryCache.Value(bmp.asImage())
+            }
+        }.onFailure { AppLog.w("web", "缩略图预热失败 ${item.id}: ${it.message}") }
     }
 
     private fun proxy(req: WebResourceRequest, pathAndQuery: String): WebResourceResponse {

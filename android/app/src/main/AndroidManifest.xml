@@ -72,9 +72,10 @@
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize" />
         <activity
-            android:name=".ViewerActivity"
+            android:name=".WebPageActivity"
             android:exported="false"
             android:supportsPictureInPicture="true"
+            android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize" />
         <activity
             android:name=".SettingsActivity"

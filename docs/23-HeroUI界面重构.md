@@ -11,10 +11,17 @@
 | 位置 | 作用 |
 |---|---|
 | `android/web/` | 网页界面源码(Vite)。`npm run build` 输出到 `android/app/src/main/assets/web/`(不提交,Gradle `preBuild` 前自动构建) |
-| `web/WebAppHost.kt` | MainActivity 的内容:WebView、返回键、安全区、读取媒体权限、状态栏图标深浅 |
+| `web/WebAppHost.kt` | 每个页面的内容:WebView、返回键、安全区、读取媒体权限、状态栏图标深浅;外面套以前的 `ViewerNavHost`(缩略图展开的查看器) |
 | `web/WebMedia.kt` | `https://appassets.androidplatform.net/` 的进程内应答:页面读 assets;`/srv/...` 媒体转发给当前服务器(令牌、证书指纹、内网直连、本地媒体都走原 OkHttp 客户端,带版本号的图片强制长期缓存) |
 | `web/WebBridge.kt` | JS 桥:`LB.call(id, method, args)` → `window.__lb.resolve`;原生事件 `window.__lb.emit`(session / settings / back / insets / viewerClosed / update / speed …) |
-| `ViewerActivity`(MainActivity.kt) | 原生全屏查看器 / 播放器,网页通过 `viewer.open` 传条目和"怎么继续加载"(群历史 / 搜索 / 随机),关闭时回传最后停留的条目 |
+| `WebPageActivity`(MainActivity.kt) | 二级页面(文件夹 / 搜索 / 随机 / 设置分类):和以前一样每个页面一个 Activity,各自一个 WebView,`boot.page` 告诉网页显示哪一页 |
+
+## 动效(和以前的版本一致)
+
+- 页面之间:每个页面是一个 Activity(网页 `nav.open` / `nav.close`),转场和侧滑返回都是系统的(设置 → 外观 → 动画 → 界面动画);网页里不做页面动画。新页面的 Activity 等网页第一屏渲染好(`app.ready`,最多 450ms)再画第一帧,滑进来的是完整的页面。
+- 查看器:原来的 `Hero.kt`,点哪里从哪里展开、列表退后缩小 + 模糊 + 压暗、上下拖拽关闭、返回落回列表里那一格。网页用 `data-item` / `data-hero` 标记格子,打开时把位置和缩略图地址传给原生(`lib/hero.ts`),看的过程中列表跟着滚到当前那一项并报告位置(`viewerCurrent` → `viewer.bounds`)。
+- 登录页 ↔ 首页:fade through(淡入 + 从 0.92 放大)。
+- 页面之间的消息(例如文件夹内搜索选中一条)用 `app.broadcast` 经原生转给所有页面。
 
 令牌从不进入网页:网页只用相对地址 `/srv/api/v1/media/...` 显示图片,接口请求经桥由原生发出。
 
