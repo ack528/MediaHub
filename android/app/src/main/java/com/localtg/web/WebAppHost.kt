@@ -63,6 +63,8 @@ fun WebAppHost(c: AppContainer) {
 
     val web = remember {
         WebView(ctx).apply {
+            // 必须铺满:AndroidView 默认给 WRAP_CONTENT,WebView 会按内容定高,网页里 height:100% 变成 0,整页被裁掉(白屏)
+            layoutParams = android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
             setBackgroundColor(Color.TRANSPARENT)
             overScrollMode = WebView.OVER_SCROLL_NEVER
             settings.javaScriptEnabled = true
@@ -105,6 +107,18 @@ fun WebAppHost(c: AppContainer) {
                 if (request.url.host == WebMedia.HOST) return false
                 runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, request.url)) }
                 return true
+            }
+            // 界面打不开时排查用:页面加载 / 出错 / 渲染进程退出都写进日志
+            override fun onPageFinished(v: WebView, url: String) { AppLog.i("web", "页面加载完成 $url") }
+            override fun onReceivedError(v: WebView, request: WebResourceRequest, error: android.webkit.WebResourceError) {
+                AppLog.w("web", "加载失败 ${request.url}: ${error.errorCode} ${error.description}")
+            }
+            override fun onReceivedHttpError(v: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                if (!request.url.path.orEmpty().startsWith("/srv/")) AppLog.w("web", "加载失败 ${request.url}: HTTP ${response.statusCode}")
+            }
+            override fun onRenderProcessGone(v: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+                AppLog.e("web", "网页渲染进程退出 crash=${detail.didCrash()}")
+                return false
             }
         }
         web.webChromeClient = object : WebChromeClient() {
