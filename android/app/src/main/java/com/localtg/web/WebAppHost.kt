@@ -11,7 +11,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.WindowInsets
@@ -35,7 +35,9 @@ import androidx.core.view.WindowCompat
 import com.localtg.AppContainer
 import com.localtg.AppLog
 import com.localtg.data.LocalMedia
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -148,7 +150,20 @@ fun WebAppHost(c: AppContainer) {
         c.settings.state.collect { s -> web.settings.textZoom = (s.fontScale * 100).toInt() }
     }
 
-    BackHandler(enabled = backEnabled) { bridge.emit("back") }
+    // 返回:系统侧滑返回的进度推给网页,页面跟着手指走(很多 ROM 只在松手时发一次,网页照常播放返回动画)
+    PredictiveBackHandler(enabled = backEnabled) { progress ->
+        var started = false
+        try {
+            progress.collect { e ->
+                if (!started) { started = true; bridge.emit("backStart") }
+                bridge.emit("backProgress", JsonPrimitive(e.progress))
+            }
+            bridge.emit("back")
+        } catch (e: CancellationException) {
+            if (started) bridge.emit("backCancel")
+            throw e
+        }
+    }
     DisposableEffect(Unit) { onDispose { web.destroy() } }
     AndroidView({ web }, Modifier.fillMaxSize().imePadding())
 }

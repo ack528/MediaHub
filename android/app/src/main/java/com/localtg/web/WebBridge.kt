@@ -49,6 +49,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -459,7 +460,13 @@ class WebBridge(private val c: AppContainer, private val web: WebView) {
             else -> ViewerFeed(items)
         }
         c.viewerFeed = feed
-        ViewerActivity.start(web.context, index) { last ->
+        // 网页传来的缩略图位置是 CSS 像素,换成 WebView 里的像素
+        val from = a["from"]?.takeIf { it is JsonObject }?.jsonObject?.let { r ->
+            val d = web.resources.displayMetrics.density
+            fun f(k: String) = r[k]?.jsonPrimitive?.doubleOrNull?.toFloat() ?: 0f
+            android.graphics.Rect((f("x") * d).toInt(), (f("y") * d).toInt(), ((f("x") + f("w")) * d).toInt(), ((f("y") + f("h")) * d).toInt())
+        }
+        ViewerActivity.start(web.context, index, web, from) { last ->
             emit("viewerClosed", buildJsonObject {
                 put("origin", feed.originDialogId ?: "")
                 put("itemId", last?.let { feed.returnPosition(it)?.second ?: it.id } ?: "")

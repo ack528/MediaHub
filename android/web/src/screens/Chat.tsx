@@ -3,7 +3,7 @@ import { ArrowUpArrowDown, Bookmark, Calendar as CalendarIcon, ClockArrowRotateL
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Key } from "react";
 import { api, BridgeError, call, errorText, haptic, on, query } from "../lib/bridge";
 import { useApp } from "../lib/app";
-import { aspectOf, dayKey, dayLabel, formatDuration, formatShortTime, formatSize, stripExt } from "../lib/media";
+import { aspectOf, dayKey, dayLabel, formatDuration, formatShortTime, formatSize, stripExt, tileRect } from "../lib/media";
 import { useBackHandler, useNav } from "../lib/nav";
 import type { Dialog, DialogView, HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
@@ -243,7 +243,7 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
     const list = itemsRef.current;
     const o = optsRef.current;
     call("viewer.open", {
-      items: list, index: Math.max(0, list.findIndex((x) => x.id === item.id)),
+      items: list, index: Math.max(0, list.findIndex((x) => x.id === item.id)), from: tileRect(item.id),
       source: { kind: "dialog", dialogId: id, sort: o.sort, dir: o.asc ? "asc" : "desc", types: o.types.join(",") },
     }).catch((e) => toast.danger(errorText(e)));
   };

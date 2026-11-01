@@ -31,13 +31,13 @@ function renderRoute(r: Route) {
 }
 
 function Shell() {
-  const { session } = useApp();
+  const { session, settings } = useApp();
   // 服务端太旧不支持同步:提示一次
   useEffect(() => on("syncUnsupported", () => toast.warning("服务端版本太旧,浏览位置和播放进度没有同步,请更新服务端")), []);
   if (!session.loggedIn) return <Onboarding />;
   // 切换服务器 = 换一个导航栈(页面里的数据都属于原来的服务器)
   return (
-    <NavProvider key={session.activeId} render={renderRoute}>
+    <NavProvider key={session.activeId} render={renderRoute} animate={settings.motion !== "off"}>
       <Home />
     </NavProvider>
   );

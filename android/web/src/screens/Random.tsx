@@ -8,6 +8,7 @@ import type { HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
 import { StateView } from "../components/List";
 import { MediaTile } from "../components/Thumb";
+import { tileRect } from "../lib/media";
 import { TAB_BAR_SPACE } from "./Home";
 
 /** 服务端每个范围 × 类型预先准备了 12 份随机序列,种子 1..12 就是用哪一份;换一批 = 换成另一份。 */
@@ -85,7 +86,7 @@ export function RandomScreen({ label, roots, asTab }: { label: string | null; ro
   }), []);
 
   const open = (it: Item) => call("viewer.open", {
-    items, index: Math.max(0, items.findIndex((x) => x.id === it.id)),
+    items, index: Math.max(0, items.findIndex((x) => x.id === it.id)), from: tileRect(it.id),
     source: { kind: "random", types, roots, seed, batch: batch.current },
   }).catch((e) => toast.danger(errorText(e)));
 

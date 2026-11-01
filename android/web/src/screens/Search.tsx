@@ -8,6 +8,7 @@ import type { HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
 import { StateView } from "../components/List";
 import { MediaTile } from "../components/Thumb";
+import { tileRect } from "../lib/media";
 
 const TYPE_TABS = [["all", "全部", "photo,video,gif"], ["photo", "照片", "photo,gif"], ["video", "视频", "video"]] as const;
 
@@ -62,7 +63,7 @@ export function SearchScreen({ dialogId, dialogTitle }: { dialogId?: string; dia
 
   const open = (it: Item) => {
     call("viewer.open", {
-      items, index: Math.max(0, items.findIndex((x) => x.id === it.id)),
+      items, index: Math.max(0, items.findIndex((x) => x.id === it.id)), from: tileRect(it.id),
       source: { kind: "search", q: searched, types, dialog: dialogId ?? null, cursor: next },
     }).catch((e) => toast.danger(errorText(e)));
   };

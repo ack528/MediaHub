@@ -32,9 +32,9 @@ img { -webkit-user-drag: none; }
 .no-scrollbar { scrollbar-width: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 
-/* 推入新页面:轻微右侧滑入 + 淡入 */
-.page-enter { animation: page-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1); }
-@keyframes page-in { from { transform: translateX(28px); opacity: 0; } to { transform: none; opacity: 1; } }
+/* 首页切换标签:新标签轻微上移 + 淡入 */
+.tab-in { animation: tab-in 200ms cubic-bezier(0.22, 1, 0.36, 1); }
+@keyframes tab-in { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 /* 大列表:屏幕外的格子不参与布局 / 绘制 */
 .tile { content-visibility: auto; contain-intrinsic-size: auto 160px; }
@@ -43,5 +43,5 @@ img { -webkit-user-drag: none; }
 @keyframes img-in { from { opacity: 0; } to { opacity: 1; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .page-enter, .img-fade { animation: none; }
+  .tab-in, .img-fade { animation: none; }
 }

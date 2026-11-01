@@ -185,6 +185,15 @@ class MainActivity : TgActivity() {
 class ViewerActivity : TgActivity() {
     override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable = ColorDrawable(0xFF000000.toInt())
 
+    // 打开:网页点的缩略图位置放大(ActivityOptions,见 start);关闭:缩小淡出,露出下面的列表
+    override val customTransitions = false
+
+    override fun finish() {
+        if (android.os.Build.VERSION.SDK_INT >= 34) overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, R.anim.hold, R.anim.viewer_close_exit)
+        super.finish()
+        @Suppress("DEPRECATION") if (android.os.Build.VERSION.SDK_INT < 34) overridePendingTransition(R.anim.hold, R.anim.viewer_close_exit)
+    }
+
     private var last: com.localtg.data.Item? = null
 
     @Composable
@@ -205,9 +214,12 @@ class ViewerActivity : TgActivity() {
         private const val EXTRA_INDEX = "index"
         @Volatile private var onClosed: ((com.localtg.data.Item?) -> Unit)? = null
 
-        fun start(ctx: Context, index: Int, closed: (com.localtg.data.Item?) -> Unit) {
+        /** [from] = 缩略图在 [source] 里的位置(像素):查看器从那里放大打开;null 时用系统默认的转场。 */
+        fun start(ctx: Context, index: Int, source: android.view.View? = null, from: android.graphics.Rect? = null, closed: (com.localtg.data.Item?) -> Unit) {
             onClosed = closed
-            ctx.startActivity(Intent(ctx, ViewerActivity::class.java).putExtra(EXTRA_INDEX, index))
+            val opts = if (source != null && from != null && from.width() > 0 && from.height() > 0)
+                android.app.ActivityOptions.makeScaleUpAnimation(source, from.left, from.top, from.width(), from.height()).toBundle() else null
+            ctx.startActivity(Intent(ctx, ViewerActivity::class.java).putExtra(EXTRA_INDEX, index), opts)
         }
     }
 }
