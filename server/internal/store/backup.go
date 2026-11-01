@@ -17,6 +17,9 @@ import (
 const backupPrefix = "hub-"
 const backupSuffix = ".sqlite"
 
+// BackupRetention applies to both automatic and manually requested backups.
+const BackupRetention = 2
+
 // BackupInfo 一份备份。
 type BackupInfo struct {
 	Name    string `json:"name"`

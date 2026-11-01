@@ -4,7 +4,7 @@ import { Badge, Btn, Card, Row, fmtBytes } from "../components";
 import { useApp } from "../store";
 
 // 数据库备份:账号、登录令牌、播放进度、浏览位置、压缩队列都在一个数据库文件里。
-// 服务每天自动备份一份(保留最近 7 份);这里可以立即备份,或者选一份还原(还原要重启服务,当前的库会留底)。
+// 服务每两天自动备份一份(保留最近 2 份);这里可以立即备份,或者选一份还原(还原要重启服务,当前的库会留底)。
 
 interface BackupInfo { name: string; size: number; created: number }
 const fmtTime = (sec: number) => new Date(sec * 1000).toLocaleString("zh-CN", { hour12: false });
@@ -42,7 +42,7 @@ export function Backup() {
   return (
     <Card icon="database" title="数据库备份" count={list.length}
           extra={<Btn kind="primary" icon="database" disabled={busy || !svc?.running} onClick={run}>立即备份</Btn>}>
-      <Row icon="info" title="自动备份" desc={`服务每天自动备份一份(在线备份,不影响使用),保留最近 7 份。备份在 ${dir || "数据目录\\backup"}。`} />
+      <Row icon="info" title="自动备份" desc={`服务每两天自动备份一份(在线备份,不影响使用),保留最近 2 份。备份在 ${dir || "数据目录\\backup"}。`} />
       {list.length === 0 && <Row icon="alert" title={svc?.running ? "还没有备份" : "服务没有运行"} desc={svc?.running ? "服务启动 2 分钟后会自动做第一份,也可以点右上角「立即备份」。" : "启动服务后才能备份 / 还原。"} />}
       {list.map((b, i) => (
         <Row key={b.name} icon="database" title={fmtTime(b.created)} desc={`${b.name} · ${fmtBytes(b.size)}`}>
