@@ -53,3 +53,51 @@ img { -webkit-user-drag: none; }
 
 /* 查看器正在看的那一格:滚到看得见的地方时留出顶栏的高度 */
 [data-item] { scroll-margin-top: calc(var(--sat) + 72px); scroll-margin-bottom: calc(var(--sab) + 16px); }
+
+/* 首页底部导航(照 IT 之家):液态玻璃胶囊 + 镜片(平时浅灰,按下变成透明的玻璃泡) */
+:root { --tabbar-cut: #fff; } /* 实心图标里挖出来的细节色 */
+.dark { --tabbar-cut: #1c1c1f; }
+.tabbar-glass {
+  background: rgb(255 255 255 / 0.5);
+  box-shadow:
+    0 10px 30px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.06),
+    inset 1.5px 1.5px 0 rgb(255 255 255 / 0.85), inset -1px -1px 0 rgb(255 255 255 / 0.45),
+    inset 0 0 12px rgb(255 255 255 / 0.35), 0 0 0 0.5px rgb(0 0 0 / 0.08);
+}
+/* 玻璃表面的高光:左上亮、往右下淡 */
+.tabbar-sheen {
+  background: linear-gradient(160deg, rgb(255 255 255 / 0.55) 0%, rgb(255 255 255 / 0.08) 38%, rgb(255 255 255 / 0) 60%, rgb(255 255 255 / 0.12) 100%);
+  mix-blend-mode: soft-light;
+}
+.tabbar-lens {
+  --press: 0;
+  will-change: transform;
+}
+/* 平时:浅灰镜片(按下时淡掉) */
+.tabbar-lens-fill { background: rgb(0 0 0 / 0.07); box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.6); opacity: calc(1 - var(--press)); }
+/* 按下:玻璃泡的亮边、一圈淡淡的彩色折射边、浮起来的阴影 */
+.tabbar-lens-rim {
+  opacity: var(--press);
+  background: radial-gradient(120% 90% at 30% 15%, rgb(255 255 255 / 0.35), rgb(255 255 255 / 0.04) 55%, rgb(255 255 255 / 0.12) 100%);
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 0.14),
+    inset 2px 2px 1px rgb(255 255 255 / 0.95), inset -1.5px -1.5px 1px rgb(255 255 255 / 0.6),
+    inset 0 0 0 1px rgb(255 255 255 / 0.5);
+}
+.tabbar-lens-rim::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1.5px;
+  background: conic-gradient(from 200deg, rgb(255 170 200 / 0.7), rgb(170 220 255 / 0.7), rgb(200 255 210 / 0.6), rgb(255 230 160 / 0.6), rgb(255 170 200 / 0.7));
+  -webkit-mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  opacity: 0.8;
+}
+.dark .tabbar-glass {
+  background: rgb(30 30 34 / 0.45);
+  box-shadow:
+    0 10px 30px rgb(0 0 0 / 0.45),
+    inset 1.5px 1.5px 0 rgb(255 255 255 / 0.18), inset -1px -1px 0 rgb(255 255 255 / 0.06),
+    inset 0 0 12px rgb(255 255 255 / 0.05);
+}
+.dark .tabbar-sheen { opacity: 0.35; }
+.dark .tabbar-lens-fill { background: rgb(255 255 255 / 0.12); box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.12); }
+.dark .tabbar-lens-rim { background: radial-gradient(120% 90% at 30% 15%, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0.02) 55%, rgb(255 255 255 / 0.06) 100%); }
