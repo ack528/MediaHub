@@ -177,7 +177,7 @@ class MainActivity : TgActivity() {
     override fun Content() = com.localtg.web.WebAppHost(container)
 }
 
-private fun webBackground(night: Boolean) = ColorDrawable(if (night) 0xFF09090B.toInt() else 0xFFF5F5F5.toInt())
+private fun webBackground(night: Boolean) = ColorDrawable(if (night) 0xFF0E131C.toInt() else 0xFFECF0F8.toInt())
 
 /**
  * 网页界面的二级页面(文件夹 / 搜索 / 随机浏览 / 设置的各个分类):和以前一样每个页面一个 Activity,

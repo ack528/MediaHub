@@ -19,7 +19,7 @@ export function PageHeader({
   leading?: ReactNode;
 }) {
   return (
-    <header className="sticky top-0 z-20 bg-background/85 pt-safe backdrop-blur-xl backdrop-saturate-150">
+    <header className="sticky top-0 z-20 bg-background/55 pt-safe backdrop-blur-xl backdrop-saturate-150">
       <div className={`flex items-center gap-1 px-2 ${large ? "h-16" : "h-14"}`}>
         {onBack && (
           <Button isIconOnly variant="ghost" aria-label="返回" onPress={onBack}>

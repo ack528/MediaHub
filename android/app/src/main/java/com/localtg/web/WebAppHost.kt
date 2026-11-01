@@ -189,7 +189,7 @@ fun WebAppHost(c: AppContainer, page: JsonElement = JsonNull, onReady: () -> Uni
             if (hero != null) snapshotFlow { hero.hiddenId }.collect { bridge.emit("viewerCurrent", JsonPrimitive(it ?: "")) }
         }
         // 列表退后缩小时四周露出的底色:和网页背景(HeroUI --background)一样
-        LocalBackdrop.current?.below = listOf(androidx.compose.ui.graphics.Color(if (night) 0xFF09090B else 0xFFF5F5F5))
+        LocalBackdrop.current?.below = listOf(androidx.compose.ui.graphics.Color(if (night) 0xFF0E131C else 0xFFECF0F8))
         AndroidView({ web }, Modifier.fillMaxSize().imePadding())
     }
 }
