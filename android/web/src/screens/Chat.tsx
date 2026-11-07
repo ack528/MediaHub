@@ -254,6 +254,8 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
     // 看的过程中列表已经跟着滚到了那一项(返回动画落在那里);查看器里翻到了列表还没加载的部分时,围绕它重新加载
     if (!scroller.current?.querySelector(`[data-item="${CSS.escape(d.itemId)}"]`)) reload(d.itemId);
   }), [id, reload]);
+  // 查看器翻到了列表还没加载的部分:趁查看器还盖着,围绕那一项重新加载(返回时列表已经在那里,动画落在它上面)
+  useEffect(() => on("viewerMissing", (itemId: string) => { if (itemId) reload(itemId); }), [reload]);
   // 文件夹内搜索选中了一条:围绕它重新加载
   useEffect(() => on("jumpTo", (d: { dialogId: string; itemId: string }) => { if (d.dialogId === id) reload(d.itemId); }), [id, reload]);
 
