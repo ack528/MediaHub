@@ -81,7 +81,8 @@ export function Home() {
       {TABS.map((t) => (
         <div
           key={t.id} ref={(el) => { pages.current[t.id] = el; }}
-          className="absolute inset-0 bg-background"
+          // isolate:每页自己的层叠上下文 —— 否则旧页吸顶顶栏的 z-20 会压在正在淡入的新页上面,转场结束时才突然换掉(闪一下)
+          className="absolute inset-0 isolate bg-background"
           style={{ visibility: tab === t.id || leaving === t.id ? "visible" : "hidden" }}
           inert={tab !== t.id || undefined}
         >
