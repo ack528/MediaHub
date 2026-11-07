@@ -141,7 +141,8 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
     const el = sc?.querySelector<HTMLElement>(`[data-item="${CSS.escape(target.id)}"]`);
     if (!sc || !el) return false;
     const delta = el.getBoundingClientRect().top - headerBottom() + target.offset / dpr();
-    sc.scrollBy({ top: delta, behavior: smooth ? "smooth" : "auto" });
+    // 往前插入内容时浏览器的滚动锚定通常已经保持住位置了;再 scrollBy(哪怕 0)会打断正在进行的惯性滑动
+    if (Math.abs(delta) >= 1) sc.scrollBy({ top: delta, behavior: smooth ? "smooth" : "auto" });
     return true;
   }, []);
 
@@ -395,7 +396,7 @@ function MasonryView({ items, columns, onOpen }: { items: Item[]; columns: numbe
 function FeedCard({ item, width, onOpen }: { item: Item; width: number; onOpen: () => void }) {
   const ratio = Math.min(2, Math.max(0.5, aspectOf(item)));
   return (
-    <button type="button" data-item={item.id} onClick={onOpen} className="tile rounded-3xl bg-surface p-2 text-left shadow-surface transition-transform active:scale-[0.98]" style={{ containIntrinsicSize: `auto ${Math.round(180 / ratio) + 56}px` }}>
+    <button type="button" data-item={item.id} onClick={onOpen} className="rounded-3xl bg-surface p-2 text-left shadow-surface transition-transform active:scale-[0.98]">
       <div data-hero className="relative overflow-hidden rounded-2xl" style={{ aspectRatio: String(ratio) }}>
         <Thumb item={item} width={width} className="absolute inset-0" />
         {item.type === "video" && (
@@ -441,7 +442,7 @@ function TimelineBubble({ item, width, widthPct, onOpen }: { item: Item; width: 
   const ratio = Math.min(2.2, Math.max(0.6, aspectOf(item)));
   const press = useLongPress(onOpen);
   return (
-    <div data-item={item.id} className="tile" style={{ width: `${widthPct}%`, containIntrinsicSize: `auto ${Math.round(300 / ratio) + 22}px` }}>
+    <div data-item={item.id} style={{ width: `${widthPct}%` }}>
       <button type="button" data-hero className="relative block w-full overflow-hidden rounded-2xl bg-surface-tertiary active:opacity-90" style={{ aspectRatio: String(ratio) }} {...press}>
         <Thumb item={item} width={width} className="absolute inset-0" />
         {item.type === "video" && (

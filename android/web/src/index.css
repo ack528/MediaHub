@@ -64,8 +64,8 @@ img { -webkit-user-drag: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 
 
-/* 大列表:屏幕外的格子不参与布局 / 绘制 */
-.tile { content-visibility: auto; contain-intrinsic-size: auto 160px; }
+/* 列表项不用 content-visibility:屏幕外的格子按估算高度占位,滑进来时变成真实高度,
+   滚动位置跟着被修正 —— 快速滑动时上下的内容会跳动 / 抖动。每一项本来就有固定的宽高比,真实高度从一开始就对。 */
 
 .img-fade { animation: img-in 220ms ease-out; }
 @keyframes img-in { from { opacity: 0; } to { opacity: 1; } }

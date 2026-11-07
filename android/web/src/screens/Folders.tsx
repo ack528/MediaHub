@@ -113,15 +113,16 @@ export function FoldersScreen() {
         )}
       </PageHeader>
 
-      <div className="flex flex-col gap-4 px-4 pt-2">
+      {/* 文件夹直接排在页面上(不包在卡片里),行之间是从文字开始的细分隔线 */}
+      <div className="flex flex-col pt-1">
         {shown.length === 0 ? (
           <StateView loading={loading} error={error} empty="没有可显示的文件夹" onRetry={load} />
         ) : (
-          <div className="rounded-3xl bg-surface p-1.5 shadow-surface">
+          <div>
             {/* 置顶的特殊"会话":随机浏览(全部页随机所有盘符,盘符页只随机这个盘符) */}
             <button type="button" onClick={() => nav.push({ name: "random", params: { label: label === "all" ? null : label, roots } })}
-              className="flex w-full items-center gap-3 rounded-2xl px-2.5 text-left transition-colors active:bg-default">
-              <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-violet-500 to-accent text-white shadow-surface"><Shuffle className="size-6" /></span>
+              className="flex w-full items-center gap-3 px-4 text-left transition-colors active:bg-default">
+              <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-violet-500 to-accent text-white shadow-surface"><Shuffle className="size-6" /></span>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5 py-3">
                 <span className="truncate font-medium">{label === "all" ? "随机浏览" : `随机浏览 · ${label}`}</span>
                 <span className="truncate text-sm text-muted">{label === "all" ? "随机所有盘符里的图片或视频" : `只随机 ${label} 里的图片或视频`}</span>
@@ -132,7 +133,7 @@ export function FoldersScreen() {
             ))}
           </div>
         )}
-        {error && shown.length > 0 && <p className="px-2 text-center text-xs text-danger">刷新失败:{error}</p>}
+        {error && shown.length > 0 && <p className="px-6 pt-3 text-center text-xs text-danger">刷新失败:{error}</p>}
       </div>
     </div>
   );
@@ -145,11 +146,10 @@ function DialogRow({ d, recent, first, onOpen }: { d: Dialog; recent?: string; f
   const sub = settings.dialogSubtitle === "path" ? d.pathDisplay : settings.dialogSubtitle === "none" ? null : recent ?? "暂无浏览记录";
   return (
     <button type="button" onClick={onOpen}
-      className="tile flex w-full items-center gap-3 rounded-2xl px-2.5 text-left transition-colors active:bg-default"
-      style={{ containIntrinsicSize: "auto 72px" }}>
-      <Avatar className="size-12 shrink-0 rounded-2xl">
+      className="flex w-full items-center gap-3 px-4 text-left transition-colors active:bg-default">
+      <Avatar className="size-12 shrink-0 rounded-xl">
         {cover && <Avatar.Image src={cover} alt="" loading="lazy" className="object-cover" />}
-        <Avatar.Fallback className={`rounded-2xl font-semibold text-white ${gradientFor(d.title)}`}>{d.title.slice(0, 1)}</Avatar.Fallback>
+        <Avatar.Fallback className={`rounded-xl font-semibold text-white ${gradientFor(d.title)}`}>{d.title.slice(0, 1)}</Avatar.Fallback>
       </Avatar>
       <span className={`flex min-w-0 flex-1 flex-col gap-0.5 py-3 ${first ? "" : "border-t border-separator"}`}>
         <span className="flex items-baseline gap-2">
