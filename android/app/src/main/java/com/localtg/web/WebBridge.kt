@@ -198,7 +198,16 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
         "caps" -> { if (!c.isLocal) runCatching { c.api.refreshCaps() }; AppJson.encodeToJsonElement(c.api.caps) }
 
         "viewer.open" -> { openViewer(a); JsonNull }
-        "viewer.bounds" -> { heroSrc(a)?.let { onHeroBounds(a.s("id"), it) }; JsonNull }
+        "viewer.bounds" -> {
+            val id = a.s("id")
+            heroSrc(a)?.let { onHeroBounds(id, it) }
+            // 查看器里翻到的这一张:把网页的缩略图放进原生内存缓存 —— 返回动画按它的宽高比收回
+            // (文件记录的宽高可能没有或没算旋转,收回开始时图片框会突然变形,看起来抽一下),加载大图时也有垫底图
+            val item = feed?.items?.firstOrNull { it.id == id }
+            val thumb = a.sOrNull("thumb")
+            if (item != null && thumb != null) scope.launch { runCatching { media.warmThumb(item, thumb) } }
+            JsonNull
+        }
         "viewer.revealed" -> { revealed?.complete(Unit); JsonNull }
 
         "nav.open" -> { com.localtg.WebPageActivity.start(web.context, a["route"] ?: JsonNull); JsonNull }

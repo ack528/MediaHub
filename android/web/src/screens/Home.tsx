@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import { DiceIcon, FolderIcon, GearIcon, TabBar, type TabBarItem } from "../components/TabBar";
 import { useApp } from "../lib/app";
 import { haptic } from "../lib/bridge";
@@ -13,10 +13,17 @@ const TABS: TabBarItem[] = [
   { id: "settings", label: "设置", icon: GearIcon },
 ];
 
-/** 切换标签的转场(横向共享轴):旧页朝反方向退出淡出,新页从切换方向滑入淡入。 */
-const SHIFT = 40;
-const OUT = { duration: 180, easing: "cubic-bezier(0.3, 0, 0.8, 0.15)" };
-const IN = { duration: 300, delay: 60, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)" };
+/**
+ * 切换标签的转场:新页从切换方向轻轻滑入、淡入,盖在不动的旧页上,放完再把旧页藏起来。
+ * 只动一个页面(旧页静止不用重画),省一半绘制,导航的玻璃镜片也就不会因为主线程 / GPU 忙而卡。
+ */
+const SHIFT = 28;
+const IN = { duration: 240, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)" };
+
+// 三个标签页单独 memo:切换标签时 Home 重新渲染,但页面本身不用跟着重新渲染(随机页有一大格图片)
+const FoldersPage = memo(FoldersScreen);
+const RandomPage = memo(function RandomPage() { return <RandomScreen label={null} roots={null} asTab />; });
+const SettingsPage = memo(SettingsHome);
 
 /**
  * 首页:三个标签共用一页,底部是悬浮的液态玻璃导航([TabBar],照 IT 之家)。
@@ -57,14 +64,14 @@ export function Home() {
     const out = pages.current[leaving], inn = pages.current[tab];
     if (!out || !inn) { setLeaving(null); return; }
     const d = dir.current;
-    const a = out.animate([{ transform: "none", opacity: 1 }, { transform: `translateX(${-d * SHIFT}px)`, opacity: 0 }], { ...OUT, fill: "forwards" });
+    inn.style.zIndex = "1";
     const b = inn.animate([{ transform: `translateX(${d * SHIFT}px)`, opacity: 0 }, { transform: "none", opacity: 1 }], { ...IN, fill: "backwards" });
-    running.current = [a, b];
+    running.current = [b];
     const done = leaving;
-    a.finished.catch(() => {}).then(() => {
-      // 先藏起来再去掉退出动画留下的样式,不会闪回一帧;快速来回切换时它可能已经又是当前标签了,那就不藏
+    b.finished.catch(() => {}).then(() => {
+      inn.style.zIndex = "";
+      // 快速来回切换时旧页可能已经又是当前标签了,那就不藏
       if (tabRef.current !== done) out.style.visibility = "hidden";
-      a.cancel();
       setLeaving((l) => (l === done ? null : l));
     });
   }, [tab, leaving]);
@@ -74,11 +81,11 @@ export function Home() {
       {TABS.map((t) => (
         <div
           key={t.id} ref={(el) => { pages.current[t.id] = el; }}
-          className="absolute inset-0"
+          className="absolute inset-0 bg-background"
           style={{ visibility: tab === t.id || leaving === t.id ? "visible" : "hidden" }}
           inert={tab !== t.id || undefined}
         >
-          {visited.has(t.id) && (t.id === "folders" ? <FoldersScreen /> : t.id === "random" ? <RandomScreen label={null} roots={null} asTab /> : <SettingsHome />)}
+          {visited.has(t.id) && (t.id === "folders" ? <FoldersPage /> : t.id === "random" ? <RandomPage /> : <SettingsPage />)}
         </div>
       ))}
       <TabBar items={TABS} value={tab} onChange={select} />

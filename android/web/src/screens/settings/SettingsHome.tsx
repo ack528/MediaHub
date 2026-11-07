@@ -43,20 +43,20 @@ export function SettingsHome() {
       <div className="flex flex-col gap-5 pt-2">
         <div className="px-4">
           <Card className="rounded-3xl">
-            <button type="button" className="flex flex-col gap-3 text-left" onClick={() => nav.push({ name: "settings", params: { section: "account" } })}>
-              <span className="flex items-center gap-3">
-                <Avatar size="lg">
+            <button type="button" className="flex w-full min-w-0 flex-col gap-3 text-left" onClick={() => nav.push({ name: "settings", params: { section: "account" } })}>
+              <span className="flex min-w-0 items-center gap-3">
+                <Avatar size="lg" className="shrink-0">
                   <Avatar.Fallback className={`${gradientFor(cur?.name ?? "本地")} font-semibold text-white`}>{(cur?.name ?? "本").slice(0, 1)}</Avatar.Fallback>
                 </Avatar>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-semibold">{cur?.name ?? "本地媒体"}</span>
                   <span className="block truncate text-sm text-muted">{session.local ? "这部手机上的照片和视频" : cur?.user ? `@${cur.user}` : cur?.host}</span>
                 </span>
-                <Chip size="sm" variant="soft" color={session.local ? "default" : session.baseUrl.startsWith("https://") ? "success" : "warning"}>
+                <Chip size="sm" variant="soft" className="shrink-0" color={session.local ? "default" : session.baseUrl.startsWith("https://") ? "success" : "warning"}>
                   {session.local ? "本地" : session.baseUrl.startsWith("https://") ? "已加密" : "未加密"}
                 </Chip>
               </span>
-              {!session.local && <span className="truncate text-sm">{cur?.host}</span>}
+              {!session.local && <span className="block min-w-0 truncate text-sm">{cur?.host}</span>}
               <span className="flex gap-4 text-sm text-muted">
                 <span><b className="font-semibold text-foreground tabular-nums">{session.servers.length}</b> 个服务器</span>
                 <span><b className="font-semibold text-foreground tabular-nums">{session.servers.filter((x) => x.loggedIn).length}</b> 个已登录</span>

@@ -50,11 +50,12 @@ function ServerItem({ e, active }: { e: ServerEntry; active: boolean }) {
   return (
     <Accordion.Item id={e.id}>
       <Accordion.Heading>
-        <Accordion.Trigger className="gap-3">
+        <Accordion.Trigger className="w-full min-w-0 gap-3">
           <span className="min-w-0 flex-1 text-left">
-            <span className="flex items-center gap-2">
-              <span className="truncate text-[15px] font-medium">{e.name}</span>
-              {active && <Chip size="sm" color="accent" variant="soft">当前</Chip>}
+            <span className="flex min-w-0 items-center gap-2">
+              {/* 名字太长:省略号截断(flex 子项要 min-w-0 才能缩) */}
+              <span className="min-w-0 truncate text-[15px] font-medium">{e.name}</span>
+              {active && <Chip size="sm" color="accent" variant="soft" className="shrink-0">当前</Chip>}
             </span>
             <span className={`block truncate text-xs ${e.loggedIn ? "text-muted" : "text-warning"}`}>{e.host} · {status}</span>
           </span>

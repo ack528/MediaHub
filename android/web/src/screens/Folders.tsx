@@ -53,6 +53,7 @@ export function FoldersScreen() {
   }, []);
 
   useEffect(() => { load(); }, [load, session.activeId]);
+  const status = useServerStatus(session.local, active, session.activeId);
   // 回到这一页(从文件夹里返回)时刷新"最近浏览"
   useEffect(() => { if (active) call<Record<string, string>>("view.recent").then(setRecent).catch(() => {}); }, [active]);
 
@@ -73,17 +74,41 @@ export function FoldersScreen() {
 
   const roots = label === "all" ? null : [...new Set(all.filter((d) => rootLabel(d) === label).map((d) => d.rootId))].join(",");
 
+  // 列表上左右滑动切换盘符(左滑下一个、右滑上一个);明显是横向的滑动才算,不影响上下滚动
+  const listRef = useRef<HTMLDivElement>(null);
+  const order = useMemo(() => ["all", ...labels], [labels]);
+  const orderRef = useRef(order);
+  orderRef.current = order;
+  const labelRef = useRef(label);
+  labelRef.current = label;
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    let x0 = 0, y0 = 0, t0 = 0, track = false;
+    const start = (e: TouchEvent) => { const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; t0 = e.timeStamp; track = e.touches.length === 1; };
+    const end = (e: TouchEvent) => {
+      if (!track) return;
+      track = false;
+      const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.6 || e.timeStamp - t0 > 800) return;
+      const o = orderRef.current, i = o.indexOf(labelRef.current), j = i + (dx < 0 ? 1 : -1);
+      if (o.length < 2 || j < 0 || j >= o.length) return;
+      haptic("Tick");
+      setLabel(o[j]);
+      // 新盘符的列表从滑动方向轻轻滑入
+      el.animate([{ transform: `translateX(${dx < 0 ? 24 : -24}px)`, opacity: 0.4 }, { transform: "none", opacity: 1 }], { duration: 220, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)" });
+    };
+    el.addEventListener("touchstart", start, { passive: true });
+    el.addEventListener("touchend", end, { passive: true });
+    return () => { el.removeEventListener("touchstart", start); el.removeEventListener("touchend", end); };
+  }, []);
+
   return (
     <div className="page" style={{ paddingBottom: TAB_BAR_SPACE }}>
       <PageHeader
         large
         title="本地浏览"
-        subtitle={
-          <span className="inline-flex items-center gap-1.5">
-            <span className={`size-1.5 rounded-full ${session.local ? "bg-warning" : "bg-success"}`} />
-            {session.local ? "本地媒体" : session.servers.find((s) => s.id === session.activeId)?.name}
-          </span>
-        }
+        subtitle={<StatusPill local={session.local} status={status} />}
         actions={
           <>
             <Button isIconOnly variant="ghost" aria-label="刷新" isPending={loading && all.length > 0} onPress={() => { haptic("Click"); load(); }}>
@@ -114,7 +139,7 @@ export function FoldersScreen() {
       </PageHeader>
 
       {/* 文件夹直接排在页面上(不包在卡片里),行之间是从文字开始的细分隔线 */}
-      <div className="flex flex-col pt-1">
+      <div ref={listRef} className="flex min-h-[60vh] flex-col pt-1">
         {shown.length === 0 ? (
           <StateView loading={loading} error={error} empty="没有可显示的文件夹" onRetry={load} />
         ) : (
@@ -136,6 +161,44 @@ export function FoldersScreen() {
         {error && shown.length > 0 && <p className="px-6 pt-3 text-center text-xs text-danger">刷新失败:{error}</p>}
       </div>
     </div>
+  );
+}
+
+type Status = "checking" | "online" | "offline";
+
+/**
+ * 服务器真实的连接状态:进入页面时、每 20 秒(页面在前台时)请求一次 /api/v1/server/info。
+ * 走和其它请求一样的线路(内网直连 / 原地址、证书指纹、令牌),请求成功 = 在线,连不上 / 超时 = 离线。
+ */
+function useServerStatus(local: boolean, active: boolean, activeId: string): Status {
+  const [status, setStatus] = useState<Status>("checking");
+  useEffect(() => { setStatus("checking"); }, [activeId]);
+  useEffect(() => {
+    if (local || !active) return;
+    let alive = true;
+    // 服务器回了 HTTP 错误(比如 401)也说明连得上;只有连不上 / 超时才算离线
+    const check = () => api("/api/v1/server/info")
+      .then(() => alive && setStatus("online"))
+      .catch((e: unknown) => alive && setStatus((e as { http?: number })?.http ? "online" : "offline"));
+    check();
+    const t = setInterval(check, 20000);
+    return () => { alive = false; clearInterval(t); };
+  }, [local, active, activeId]);
+  return status;
+}
+
+/** 首页标题下的状态胶囊:在线 / 离线 / 检测中;本地媒体模式显示「本地」。 */
+function StatusPill({ local, status }: { local: boolean; status: Status }) {
+  const [label, tone] = local ? ["本地", "bg-default text-default-foreground"]
+    : status === "online" ? ["在线", "bg-success-soft text-success"]
+    : status === "offline" ? ["离线", "bg-danger-soft text-danger"]
+    : ["检测中", "bg-default text-muted"];
+  const dot = local ? "bg-muted" : status === "online" ? "bg-success" : status === "offline" ? "bg-danger" : "bg-muted animate-pulse";
+  return (
+    <span className={`mt-1 inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium ${tone}`}>
+      <span className={`size-1.5 rounded-full ${dot}`} />
+      {label}
+    </span>
   );
 }
 

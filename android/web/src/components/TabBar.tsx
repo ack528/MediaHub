@@ -45,6 +45,7 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
   const tint = useRef<HTMLDivElement>(null);
   const ids = useRef({ bar: `lgb-${Math.random().toString(36).slice(2, 7)}`, lens: `lgl-${Math.random().toString(36).slice(2, 7)}` }).current;
   const maps = useRef({ bar: "", lens: "" });
+  const lensFilter = useRef(`url(#${ids.lens}) saturate(1.5) brightness(1.05)`);
   if (!maps.current.bar) maps.current = { bar: displacementMap(W, H, BAR_RIM), lens: displacementMap(lw0, lh0, LENS_RIM) };
 
   // 物理状态:镜片中心 x、按下程度 p(0 平时 / 1 按下)、横向拉伸 st、整条导航的位移 shift
@@ -68,6 +69,9 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
     const lx = cx - lw / 2, ly = cy - lh / 2, r = lh / 2;
     lens.current.style.transform = `translate3d(${cx - lw0 / 2}px,${cy - lh0 / 2}px,0) scale(${sx},${sy})`;
     lens.current.style.setProperty("--press", p.toFixed(3));
+    // 镜片的折射滤镜(三个颜色通道分别折射)很费 GPU:只在按下 / 拖动时打开,平时就是一块浅灰
+    const f = p > 0.02 ? lensFilter.current : "none";
+    if (lens.current.style.backdropFilter !== f) { lens.current.style.backdropFilter = f; lens.current.style.setProperty("-webkit-backdrop-filter", f); }
     tintClip.current.style.clipPath = `inset(${ly}px ${W - lx - lw}px ${H - ly - lh}px ${lx}px round ${r}px)`;
     tint.current.style.transformOrigin = `${cx}px ${cy}px`;
     tint.current.style.transform = `scale(${1 + (MAGNIFY - 1) * p})`;
@@ -209,7 +213,7 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
           </div>
           <div
             ref={lens} aria-hidden className="tabbar-lens absolute top-0 left-0 rounded-full"
-            style={{ width: lw0, height: lh0, transformOrigin: "50% 50%", ...glassFilter(`url(#${ids.lens}) saturate(1.5) brightness(1.05)`) }}
+            style={{ width: lw0, height: lh0, transformOrigin: "50% 50%" }}
           >
             <div className="tabbar-lens-fill absolute inset-0 rounded-full" />
             <div className="tabbar-lens-rim absolute inset-0 rounded-full" />

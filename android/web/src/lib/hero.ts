@@ -60,7 +60,9 @@ on("viewerCurrent", (id: string) => {
   if (!now || now.visible.h < now.full.h * 0.6) tile.scrollIntoView({ block: "nearest" });
   timer = window.setTimeout(() => {
     const info = infoOf(tile);
-    if (info) call("viewer.bounds", { id, hero: info }).catch(() => {});
+    // 顺带把这一格的缩略图地址给原生:翻到的每一张都有正确的宽高比和垫底图(只有点开的那张预先准备过)
+    const thumb = heroEl(tile).querySelector("img")?.currentSrc || null;
+    if (info) call("viewer.bounds", { id, hero: info, thumb }).catch(() => {});
   }, 32);
 });
 
