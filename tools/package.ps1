@@ -73,7 +73,11 @@ if (-not $SkipDesktop) {
   $jobTauri = Start-Job -Name tauri -ArgumentList (Join-Path $Root 'desktop') -ScriptBlock {
     param($dir)
     Set-Location $dir
-    if (-not (Test-Path 'node_modules')) { & npm install --no-audit --no-fund 2>&1 }
+    # 中断的安装可能已创建 node_modules,但还没有 Tauri 可执行文件。
+    if (-not (Test-Path 'node_modules\.bin\tauri.cmd')) {
+      & npm ci --no-audit --no-fund
+      if ($LASTEXITCODE -ne 0) { "EXIT=$LASTEXITCODE"; return }
+    }
     & npx tauri build --no-bundle 2>&1
     "EXIT=$LASTEXITCODE"
   }
@@ -108,7 +112,9 @@ if (-not $SkipDesktop) {
   }
   Push-Location (Join-Path $Root 'server')
   if (-not $SkipTests) {
-    & go test -p $env:BUILD_JOBS ./... 2>&1 | Select-Object -Last 12
+    # Go 把下载进度等正常信息写入 stderr;不要重定向到 PowerShell 管道，
+    # 否则 ErrorActionPreference=Stop 会把正常输出误判为 NativeCommandError。
+    & go test -p $env:BUILD_JOBS ./...
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'Go 测试未通过,已中止打包' }
   }
   if (Test-Path $Stage) { Remove-Item -LiteralPath $Stage -Recurse -Force }

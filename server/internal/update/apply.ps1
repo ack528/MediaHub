@@ -76,11 +76,11 @@ function Restore-Old {
   Start-Hub
 }
 
-# 5. 启动新服务,最多等 45 秒确认它在监听
+# 5. 启动时会完整检查数据库;大库可能需要数分钟。
 $ok = $false
 if ($installed) {
   Start-Hub
-  for ($i = 0; $i -lt 45; $i++) {
+  for ($i = 0; $i -lt 600; $i++) {
     Start-Sleep -Seconds 1
     if (Test-Hub) { $ok = $true; break }
   }
@@ -89,7 +89,7 @@ if ($ok) {
   Log "新版本 $Version 启动成功"
   'ok ' + $Version | Out-File -FilePath (Join-Path $upd 'result.txt') -Encoding utf8
 } else {
-  Log "新版本没有在 45 秒内响应(或覆盖文件失败),回退"
+  Log "新版本没有在 10 分钟内响应(或覆盖文件失败),回退"
   Restore-Old
   'rollback ' + $Version | Out-File -FilePath (Join-Path $upd 'result.txt') -Encoding utf8
 }

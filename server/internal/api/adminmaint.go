@@ -25,7 +25,7 @@ func (s *Server) adminBackupList(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/admin/backup/run —— 立刻备份一份。
 func (s *Server) adminBackupRun(w http.ResponseWriter, r *http.Request) {
-	name, err := store.Backup(s.DB, s.Cfg.DataDir, 7)
+	name, err := store.Backup(s.DB, s.Cfg.DataDir, store.BackupRetention)
 	if err != nil {
 		writeErr(w, 500, "backup.failed", err.Error())
 		return
