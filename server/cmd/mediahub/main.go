@@ -217,8 +217,15 @@ func run(args []string, serve bool) int {
 	// 日常启动只做迁移,几百毫秒就能开始服务。详见 store/guard.go
 	dbPath := filepath.Join(cfg.DataDir, "hub.sqlite")
 	var db *sql.DB
+	var unclean bool    // 上次没有正常退出(或第一次用这个机制):整理计数不能跳过,另外起服务后马上在后台检查数据库
+	var uncleanWhy string
 	if serve {
-		verify, why := store.BeginSession(cfg.DataDir)
+		mode, why := store.BeginSession(cfg.DataDir)
+		verify := mode == store.CheckNow
+		unclean = mode != store.CheckNone
+		if mode == store.CheckLater {
+			uncleanWhy = why
+		}
 		t0 := time.Now()
 		if verify {
 			log.Warn("开始完整的数据库检查(数据多时要几分钟,检查完才开始服务)", "reason", why)
@@ -234,7 +241,11 @@ func run(args []string, serve bool) int {
 			store.CheckDone(cfg.DataDir)
 			log.Info("数据库检查完成", "took", time.Since(t0).Round(time.Second).String())
 		} else {
-			log.Info("数据库已打开(上次正常退出,跳过完整检查)", "took", time.Since(t0).Round(time.Millisecond).String())
+			if mode == store.CheckLater {
+				log.Warn("数据库已打开;上次没有正常退出,服务先启动,稍后在后台检查数据库", "reason", why, "took", time.Since(t0).Round(time.Millisecond).String())
+			} else {
+				log.Info("数据库已打开(上次正常退出,跳过完整检查)", "took", time.Since(t0).Round(time.Millisecond).String())
+			}
 		}
 		// 先关数据库、再记"正常退出"(defer 后进先出)
 		defer store.EndSession(cfg.DataDir)
@@ -386,6 +397,13 @@ func run(args []string, serve bool) int {
 	// 数据多时这一步要几十秒:放到后台做,不挡着服务开始监听(做完前列表里的计数是上次的,不会错,只是可能没更新)
 	finalizeAll := func() {
 		defer logx.Recover("整理对话计数")
+		// 同一个版本、上次正常退出:计数没变化(每次扫描 / 补全结束时各自还会整理一遍),不用再整理 —— 大库(几十万~上百万条)上这一步要占满 CPU 好几分钟
+		var done string
+		_ = db.QueryRow(`SELECT v FROM kv WHERE k='finalized_version'`).Scan(&done)
+		if serve && !unclean && done == version {
+			log.Debug("对话计数无需重新整理(同一版本、上次正常退出)")
+			return
+		}
 		for _, r := range roots {
 			if ctx.Err() != nil {
 				return
@@ -396,9 +414,20 @@ func run(args []string, serve bool) int {
 			}
 			unlock()
 		}
+		if ctx.Err() == nil {
+			_, _ = db.Exec(`INSERT INTO kv(k,v) VALUES('finalized_version',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, version)
+		}
 	}
 	if serve {
-		logx.Go("整理对话计数", finalizeAll)
+		// 稍等一会儿再开始:让服务先把监听、登录这些起来,别和启动时的一堆事情抢资源
+		logx.Go("整理对话计数", func() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(20 * time.Second):
+			}
+			finalizeAll()
+		})
 	} else {
 		finalizeAll()
 	}
@@ -551,7 +580,31 @@ func run(args []string, serve bool) int {
 	srv.Render.Gov = gov                        // 播放 / 传输期间图片转换最多 2 路同时
 	srv.StartOptimizeWorker(ctx)                // 存储优化:视频压缩队列(没有任务时什么都不做)
 	srv.StartClients(ctx)                       // 客户端连接追踪:速度采样、过期清理
-	go dbMaintenance(ctx, db, cfg.DataDir, log) // 数据库:PRAGMA optimize + 每日自动备份 + 定期后台检查
+	if uncleanWhy != "" {
+		// 上次没有正常退出:不在开始服务之前做几分钟的完整检查,先起服务,同时在后台马上检查;发现损坏才登记并重启进入"开始服务前检查并修复"
+		logx.Go("数据库后台检查(异常退出之后)", func() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Second): // 让服务先把监听、登录这些起来
+			}
+			t0 := time.Now()
+			err := store.BackgroundCheck(ctx, db)
+			switch {
+			case err == nil:
+				log.Info("数据库后台检查通过(上次异常退出)", "reason", uncleanWhy, "took", time.Since(t0).Round(time.Second).String())
+			case ctx.Err() != nil:
+			default:
+				log.Error("数据库后台检查发现问题,重启后先完整检查并修复", "err", err)
+				store.RequestCheck(cfg.DataDir, "异常退出后的后台检查发现问题:"+err.Error())
+				if err := update.Restart(projectRoot(), cfg.Path, stop); err != nil {
+					log.Error("无法自动重启进行数据库修复,请手动重启服务", "err", err)
+				}
+				stop()
+			}
+		})
+	}
+	go dbMaintenance(ctx, db, cfg.DataDir, log, gov.IdleFor) // 数据库:PRAGMA optimize + 每日自动备份 + 定期后台检查
 	// 内网穿透:托管 frpc / 自定义穿透客户端(配置了才启动),掉线自动重连,定期探测外网地址。
 	// 同样是可以单独重启的模块:改穿透配置只重启 frpc,服务和数据库不动
 	var tunCancel context.CancelFunc

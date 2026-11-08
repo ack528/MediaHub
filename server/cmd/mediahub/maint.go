@@ -16,7 +16,7 @@ import (
 // dbMaintenance 数据库日常维护:
 //   - PRAGMA optimize:更新查询统计信息,让 SQLite 选对索引(启动时一次,之后每 6 小时);
 //   - 每两天自动备份(VACUUM INTO,不停服务),保留最近 2 份。
-func dbMaintenance(ctx context.Context, db *sql.DB, dataDir string, log *slog.Logger) {
+func dbMaintenance(ctx context.Context, db *sql.DB, dataDir string, log *slog.Logger, idle func() time.Duration) {
 	run := func() {
 		if _, err := db.Exec(`PRAGMA optimize`); err != nil {
 			log.Debug("PRAGMA optimize 失败", "err", err)
@@ -37,15 +37,17 @@ func dbMaintenance(ctx context.Context, db *sql.DB, dataDir string, log *slog.Lo
 	case <-time.After(2 * time.Minute): // 启动后先让扫描等重活过去
 	}
 	run()
-	// 后台检查:日常启动不再做完整检查,改成运行中隔一段时间悄悄查一次(只读,不挡请求)。发现问题就登记"下次启动完整检查并修复"
+	// 后台检查:日常启动不再做完整检查,改成运行中隔很久、趁没人用的时候悄悄查一次(只读,不挡请求)。发现问题就登记"下次启动完整检查并修复"
 	lastCheck := time.Time{}
 	if b, err := os.ReadFile(filepath.Join(dataDir, "last-bgcheck")); err == nil {
 		if ts, e := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); e == nil {
 			lastCheck = time.Unix(ts, 0)
 		}
 	}
+	started := time.Now()
 	check := func() {
-		if time.Since(lastCheck) < 7*24*time.Hour {
+		// 整库检查要读完整个数据库(大库上要占满一个核好几分钟):一个月一次,而且只在启动一小时之后、已经 15 分钟没有客户端在用的时候才做
+		if time.Since(lastCheck) < 30*24*time.Hour || time.Since(started) < time.Hour || idle() < 15*time.Minute {
 			return
 		}
 		t0 := time.Now()

@@ -22,8 +22,21 @@ const (
 	checkFile   = "needs-check.flag"
 )
 
-// BeginSession 在持有数据目录锁之后、打开数据库之前调用:返回这次启动要不要做完整的数据库检查及原因,并把状态记成 running。
-func BeginSession(dataDir string) (verify bool, reason string) {
+// CheckMode 是这次启动要怎么检查数据库。
+type CheckMode int
+
+const (
+	CheckNone  CheckMode = iota // 上次正常退出:不检查
+	CheckLater                  // 上次没有正常退出 / 第一次用这个机制:先正常起服务,马上在后台检查(quick_check),发现问题再重启修复
+	CheckNow                    // 明确要求检查(登记过 / 手动要求):开始服务之前做完整检查并修复
+)
+
+// 为什么"上次没正常退出"不在开始服务之前检查:崩溃 / 被强制结束 / 断电之后 SQLite 的 WAL 会自己恢复,损坏很少见;
+// 而完整检查在大库上要好几分钟,这段时间服务一直没在监听,看起来就是"服务起不来、CPU 一直满着"。
+// 所以先起服务,同时在后台检查,真的发现问题再登记 + 重启进入"开始服务之前做完整检查并修复"。
+
+// BeginSession 在持有数据目录锁之后、打开数据库之前调用:返回这次启动要怎么检查数据库及原因,并把状态记成 running。
+func BeginSession(dataDir string) (mode CheckMode, reason string) {
 	state := ""
 	if b, err := os.ReadFile(filepath.Join(dataDir, sessionFile)); err == nil {
 		state = strings.TrimSpace(string(b))
@@ -32,23 +45,23 @@ func BeginSession(dataDir string) (verify bool, reason string) {
 	hasDB := dbErr == nil
 	switch {
 	case os.Getenv("MEDIAHUB_CHECK_DB") == "1":
-		verify, reason = true, "环境变量 MEDIAHUB_CHECK_DB=1 要求检查"
+		mode, reason = CheckNow, "环境变量 MEDIAHUB_CHECK_DB=1 要求检查"
 	case fileExists(filepath.Join(dataDir, checkFile)):
 		why := "之前登记了需要检查"
 		if b, err := os.ReadFile(filepath.Join(dataDir, checkFile)); err == nil && strings.TrimSpace(string(b)) != "" {
 			why = strings.TrimSpace(string(b))
 		}
-		verify, reason = true, why
+		mode, reason = CheckNow, why
 	case !hasDB:
 		// 全新安装:没有数据可查
 	case state == "running":
-		verify, reason = true, "上次服务没有正常退出(崩溃 / 被强制结束 / 断电)"
+		mode, reason = CheckLater, "上次服务没有正常退出(崩溃 / 被强制结束 / 断电)"
 	case state != "clean":
-		verify, reason = true, "第一次使用快速启动,无法确认上次是怎么退出的"
+		mode, reason = CheckLater, "第一次使用快速启动,无法确认上次是怎么退出的"
 	}
 	_ = os.MkdirAll(dataDir, 0o700)
 	_ = os.WriteFile(filepath.Join(dataDir, sessionFile), []byte("running"), 0o600)
-	return verify, reason
+	return mode, reason
 }
 
 // EndSession 服务正常退出(数据库已关闭)时调用:下次启动可以跳过完整检查。

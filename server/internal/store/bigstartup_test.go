@@ -14,7 +14,11 @@ func TestBigStartup(t *testing.T) {
 	if _, err := fmt.Sscanf(os.Getenv("MEDIAHUB_BIG"), "%d", &n); err != nil || n <= 0 {
 		t.Skip("设置 MEDIAHUB_BIG=行数 才运行")
 	}
-	path := filepath.Join(t.TempDir(), "hub.sqlite")
+	dir := t.TempDir()
+	if k := os.Getenv("MEDIAHUB_BIG_KEEP"); k != "" { // 把造好的库留下来(给端到端启动测试用)
+		dir = k
+	}
+	path := filepath.Join(dir, "hub.sqlite")
 	db, err := OpenFast(path)
 	if err != nil {
 		t.Fatal(err)
