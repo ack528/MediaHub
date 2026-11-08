@@ -152,6 +152,10 @@ if (-not $SkipDesktop) {
   if (Test-Path $pt) { Remove-Item -LiteralPath $pt -Recurse -Force }
   New-Item -ItemType Directory -Force $pt | Out-Null
   Copy-Item (Join-Path $rel 'mediahub-desktop.exe') (Join-Path $pt 'MediaHub.exe')
+  # 用 GNU 工具链(x86_64-pc-windows-gnu)编译的管理程序不是静态链接 WebView2 加载器,运行时需要同目录的 WebView2Loader.dll,
+  # 少了它启动就报"缺少 WebView2Loader.dll"(5.1.0 首发时漏带过)。MSVC 工具链是静态链接,没有这个文件,就不用带。
+  $wv2 = Join-Path $rel 'WebView2Loader.dll'
+  if (Test-Path -LiteralPath $wv2) { Copy-Item $wv2 (Join-Path $pt 'WebView2Loader.dll') }
   Copy-Tree (Join-Path $Stage 'runtime') (Join-Path $pt 'runtime')
   Copy-Tree (Join-Path $Stage 'tools') (Join-Path $pt 'tools')
   $zip = Join-Path $Dist "MediaHub-$ServerVersion-portable.zip"
@@ -165,6 +169,7 @@ if (-not $SkipDesktop) {
     if (Test-Path $up) { Remove-Item -LiteralPath $up -Recurse -Force }
     New-Item -ItemType Directory -Force (Join-Path $up 'runtime\bin') | Out-Null
     Copy-Item (Join-Path $rel 'mediahub-desktop.exe') (Join-Path $up 'MediaHub.exe')
+    if (Test-Path -LiteralPath $wv2) { Copy-Item $wv2 (Join-Path $up 'WebView2Loader.dll') } # 更新包里也要带,否则自动更新后管理程序打不开
     Copy-Item (Join-Path $Stage 'runtime\bin\mediahub.exe') (Join-Path $up 'runtime\bin\mediahub.exe')
     Compress-Archive -Path (Join-Path $up '*') -DestinationPath (Join-Path $RelDir "MediaHub-$ServerVersion-update.zip") -CompressionLevel Optimal
     Remove-Item -LiteralPath $up -Recurse -Force
