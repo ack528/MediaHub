@@ -1,3 +1,4 @@
+import { LatencyChip } from "../../components/LinkQuality";
 import { Avatar, Card, Chip } from "@heroui/react";
 import { CircleInfo, Cpu, Database, Display, FileText, Folder, Globe, LayoutCellsLarge, MagicWand, Picture, Play, Server, Sliders, Speedometer, Sun } from "@gravity-ui/icons";
 import { useApp } from "../../lib/app";
@@ -52,6 +53,7 @@ export function SettingsHome() {
                   <span className="block truncate font-semibold">{cur?.name ?? "本地媒体"}</span>
                   <span className="block truncate text-sm text-muted">{session.local ? "这部手机上的照片和视频" : cur?.user ? `@${cur.user}` : cur?.host}</span>
                 </span>
+                <LatencyChip />
                 <Chip size="sm" variant="soft" className="shrink-0" color={session.local ? "default" : session.baseUrl.startsWith("https://") ? "success" : "warning"}>
                   {session.local ? "本地" : session.baseUrl.startsWith("https://") ? "已加密" : "未加密"}
                 </Chip>

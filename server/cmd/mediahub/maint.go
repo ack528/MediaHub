@@ -4,6 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"mediahub/internal/store"
@@ -33,6 +37,31 @@ func dbMaintenance(ctx context.Context, db *sql.DB, dataDir string, log *slog.Lo
 	case <-time.After(2 * time.Minute): // 启动后先让扫描等重活过去
 	}
 	run()
+	// 后台检查:日常启动不再做完整检查,改成运行中隔一段时间悄悄查一次(只读,不挡请求)。发现问题就登记"下次启动完整检查并修复"
+	lastCheck := time.Time{}
+	if b, err := os.ReadFile(filepath.Join(dataDir, "last-bgcheck")); err == nil {
+		if ts, e := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); e == nil {
+			lastCheck = time.Unix(ts, 0)
+		}
+	}
+	check := func() {
+		if time.Since(lastCheck) < 7*24*time.Hour {
+			return
+		}
+		t0 := time.Now()
+		err := store.BackgroundCheck(ctx, db)
+		switch {
+		case err == nil:
+			lastCheck = time.Now()
+			_ = os.WriteFile(filepath.Join(dataDir, "last-bgcheck"), []byte(strconv.FormatInt(lastCheck.Unix(), 10)), 0o600)
+			log.Info("数据库后台检查通过", "took", time.Since(t0).Round(time.Second).String())
+		case ctx.Err() != nil:
+		default:
+			log.Error("数据库后台检查发现问题,下次启动会做完整检查并修复", "err", err)
+			store.RequestCheck(dataDir, "后台检查发现问题:"+err.Error())
+		}
+	}
+	check()
 	t := time.NewTicker(6 * time.Hour)
 	defer t.Stop()
 	for {
@@ -41,6 +70,7 @@ func dbMaintenance(ctx context.Context, db *sql.DB, dataDir string, log *slog.Lo
 			return
 		case <-t.C:
 			run()
+			check()
 		}
 	}
 }

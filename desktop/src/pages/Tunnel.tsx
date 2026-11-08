@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { bridge } from "../bridge";
-import { Badge, Btn, Card, ItemRow, Row } from "../components";
+import { Badge, Btn, Card, ItemRow, LatencyChart, LatTile, Row, latTone, type LatSample, type LatStats } from "../components";
 import { itemsOf } from "../schema";
 import { useApp } from "../store";
 import { CopyBtn } from "./Overview";
@@ -12,6 +12,7 @@ interface Probe { at: number; ok: boolean; connectMs: number; ttfbMs: number; er
 interface TunnelStatus {
   enabled: boolean; type: string; state: string; message?: string; exe?: string; pid?: number; startedAt?: number;
   restarts: number; publicAddr?: string; probes: Probe[]; logs?: string[];
+  latency?: { watching: boolean; chain: LatStats; server: LatStats; samples: LatSample[]; protocol: string; udp: boolean };
 }
 const TSTATE: Record<string, [string, "gray" | "green" | "blue" | "orange" | "red"]> = {
   disabled: ["未启用", "gray"], missing: ["找不到程序", "red"], stopped: ["已停止", "gray"], starting: ["启动中", "blue"],
@@ -24,7 +25,8 @@ export function Tunnel() {
   const [st, setSt] = useState<TunnelStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
-    try { setSt(await bridge.admin<TunnelStatus>("GET", "/api/v1/admin/tunnel?logs=1")); } catch { setSt(null); }
+    // watch=1:让服务端开始每 2 秒采样一次实时延迟
+    try { setSt(await bridge.admin<TunnelStatus>("GET", "/api/v1/admin/tunnel?logs=1&watch=1")); } catch { setSt(null); }
   }, []);
   useEffect(() => { load(); const id = setInterval(load, 2500); return () => clearInterval(id); }, [load]);
   const act = async (a: "start" | "stop" | "restart" | "probe") => {
@@ -62,6 +64,8 @@ export function Tunnel() {
       <Card icon="link" title="内网穿透" count={all.filter((i) => i.id.startsWith("tun-")).length}>
         {all.filter((i) => i.id.startsWith("tun-")).map((i) => <ItemRow key={i.id} item={i} />)}
       </Card>
+
+      {st?.enabled && st.latency && <LatencyCard lat={st.latency} />}
 
       <Card icon="gauge" title="运行状态"
             extra={<div className="btn-group">
@@ -127,5 +131,36 @@ export function Tunnel() {
         <Row icon="film" title="少传字节" desc="3.0.0 起已经内置:转码码率只有 6M 及以下、H.265 转码(同画质省 30% ~ 50%)、小图用 WebP 缩略图(几十 KB)、JSON 压缩。穿透带宽小的时候,这些比调穿透参数管用得多。" />
       </Card>
     </>
+  );
+}
+
+/** 实时延迟:页面开着时服务端每 2 秒采样一次(整条链路 + 到穿透服务器),手机的设置里也能看到同样的数据。 */
+function LatencyCard({ lat }: { lat: NonNullable<TunnelStatus["latency"]> }) {
+  const c = lat.chain, s = lat.server;
+  const fmt = (v: number) => (v < 0 || lat.samples.length === 0 ? "—" : String(Math.round(v)));
+  const waiting = lat.samples.length === 0;
+  return (
+    <Card icon="zap" title="实时延迟" extra={<Badge tone={lat.udp ? "blue" : "gray"}>{lat.udp ? `UDP · ${lat.protocol}` : `TCP · ${lat.protocol}`}</Badge>}>
+      <div style={{ padding: "6px 20px 4px" }}>
+        {waiting
+          ? <div className="log-empty">正在采样…(每 2 秒一次;没有填「外网地址」时只能量到穿透服务器那一段)</div>
+          : <>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                <LatTile label="整条链路 · 当前" value={fmt(c.last)} tone={latTone(c.last)} />
+                <LatTile label="平均" value={fmt(c.avg)} tone={latTone(c.avg)} />
+                <LatTile label="最低 / 最高" value={c.n && c.min >= 0 ? `${c.min} / ${c.max}` : "—"} />
+                <LatTile label="抖动" value={fmt(c.jitter)} />
+                <LatTile label="丢包" value={c.n ? c.lossPct.toFixed(0) : "—"} unit="%" tone={c.lossPct === 0 ? "green" : c.lossPct < 10 ? "orange" : "red"} />
+                <LatTile label="到穿透服务器" value={fmt(s.last)} tone={latTone(s.last)} />
+              </div>
+              <div style={{ marginTop: 10 }}><LatencyChart samples={lat.samples} /></div>
+              <div style={{ display: "flex", gap: 14, fontSize: 12, opacity: 0.65, margin: "2px 0 8px" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><svg width="10" height="10"><rect width="10" height="10" rx="2" fill="#1677ff" /></svg>整条链路的往返(经穿透访问服务器)</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><svg width="10" height="10"><rect width="10" height="10" rx="2" fill="#f5222d" /></svg>这次失败</span>
+                <span style={{ marginLeft: "auto" }}>最近 {lat.samples.length} 次 · P95 {c.p95} ms</span>
+              </div>
+            </>}
+      </div>
+    </Card>
   );
 }

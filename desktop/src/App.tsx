@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Btn, Card, ItemRow, Progress, Tabs, fmtBytes } from "./components";
 import { Icon } from "./icons";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -64,7 +64,7 @@ function PageBody({ page, tab }: { page: PageId; tab: string }) {
 }
 
 export default function App() {
-  const { loaded, restartPending, svc, busy, restart, toasts, env } = useApp();
+  const { loaded, restartPending, restartKeys, svc, busy, restart, toasts, env } = useApp();
   const [page, setPage] = useState<PageId>("overview");
   const [tabs, setTabs] = useState<Partial<Record<PageId, string>>>({});
   const [q, setQ] = useState("");
@@ -102,7 +102,7 @@ export default function App() {
         <div className="content">
           {restartPending && svc?.running && !searching && (
             <div className="banner">
-              <Icon name="alert" size={20} /><span>设置已保存,重启服务后生效。</span>
+              <Icon name="alert" size={20} /><span>{restartKeys.length ? <>设置已保存,其中 {restartKeys.slice(0, 4).map((k) => <code key={k}>{k}</code>).reduce<ReactNode[]>((a, x, i) => (i ? [...a, "、", x] : [x]), [])}{restartKeys.length > 4 ? ` 等 ${restartKeys.length} 项` : ""} 需要重启服务才生效,其余已立即生效。</> : "设置已保存,重启服务后生效。"}</span>
               <span className="grow" />
               <Btn kind="primary" icon="refresh" disabled={!!busy} onClick={restart}>{busy === "restart" ? "重启中…" : "立即重启服务"}</Btn>
             </div>

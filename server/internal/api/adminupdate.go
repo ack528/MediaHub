@@ -15,42 +15,42 @@ import (
 //	POST /api/v1/admin/update/apply    立即检查并安装(发现新版本就下载、替换、重启服务)
 
 func (s *Server) adminUpdateStatus(w http.ResponseWriter, r *http.Request) {
-	if s.Update == nil {
+	if s.updater() == nil {
 		writeJSON(w, 200, map[string]any{"current": s.Version, "state": "disabled", "message": "自动更新没有启用"})
 		return
 	}
-	writeJSON(w, 200, s.Update.Status())
+	writeJSON(w, 200, s.updater().Status())
 }
 
 func (s *Server) adminUpdateCheck(w http.ResponseWriter, r *http.Request) {
-	if s.Update == nil {
+	if s.updater() == nil {
 		writeErr(w, 400, "update.disabled", "自动更新没有启用")
 		return
 	}
-	go s.Update.Check(context.Background(), false)
+	go s.updater().Check(context.Background(), false)
 	w.WriteHeader(202)
 }
 
 func (s *Server) adminUpdateApply(w http.ResponseWriter, r *http.Request) {
-	if s.Update == nil {
+	if s.updater() == nil {
 		writeErr(w, 400, "update.disabled", "自动更新没有启用")
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
 		defer cancel()
-		s.Update.Check(ctx, true)
+		s.updater().Check(ctx, true)
 	}()
 	w.WriteHeader(202)
 }
 
 // adminUpdateMirrors GET /api/v1/admin/update/mirrors —— 现在就探测直连和所有镜像(延迟 + 是否真的能下载),管理程序「关于」页显示。
 func (s *Server) adminUpdateMirrors(w http.ResponseWriter, r *http.Request) {
-	if s.Update == nil {
+	if s.updater() == nil {
 		writeErr(w, 400, "update.disabled", "自动更新没有启用")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	writeJSON(w, 200, map[string]any{"sources": s.Update.ProbeMirrors(ctx), "doh": update.DoHNames()})
+	writeJSON(w, 200, map[string]any{"sources": s.updater().ProbeMirrors(ctx), "doh": update.DoHNames()})
 }

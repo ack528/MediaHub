@@ -310,7 +310,28 @@ func (s *Server) remoteSaveConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "config.save", err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"revision": revision(next), "restartRequired": true, "message": "配置已保存，重启服务后生效"})
+	// 能立刻生效的马上生效(穿透 / 更新 / 调度 / 日志级别 / 数字开关类设置),只有真正需要的才提示重启
+	res := ReloadResult{RestartRequired: []string{}, Applied: []string{}}
+	msg := "配置已保存，重启服务后生效"
+	if s.Reload != nil {
+		if r2, err := s.Reload(); err != nil {
+			msg = "配置已保存，但立即生效失败(" + err.Error() + ")，重启服务后生效"
+			res.RestartRequired = []string{"*"}
+		} else {
+			res = r2
+			switch {
+			case len(res.RestartRequired) > 0 && len(res.Applied) > 0:
+				msg = "配置已保存，" + strings.Join(res.Applied, "、") + " 已立即生效；其余设置需要重启服务"
+			case len(res.RestartRequired) > 0:
+				msg = "配置已保存，重启服务后生效"
+			default:
+				msg = "配置已保存并立即生效，不用重启服务"
+			}
+		}
+	} else {
+		res.RestartRequired = []string{"*"}
+	}
+	writeJSON(w, 200, map[string]any{"revision": revision(next), "restartRequired": len(res.RestartRequired) > 0, "applied": res.Applied, "restartKeys": res.RestartRequired, "message": msg})
 }
 func (s *Server) remoteRestart(w http.ResponseWriter, r *http.Request) {
 	if s.Restart == nil {

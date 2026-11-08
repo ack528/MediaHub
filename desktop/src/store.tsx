@@ -13,6 +13,8 @@ interface AppCtx {
   ips: LocalIp[];
   busy: string | null;
   restartPending: boolean;
+  /** 需要重启服务才生效的设置(热更新之后服务端告诉的);空 = 没有或服务端太旧不能热更新(整体按需要重启处理) */
+  restartKeys: string[];
   toasts: Toast[];
   update: (fn: (c: Config) => Config) => void;
   start: () => Promise<void>;
@@ -34,6 +36,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [ips, setIps] = useState<LocalIp[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [restartPending, setRestartPending] = useState(false);
+  const [restartKeys, setRestartKeys] = useState<string[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const cfgRef = useRef(config);
   const saveTimer = useRef<number | undefined>(undefined);
@@ -90,9 +93,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const current = applyChanges(snapshot, cfgRef.current, merged) as Config;
         cfgRef.current = current;
         setConfig(current);
-        toast("???");
-        if (runningRef.current) setRestartPending(true);
-      }).catch((e) => { toast("????:" + String(e), "err"); });
+        if (!runningRef.current) { toast("已保存"); return; }
+        // 服务在运行:让它重新读取配置,能立刻生效的(穿透 / 更新 / 调度 / 日志级别 / 数字开关类)马上生效,
+        // 只有真正需要的才提示重启。服务端太旧没有这个接口时,退回"整体需要重启"
+        try {
+          const r = await bridge.admin<{ applied: string[]; restartRequired: string[] }>("POST", "/api/v1/admin/config/reload", undefined, 15000);
+          if (r.restartRequired.length > 0) {
+            setRestartKeys((k) => [...new Set([...k, ...r.restartRequired])]);
+            setRestartPending(true);
+            toast(r.applied.length ? `已保存,${r.applied.join("、")} 已立即生效` : "已保存,重启服务后生效");
+          } else {
+            toast(r.applied.length ? `已保存并立即生效:${r.applied.join("、")}` : "已保存");
+          }
+        } catch {
+          setRestartKeys([]);
+          setRestartPending(true);
+          toast("已保存");
+        }
+      }).catch((e) => { toast("保存失败:" + String(e), "err"); });
     }, 500);
   }, [toast]);
 
@@ -106,13 +124,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const start = useCallback(() => run("start", () => bridge.start(), "服务已启动"), [run]);
   const stop = useCallback(() => run("stop", () => bridge.stop(), "服务已停止"), [run]);
   const restart = useCallback(async () => {
-    await run("restart", async () => { await bridge.stop(); await bridge.start(); setRestartPending(false); }, "服务已重启");
+    await run("restart", async () => { await bridge.stop(); await bridge.start(); setRestartPending(false); setRestartKeys([]); }, "服务已重启");
   }, [run]);
   const rescan = useCallback((rootId?: number) => run("rescan", () => bridge.rescan(rootId), rootId ? "已开始重新扫描这个盘" : "已开始重新扫描"), [run]);
 
   const value = useMemo<AppCtx>(
-    () => ({ config, loaded, env, svc, ips, busy, restartPending, toasts, update, start, stop, restart, rescan, refresh, toast }),
-    [config, loaded, env, svc, ips, busy, restartPending, toasts, update, start, stop, restart, rescan, refresh, toast],
+    () => ({ config, loaded, env, svc, ips, busy, restartPending, restartKeys, toasts, update, start, stop, restart, rescan, refresh, toast }),
+    [config, loaded, env, svc, ips, busy, restartPending, restartKeys, toasts, update, start, stop, restart, rescan, refresh, toast],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

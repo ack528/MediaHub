@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"mediahub/internal/config"
@@ -42,6 +43,7 @@ type Status struct {
 	PublicAddr string   `json:"publicAddr,omitempty"`
 	Probes     []Probe  `json:"probes"`
 	Logs       []string `json:"logs,omitempty"`
+	Latency    *Latency `json:"latency,omitempty"` // 实时延迟(见 latency.go)
 }
 
 // Probe 是一次通过外网地址对服务端自己的探测。
@@ -77,6 +79,11 @@ type Manager struct {
 	probes    []Probe
 	wantStop  bool
 	failRun   int
+
+	// 实时延迟(见 latency.go)
+	lat        []LatSample
+	watchUntil atomic.Int64
+	warm       atomic.Bool
 }
 
 // New 创建管理器。localPort 是 MediaHub 自己监听的端口(穿透要转发到它);tlsOn 表示它是 HTTPS。
@@ -303,6 +310,7 @@ func (m *Manager) Run(ctx context.Context) {
 		return
 	}
 	go m.supervise(ctx)
+	go m.latencyLoop(ctx)
 	if m.cfg.HealthCheck && m.cfg.PublicAddr != "" {
 		go m.healthLoop(ctx)
 	}

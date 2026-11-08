@@ -46,7 +46,7 @@ import (
 	"mediahub/internal/update"
 )
 
-const version = "3.4.6"
+const version = "5.1.0"
 
 func projectRoot() string {
 	if r := os.Getenv("MEDIAHUB_ROOT"); r != "" {
@@ -213,8 +213,32 @@ func run(args []string, serve bool) int {
 			log.Warn("数据库已用备份还原", "backup", name)
 		}
 	}
-	db, err := store.OpenMigratedWithRepair(filepath.Join(cfg.DataDir, "hub.sqlite"))
-	if err != nil {
+	// 启动自检:只有上次没有正常退出 / 被要求检查时才做完整的数据库检查(几十万条记录要好几分钟);
+	// 日常启动只做迁移,几百毫秒就能开始服务。详见 store/guard.go
+	dbPath := filepath.Join(cfg.DataDir, "hub.sqlite")
+	var db *sql.DB
+	if serve {
+		verify, why := store.BeginSession(cfg.DataDir)
+		t0 := time.Now()
+		if verify {
+			log.Warn("开始完整的数据库检查(数据多时要几分钟,检查完才开始服务)", "reason", why)
+			db, err = store.OpenMigratedWithRepair(dbPath)
+		} else {
+			db, err = store.OpenFast(dbPath)
+		}
+		if err != nil {
+			log.Error("打开数据库失败", "err", err)
+			return 1
+		}
+		if verify {
+			store.CheckDone(cfg.DataDir)
+			log.Info("数据库检查完成", "took", time.Since(t0).Round(time.Second).String())
+		} else {
+			log.Info("数据库已打开(上次正常退出,跳过完整检查)", "took", time.Since(t0).Round(time.Millisecond).String())
+		}
+		// 先关数据库、再记"正常退出"(defer 后进先出)
+		defer store.EndSession(cfg.DataDir)
+	} else if db, err = store.OpenMigratedWithRepair(dbPath); err != nil {
 		log.Error("打开数据库失败", "err", err)
 		return 1
 	}
@@ -311,6 +335,7 @@ func run(args []string, serve bool) int {
 		}
 		repairRestart.Do(func() {
 			log.Error("检测到数据库损坏,停止重复扫描; 重启时将保存现场并自修复", "root", root, "err", err)
+			store.RequestCheck(cfg.DataDir, "运行中发现数据库损坏:"+err.Error())
 			if serve {
 				if err := update.Restart(projectRoot(), cfg.Path, stop); err != nil {
 					log.Error("无法自动重启进行数据库修复,请手动启动服务", "err", err)
@@ -357,11 +382,25 @@ func run(args []string, serve bool) int {
 		}
 		return nil
 	}
-	// 升级后 / 启动后先把对话计数整理一遍,手机马上看到正确的列表(不用等扫描)
-	for _, r := range roots {
-		if err := ix.Finalize(r.ID); err != nil {
-			log.Warn("整理对话计数失败", "root", r.Path, "err", err)
+	// 启动后把对话计数整理一遍(升级后手机马上看到正确的列表,不用等扫描)。
+	// 数据多时这一步要几十秒:放到后台做,不挡着服务开始监听(做完前列表里的计数是上次的,不会错,只是可能没更新)
+	finalizeAll := func() {
+		defer logx.Recover("整理对话计数")
+		for _, r := range roots {
+			if ctx.Err() != nil {
+				return
+			}
+			unlock := ix.LockRoot(r.ID)
+			if err := ix.Finalize(r.ID); err != nil {
+				log.Warn("整理对话计数失败", "root", r.Path, "err", err)
+			}
+			unlock()
 		}
+	}
+	if serve {
+		logx.Go("整理对话计数", finalizeAll)
+	} else {
+		finalizeAll()
 	}
 	// 实时增量索引:监视每个根目录的文件变化,几秒后把变化反映到索引里(第一轮扫描 / 续扫过去之后才开始)
 	if serve && cfg.Scan.Watch {
@@ -486,32 +525,60 @@ func run(args []string, serve bool) int {
 			}
 		},
 	}
-	// 自动更新:每隔 10 分钟(可配置)检查 GitHub Releases,有新版本就下载、替换并重启服务(只有便携版布局才会自动安装)
-	srv.Update = update.New(update.Options{
-		Version: version, Repo: cfg.Update.Repo, Interval: time.Duration(cfg.Update.IntervalMinutes) * time.Minute, Mirror: cfg.Update.Mirror, Mirrors: cfg.Update.Mirrors,
-		Root: projectRoot(), ConfigPath: cfg.Path, Log: log, Exit: stop,
-		AppDir: appUpdateDir(cfg.Update.CacheApp, cfg.DataDir),
-	}, cfg.Update.Enabled)
-	if cfg.Update.Enabled {
-		logx.Go("自动更新", func() { srv.Update.Run(ctx) })
+	// 自动更新:每隔 10 分钟(可配置)检查 GitHub Releases,有新版本就下载、替换并重启服务(只有便携版布局才会自动安装)。
+	// 做成可以单独重启的模块(startUpdater):设置里改了更新相关的项,只换这个模块,不用重启服务和数据库
+	var updCancel context.CancelFunc
+	startUpdater := func(c *config.Config) {
+		if updCancel != nil {
+			updCancel()
+		}
+		uctx, cancel := context.WithCancel(ctx)
+		updCancel = cancel
+		u := update.New(update.Options{
+			Version: version, Repo: c.Update.Repo, Interval: time.Duration(c.Update.IntervalMinutes) * time.Minute, Mirror: c.Update.Mirror, Mirrors: c.Update.Mirrors,
+			Root: projectRoot(), ConfigPath: cfg.Path, Log: log, Exit: stop,
+			AppDir: appUpdateDir(c.Update.CacheApp, c.DataDir),
+		}, c.Update.Enabled)
+		srv.SetUpdater(u)
+		if c.Update.Enabled {
+			logx.Go("自动更新", func() { u.Run(uctx) })
+		}
 	}
+	startUpdater(cfg)
 	srv.WarmRandom(ctx)
 	srv.Restart = func() error { return update.Restart(projectRoot(), cfg.Path, stop) }
 	srv.Shutdown = stop
 	srv.Render.Gov = gov                        // 播放 / 传输期间图片转换最多 2 路同时
 	srv.StartOptimizeWorker(ctx)                // 存储优化:视频压缩队列(没有任务时什么都不做)
 	srv.StartClients(ctx)                       // 客户端连接追踪:速度采样、过期清理
-	go dbMaintenance(ctx, db, cfg.DataDir, log) // 数据库:PRAGMA optimize + 每日自动备份
-	// 内网穿透:托管 frpc / 自定义穿透客户端(配置了才启动),掉线自动重连,定期探测外网地址
-	if cfg.Tunnel.Enabled {
-		port := 8480
-		if i := strings.LastIndex(cfg.Listen, ":"); i >= 0 {
-			fmt.Sscanf(cfg.Listen[i+1:], "%d", &port)
+	go dbMaintenance(ctx, db, cfg.DataDir, log) // 数据库:PRAGMA optimize + 每日自动备份 + 定期后台检查
+	// 内网穿透:托管 frpc / 自定义穿透客户端(配置了才启动),掉线自动重连,定期探测外网地址。
+	// 同样是可以单独重启的模块:改穿透配置只重启 frpc,服务和数据库不动
+	var tunCancel context.CancelFunc
+	startTunnel := func(c *config.Config) {
+		if old := srv.TunnelManager(); old != nil {
+			old.Stop() // 先停掉旧的 frpc 进程,新的才能占用同一个远程端口
+			tunCancel()
+			tunCancel = nil
+			time.Sleep(500 * time.Millisecond)
 		}
-		srv.Tunnel = tunnel.New(cfg.Tunnel, port, cfg.TLS.Enabled, cfg.DataDir, log)
-		srv.Tunnel.KillStale()
-		srv.Tunnel.Run(ctx)
+		if !c.Tunnel.Enabled {
+			srv.SetTunnel(nil)
+			return
+		}
+		port := 8480
+		if i := strings.LastIndex(c.Listen, ":"); i >= 0 {
+			fmt.Sscanf(c.Listen[i+1:], "%d", &port)
+		}
+		tctx, cancel := context.WithCancel(ctx)
+		tunCancel = cancel
+		m := tunnel.New(c.Tunnel, port, c.TLS.Enabled, c.DataDir, log)
+		m.KillStale()
+		srv.SetTunnel(m)
+		m.Run(tctx)
 	}
+	startTunnel(cfg)
+	srv.Reload = newReloader(cfg, projectRoot(), srv, gov, log, startTunnel, startUpdater)
 	var certFile, keyFile string
 	if cfg.TLS.Enabled {
 		var fp string
@@ -584,7 +651,8 @@ func userCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "配置错误:", err)
 		return 1
 	}
-	db, err := store.OpenMigrated(filepath.Join(cfg.DataDir, "hub.sqlite"))
+	// 账号命令只动 users 表:用快速打开(不做几分钟的完整检查,服务正在运行时桌面程序会频繁调用)
+	db, err := store.OpenFast(filepath.Join(cfg.DataDir, "hub.sqlite"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

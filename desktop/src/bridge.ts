@@ -134,7 +134,18 @@ const mockBridge: Bridge = {
   revealPath: async (p) => { window.alert("定位:" + p); },
   updateStatus: async () => ({ current: "1.0.0", state: "uptodate", message: "已是最新版本", progress: 0, checkedAt: new Date().toISOString(), installable: true, auto: true }),
   updateAction: async () => {},
-  admin: async () => { throw "浏览器调试模式没有服务端"; },
+  admin: async (method, path) => {
+    // 浏览器调试:内网穿透页用的假数据(实时延迟折线 / 状态),其余接口没有服务端
+    if (method === "GET" && path.startsWith("/api/v1/admin/tunnel")) {
+      const now = Date.now();
+      const samples = Array.from({ length: 60 }, (_, i) => ({ at: now - (60 - i) * 2000, chainMs: i === 41 || i === 42 ? -1 : Math.round(48 + 18 * Math.sin(i / 5) + (i % 7) * 3 + (i > 50 ? 60 : 0)), serverMs: Math.round(22 + 6 * Math.sin(i / 4)) }));
+      const st = (v: number[]) => { const ok = v.filter((x) => x >= 0); const avg = ok.reduce((a, b) => a + b, 0) / ok.length; return { last: v[v.length - 1], avg, min: Math.min(...ok), max: Math.max(...ok), jitter: 6.4, p95: Math.max(...ok), lossPct: ((v.length - ok.length) * 100) / v.length, n: v.length }; };
+      return { enabled: true, type: "frp", state: "running", message: "已连接到穿透服务器", exe: "frpc.exe", pid: 4242, startedAt: Math.floor(now / 1000) - 5400, restarts: 0, publicAddr: "demo.example.com:12345",
+        probes: [], logs: ["12:00:01 login to server success"], latency: { watching: true, chain: st(samples.map((s) => s.chainMs)), server: st(samples.map((s) => s.serverMs)), samples, protocol: "quic", udp: true } } as any;
+    }
+    if (method === "POST" && path === "/api/v1/admin/config/reload") return { changed: [], applied: ["内网穿透"], restartRequired: [] } as any;
+    throw "浏览器调试模式没有服务端";
+  },
 };
 
 export const bridge: Bridge = "__TAURI_INTERNALS__" in window ? tauri : mockBridge;

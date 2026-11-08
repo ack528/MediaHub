@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"mediahub/internal/tunnel"
 )
 
 // GET /api/v1/server/addresses(需要登录)—— 这台服务器在各个网络上的地址。手机据此在"和服务器同一个局域网"时自动改走内网直连
@@ -39,38 +41,49 @@ func (s *Server) serverAddresses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	pub := ""
-	if s.Cfg.Tunnel.Enabled {
-		pub = s.Cfg.Tunnel.PublicAddr
+	if t := s.tunnelMgr(); t != nil { // 以运行中的穿透模块为准(热更新后配置可能已经变了)
+		pub = t.Status(false).PublicAddr
 	}
 	writeJSON(w, 200, map[string]any{"lan": lan, "ipv6": v6, "public": pub, "tls": s.TLSFingerprint != ""})
 }
 
+// TunnelManager 当前运行的内网穿透模块(没有启用时为 nil)。
+func (s *Server) TunnelManager() *tunnel.Manager { return s.tunnelMgr() }
+
 // GET /api/v1/admin/tunnel[?logs=1] —— 内网穿透的状态(管理程序用)。
 func (s *Server) adminTunnelStatus(w http.ResponseWriter, r *http.Request) {
-	if s.Tunnel == nil {
+	t := s.tunnelMgr()
+	if t == nil {
 		writeJSON(w, 200, map[string]any{"enabled": false, "state": "disabled", "message": "没有启用内网穿透", "probes": []any{}})
 		return
 	}
-	writeJSON(w, 200, s.Tunnel.Status(r.URL.Query().Get("logs") != ""))
+	st := t.Status(r.URL.Query().Get("logs") != "")
+	if r.URL.Query().Get("watch") != "" { // 管理程序的穿透页开着:登记"有人在看",服务端开始实时采样延迟
+		t.Watch()
+	}
+	l := t.Latency()
+	st.Latency = &l
+	writeJSON(w, 200, st)
 }
 
 // POST /api/v1/admin/tunnel/{start|stop|restart|probe}
 func (s *Server) adminTunnelAction(w http.ResponseWriter, r *http.Request) {
-	if s.Tunnel == nil {
+	t := s.tunnelMgr()
+	if t == nil {
 		writeErr(w, 400, "tunnel.disabled", "没有启用内网穿透(在 配置 → 网络 → 内网穿透 里打开并重启服务)")
 		return
 	}
 	switch r.PathValue("action") {
 	case "start":
-		s.Tunnel.Start()
+		t.Start()
 	case "stop":
-		s.Tunnel.Stop()
+		t.Stop()
 	case "restart":
-		s.Tunnel.Restart()
+		t.Restart()
 	case "probe":
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
-		writeJSON(w, 200, s.Tunnel.Probe(ctx))
+		writeJSON(w, 200, t.Probe(ctx))
 		return
 	default:
 		writeErr(w, 404, "notfound", "未知操作")

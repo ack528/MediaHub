@@ -194,6 +194,7 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
         }
         "session.lastAddress" -> JsonPrimitive(c.session.lastAddress())
 
+        "net.ping" -> ping()
         "route.probe" -> { c.probeRoute(); JsonPrimitive(Route.current.value ?: "") }
         "caps" -> { if (!c.isLocal) runCatching { c.api.refreshCaps() }; AppJson.encodeToJsonElement(c.api.caps) }
 
@@ -416,6 +417,25 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
             }
         }
         @Suppress("UNREACHABLE_CODE") JsonNull
+    }
+
+    /** 量一次到服务器的往返(设置里的"连接质量"每 2 秒调一次):在保活连接上请求一个很小的接口,量"发出请求 → 收到响应头"。 */
+    private val pingHttp by lazy { c.apiHttp.newBuilder().callTimeout(5, java.util.concurrent.TimeUnit.SECONDS).build() }
+
+    private suspend fun ping(): JsonElement = withContext(Dispatchers.IO) {
+        if (c.isLocal) return@withContext buildJsonObject { put("local", true) }
+        val t0 = System.nanoTime()
+        pingHttp.newCall(Request.Builder().url(base() + "/api/v1/speedtest/ping").build()).execute().use { r ->
+            val ms = (System.nanoTime() - t0) / 1_000_000.0
+            r.body.string()
+            if (!r.isSuccessful) throw ApiException(r.code, "http.${r.code}", "HTTP ${r.code}")
+            buildJsonObject {
+                put("ms", Math.round(ms * 10) / 10.0)
+                put("protocol", r.protocol.toString()) // h2 / http/1.1(HTTP/3 = h3,目前 OkHttp 不支持)
+                put("tls", r.handshake?.tlsVersion?.javaName ?: "")
+                put("lan", Route.current.value != null) // 走的是内网直连线路
+            }
+        }
     }
 
     /** 磁盘缓存里上次的内容(先显示,不等网络)。 */

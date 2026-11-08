@@ -7,6 +7,7 @@ import { formatSize } from "../../lib/media";
 import { ListGroup, ListRow } from "../../components/List";
 import { SETTING_PAGES } from "./schema";
 import { ActionRow, ChoiceField, InfoRow, Note, SchemaRows } from "./controls";
+import { LinkQuality } from "../../components/LinkQuality";
 
 // ---------------------------------------------------------------- 网络
 
@@ -16,6 +17,7 @@ export function NetworkPage() {
   const line = session.local ? "本地媒体(不连服务器)" : route ? `内网直连:${route.replace(/^https?:\/\//, "")}` : `服务器地址:${session.baseUrl.replace(/^https?:\/\//, "") || "未连接"}`;
   return (
     <>
+      <LinkQuality />
       <ListGroup title="连接线路">
         <InfoRow title="当前线路" value={line} />
         <ListRow icon={<Globe className="size-4" />} tone="cyan" title="重新检测线路" description="马上重新探测服务器的内网 / IPv6 地址" end={probing ? <Spinner size="sm" /> : undefined} chevron={false}

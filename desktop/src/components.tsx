@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { bridge } from "./bridge";
 import { Icon } from "./icons";
 import type { Item } from "./schema";
@@ -173,3 +173,72 @@ export function fmtUptime(sec: number) {
 }
 
 export const fmtNum = (n: number) => n.toLocaleString("zh-CN");
+
+// ------------------------------------------------------------ 实时延迟
+
+export interface LatSample { at: number; chainMs: number; serverMs: number }
+export interface LatStats { last: number; avg: number; min: number; max: number; jitter: number; p95: number; lossPct: number; n: number }
+
+/** 延迟的颜色档位:≤ 80 ms 流畅,≤ 200 ms 一般,再高明显有延迟感。 */
+export function latTone(ms: number): "green" | "orange" | "red" | "gray" {
+  return ms < 0 ? "gray" : ms <= 80 ? "green" : ms <= 200 ? "orange" : "red";
+}
+const LAT_COLOR = { green: "#52c41a", orange: "#fa8c16", red: "#f5222d", gray: "#8c8c8c" } as const;
+
+/** 容器的真实宽度(像素):图表按它画,不用 preserveAspectRatio="none" 拉伸(拉伸会让文字变形、圆点变椭圆)。 */
+function useWidth(initial = 600): [RefObject<HTMLDivElement | null>, number] {
+  const ref = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState(initial);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setW(Math.max(120, Math.round(el.clientWidth))));
+    ro.observe(el);
+    setW(Math.max(120, Math.round(el.clientWidth)));
+    return () => ro.disconnect();
+  }, []);
+  return [ref, w];
+}
+
+/** 延迟柱状图:每次采样一根蓝色柱子(整条链路经穿透访问服务器的往返);失败的采样在底部画红色短柱。按容器真实宽度画,不拉伸。 */
+export function LatencyChart({ samples, height = 120 }: { samples: LatSample[]; height?: number }) {
+  const [ref, W] = useWidth();
+  const H = height, L = 34, R = 8, T = 8, B = 8; // 左边留给纵轴刻度
+  const vals = samples.map((s) => s.chainMs).filter((v) => v >= 0);
+  const top = Math.max(100, Math.ceil((Math.max(0, ...vals) * 1.15) / 50) * 50);
+  const slots = Math.max(samples.length, 30); // 采样不够时右对齐,柱子宽度不会忽大忽小
+  const slot = (W - L - R) / slots;
+  const bw = Math.max(2, slot * 0.68);
+  const x0 = (i: number) => L + (slots - samples.length + i) * slot + (slot - bw) / 2;
+  const hOf = (v: number) => Math.max(2, (Math.min(v, top) * (H - T - B)) / top);
+  return (
+    <div ref={ref} style={{ width: "100%" }}>
+      <svg width={W} height={H} style={{ display: "block", overflow: "visible" }} role="img" aria-label="延迟柱状图">
+        {[0, 0.5, 1].map((f) => {
+          const yy = T + f * (H - T - B), val = Math.round(top * (1 - f));
+          return (
+            <g key={f}>
+              <line x1={L} x2={W - R} y1={yy} y2={yy} stroke="currentColor" strokeOpacity={f === 1 ? 0.25 : 0.1} />
+              <text x={L - 6} y={yy + 3.5} textAnchor="end" fontSize={11} fill="currentColor" fillOpacity={0.5}>{val}</text>
+            </g>
+          );
+        })}
+        {samples.map((s, i) => s.chainMs >= 0
+          ? <rect key={s.at} x={x0(i)} y={H - B - hOf(s.chainMs)} width={bw} height={hOf(s.chainMs)} rx={Math.min(2, bw / 2)} fill="#1677ff"><title>{`${s.chainMs} ms`}</title></rect>
+          : <rect key={s.at} x={x0(i)} y={H - B - 10} width={bw} height={10} rx={Math.min(2, bw / 2)} fill="#f5222d"><title>失败</title></rect>)}
+      </svg>
+    </div>
+  );
+}
+
+/** 一格统计数字(大号数字 + 小标题)。 */
+export function LatTile({ label, value, unit = "ms", tone }: { label: string; value: string; unit?: string; tone?: "green" | "orange" | "red" | "gray" }) {
+  return (
+    <div style={{ flex: "1 1 88px", minWidth: 88, padding: "8px 10px", borderRadius: 10, background: "var(--bg-soft, rgba(127,127,127,.08))" }}>
+      <div style={{ fontSize: 12, opacity: 0.6 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 600, lineHeight: 1.25, color: tone ? LAT_COLOR[tone] : undefined, fontVariantNumeric: "tabular-nums" }}>
+        {value}<span style={{ fontSize: 12, fontWeight: 400, opacity: 0.6, marginLeft: 2 }}>{value === "—" ? "" : unit}</span>
+      </div>
+    </div>
+  );
+}

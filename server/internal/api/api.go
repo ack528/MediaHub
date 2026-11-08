@@ -68,8 +68,46 @@ type Server struct {
 	Restart   func() error
 	Shutdown  func()
 	configMu  sync.Mutex
+	// 可以在运行中整体换掉的模块(热更新,见 Reload):读写都要走下面的访问方法
+	modMu sync.RWMutex
 	// Update:自动更新(可为空)
 	Update *update.Updater
+	// Reload 重新读取配置文件,让能立刻生效的设置立刻生效、只让需要的模块(内网穿透 / 自动更新 / 调度…)自己重启,
+	// 不用重启整个服务和数据库。返回哪些设置已经生效、哪些还要重启服务才能生效。由 cmd/mediahub 设置。
+	Reload func() (ReloadResult, error)
+}
+
+// ReloadResult 是一次配置热更新的结果。
+type ReloadResult struct {
+	Changed         []string `json:"changed"`         // 配置文件里和正在用的不一样的设置
+	Applied         []string `json:"applied"`         // 已经立刻生效的(模块名或设置路径)
+	RestartRequired []string `json:"restartRequired"` // 需要重启服务才生效的设置
+}
+
+func (s *Server) updater() *update.Updater {
+	s.modMu.RLock()
+	defer s.modMu.RUnlock()
+	return s.Update
+}
+
+// SetUpdater 换上一个自动更新模块(热更新时调用)。
+func (s *Server) SetUpdater(u *update.Updater) {
+	s.modMu.Lock()
+	s.Update = u
+	s.modMu.Unlock()
+}
+
+func (s *Server) tunnelMgr() *tunnel.Manager {
+	s.modMu.RLock()
+	defer s.modMu.RUnlock()
+	return s.Tunnel
+}
+
+// SetTunnel 换上一个内网穿透管理器(热更新时调用;nil = 不启用)。
+func (s *Server) SetTunnel(t *tunnel.Manager) {
+	s.modMu.Lock()
+	s.Tunnel = t
+	s.modMu.Unlock()
 }
 
 type ctxKey int
@@ -120,8 +158,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/admin/clients", s.adminOnly(s.adminClients))
 	mux.Handle("POST /api/v1/admin/clients/kick", s.adminOnly(s.adminClientKick))
 	mux.HandleFunc("POST /api/v1/admin/local-shutdown", s.localShutdown)
+	mux.Handle("POST /api/v1/admin/config/reload", s.adminOnly(s.adminConfigReload))
 	mux.Handle("GET /api/v1/admin/tunnel", s.adminOnly(s.adminTunnelStatus))
 	mux.Handle("POST /api/v1/admin/tunnel/{action}", s.adminOnly(s.adminTunnelAction))
+	mux.Handle("GET /api/v1/server/link", authd(s.serverLink))
 	mux.Handle("GET /api/v1/speedtest/ping", authd(s.speedPing))
 	mux.Handle("GET /api/v1/speedtest/down", authd(s.speedDown))
 	mux.Handle("POST /api/v1/speedtest/up", authd(s.speedUp))
@@ -446,5 +486,6 @@ func (s *Server) capabilities() map[string]any {
 		"serverManagement": true, "shuffleQueue": true,
 		"codecs": codecs, "qsvH264": qsv264, "qsvH265": qsv265, "maxTranscodeBitrate": max,
 		"probing": probing, "speedtest": true, "playerPrefs": true, "hlsPrepare": true, "compat": s.Cfg.Tools.FFmpeg != "", "gzip": true, "optimize": true, "thumbWebp": s.Render != nil && s.Cfg.Images.FallbackConvert,
+		"transport": s.transportCaps(), "linkLatency": true, "hotReload": s.Reload != nil,
 	}
 }

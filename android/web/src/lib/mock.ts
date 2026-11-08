@@ -93,6 +93,7 @@ export function installBrowserMock() {
       case "lsfg.status": return { supported: true, lib: false, dllInAssets: false, bundled: false, cacheReady: false, state: 0, error: "" };
       case "codecs": return [{ label: "H.264 / AVC", mime: "video/avc", decoders: [{ name: "c2.qti.avc.decoder", hardware: true, detail: "最高 4096×2160" }] }];
       case "session.info": return { name: "MediaHub", version: "3.4.3" };
+      case "net.ping": { const t = Date.now() / 1000; return { ms: Math.round((46 + 22 * Math.sin(t / 7) + Math.random() * 14 + (Math.random() < 0.06 ? 120 : 0)) * 10) / 10, protocol: "h2", tls: "TLSv1.3", lan: false }; }
       case "http": return http(a.path as string);
       default: return null;
     }
@@ -101,6 +102,11 @@ export function installBrowserMock() {
   function http(path: string) {
     const u = new URL(path, "https://x");
     const q = Object.fromEntries(u.searchParams);
+    if (u.pathname === "/api/v1/server/link") {
+      const j = () => Math.round(38 + 10 * Math.sin(Date.now() / 5000) + Math.random() * 8);
+      return { transport: { http1: true, http2: true, http3: false, quic: false, udp: false, tunnelProtocol: "quic", tunnelUDP: true },
+        tunnel: { enabled: true, type: "frp", state: "running", restarts: 0, latency: { protocol: "quic", udp: true, chain: { last: j(), avg: 41, lossPct: 0, n: 30 }, server: { last: 22, avg: 24, lossPct: 0, n: 30 } } } };
+    }
     if (u.pathname === "/api/v1/dialogs") return { dialogs, nextCursor: null };
     let m = u.pathname.match(/^\/api\/v1\/dialogs\/(d\d+)$/);
     if (m) return dialogs.find((d) => d.id === m![1]);

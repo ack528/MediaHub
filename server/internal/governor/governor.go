@@ -39,7 +39,7 @@ type Config struct {
 }
 
 type Governor struct {
-	cfg        Config
+	cfgp       atomic.Pointer[Config] // 当前配置;Reconfigure 可以在运行中换掉(设置里改了"后台调度"不用重启服务)
 	lastClient atomic.Int64 // unix 纳秒:最近一次登录客户端的请求
 	lastHeavy  atomic.Int64 // 最近一次"重"传输(开始 / 结束 / 有数据)
 	streams    atomic.Int32 // 正在进行的重传输数
@@ -54,10 +54,28 @@ func New(cfg Config) *Governor {
 	if cfg.StreamGrace <= 0 {
 		cfg.StreamGrace = 6 * time.Second
 	}
-	return &Governor{cfg: cfg}
+	g := &Governor{}
+	g.cfgp.Store(&cfg)
+	return g
 }
 
-func (g *Governor) Config() Config { return g.cfg }
+func (g *Governor) conf() Config { return *g.cfgp.Load() }
+
+func (g *Governor) Config() Config { return g.conf() }
+
+// Reconfigure 换一份调度配置(热更新)。
+func (g *Governor) Reconfigure(cfg Config) {
+	if g == nil {
+		return
+	}
+	if cfg.ActiveWindow <= 0 {
+		cfg.ActiveWindow = 2 * time.Minute
+	}
+	if cfg.StreamGrace <= 0 {
+		cfg.StreamGrace = g.conf().StreamGrace
+	}
+	g.cfgp.Store(&cfg)
+}
 
 // ClientActivity 登录客户端发来了请求(管理程序的请求不算)。nil 安全。
 func (g *Governor) ClientActivity() {
@@ -101,14 +119,15 @@ func (g *Governor) Streams() int {
 
 // Level 当前调度级别。
 func (g *Governor) Level() Level {
-	if g == nil || !g.cfg.Enabled {
+	if g == nil || !g.conf().Enabled {
 		return Idle
 	}
+	c := g.conf()
 	now := time.Now().UnixNano()
-	if g.streams.Load() > 0 || now-g.lastHeavy.Load() < int64(g.cfg.StreamGrace) {
+	if g.streams.Load() > 0 || now-g.lastHeavy.Load() < int64(c.StreamGrace) {
 		return Streaming
 	}
-	if now-g.lastClient.Load() < int64(g.cfg.ActiveWindow) {
+	if now-g.lastClient.Load() < int64(c.ActiveWindow) {
 		return Active
 	}
 	return Idle
@@ -128,7 +147,7 @@ func (g *Governor) IdleFor() time.Duration {
 
 // PauseCompress 当前这个级别下压缩该不该暂停。
 func (g *Governor) PauseCompress() bool {
-	return g != nil && g.cfg.Enabled && g.cfg.PauseCompress && g.Level() != Idle
+	return g != nil && g.conf().Enabled && g.conf().PauseCompress && g.Level() != Idle
 }
 
 func clamp(d, lo, hi time.Duration) time.Duration {
@@ -207,9 +226,10 @@ func (g *Governor) Snapshot() Snapshot {
 	if g == nil {
 		return Snapshot{Level: "idle"}
 	}
+	c := g.conf()
 	return Snapshot{
-		Enabled: g.cfg.Enabled, Level: g.Level().String(), ActiveWindowS: int(g.cfg.ActiveWindow / time.Second),
+		Enabled: c.Enabled, Level: g.Level().String(), ActiveWindowS: int(c.ActiveWindow / time.Second),
 		IdleForSec: int64(g.IdleFor() / time.Second), Streams: g.Streams(), ThrottledMs: g.throttleMs.Load(), Yields: g.yields.Load(),
-		PauseCompress: g.cfg.PauseCompress,
+		PauseCompress: c.PauseCompress,
 	}
 }
