@@ -118,7 +118,7 @@ export const SETTING_PAGES: Record<string, SettingRow[]> = {
     {
       "type": "choice",
       "key": "glass",
-      "title": "顶栏、悬浮按钮的玻璃效果",
+      "title": "底部导航的玻璃效果",
       "options": [
         [
           "on",
@@ -133,7 +133,7 @@ export const SETTING_PAGES: Record<string, SettingRow[]> = {
           "关"
         ]
       ],
-      "desc": "浮在内容上面的部件采样下面的内容,做模糊、饱和度和边缘折射。Android 13 起有折射,Android 12 只有模糊,更早的系统和低内存手机只画半透明底色。卡顿时可以改成「只要毛玻璃」或关掉"
+      "desc": "首页底部导航采样下面的内容,做模糊、饱和度和边缘折射(按住拖动时镜片还有色散)。卡顿时可以改成「只要毛玻璃」或关掉。拖动导航时如果检测到明显掉帧,本次运行会自动降一档(开 → 只要毛玻璃 → 关),重启应用后按这里的设置重新尝试"
     },
     {
       "type": "header",

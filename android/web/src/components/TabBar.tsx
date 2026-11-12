@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { toast } from "@heroui/react";
 import { haptic } from "../lib/bridge";
 
 /**
@@ -31,7 +32,18 @@ function stepSpring(s: Spring, dt: number) {
 }
 const settled = (s: Spring, eps: number) => Math.abs(s.x - s.target) < eps && Math.abs(s.v) < eps * 20;
 
-export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value: string; onChange: (id: string) => void }) {
+/**
+ * 玻璃效果档位:2 = 折射(位移滤镜 + 镜片色散)/ 1 = 只要毛玻璃 / 0 = 半透明底色。
+ * 设置里的「液态玻璃」决定上限;按住拖动时检测到明显掉帧(超过 30% 的帧间隔 > 25ms),本次运行自动降一档。
+ */
+const GLASS_LEVEL: Record<string, number> = { on: 2, frosted: 1, off: 0 };
+let sessionCap = 2;
+
+export function TabBar({ items, value, onChange, glass = "on" }: { items: TabBarItem[]; value: string; onChange: (id: string) => void; glass?: string }) {
+  const [cap, setCap] = useState(sessionCap);
+  const level = Math.min(GLASS_LEVEL[glass] ?? 2, cap);
+  const levelRef = useRef(level);
+  levelRef.current = level;
   const n = items.length;
   const W = n * ITEM + PAD * 2;
   const lw0 = ITEM * GROW, lh0 = (H - PAD * 2) * GROW; // 镜片的布局尺寸 = 按下时的大小,平时缩小显示
@@ -46,12 +58,14 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
   const ids = useRef({ bar: `lgb-${Math.random().toString(36).slice(2, 7)}`, lens: `lgl-${Math.random().toString(36).slice(2, 7)}` }).current;
   const maps = useRef({ bar: "", lens: "" });
   const lensFilter = useRef(`url(#${ids.lens}) saturate(1.5) brightness(1.05)`);
-  if (!maps.current.bar) maps.current = { bar: displacementMap(W, H, BAR_RIM), lens: displacementMap(lw0, lh0, LENS_RIM) };
+  // 位移图只在折射档才生成(画布逐像素算,几毫秒)
+  if (level === 2 && !maps.current.bar) maps.current = { bar: displacementMap(W, H, BAR_RIM), lens: displacementMap(lw0, lh0, LENS_RIM) };
 
   // 物理状态:镜片中心 x、按下程度 p(0 平时 / 1 按下)、横向拉伸 st、整条导航的位移 shift
   const phys = useRef({
     x: spring(centerOf(index), 520, 0.72), p: spring(0, 520, 0.7), st: spring(0, 600, 0.6), shift: spring(0, 400, 0.7),
     raf: 0, last: 0, pressed: false, fv: 0, fx: 0, ft: 0, hover: index, t0: 0, x0: 0,
+    frames: 0, slow: 0, // 按住期间的帧数 / 慢帧数(掉帧检测;松手后切换页面的那段不算,那是页面渲染的开销)
   });
   const indexRef = useRef(index);
   indexRef.current = index;
@@ -70,7 +84,7 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
     lens.current.style.transform = `translate3d(${cx - lw0 / 2}px,${cy - lh0 / 2}px,0) scale(${sx},${sy})`;
     lens.current.style.setProperty("--press", p.toFixed(3));
     // 镜片的折射滤镜(三个颜色通道分别折射)很费 GPU:只在按下 / 拖动时打开,平时就是一块浅灰
-    const f = p > 0.02 ? lensFilter.current : "none";
+    const f = p > 0.02 && levelRef.current === 2 ? lensFilter.current : "none";
     if (lens.current.style.backdropFilter !== f) { lens.current.style.backdropFilter = f; lens.current.style.setProperty("-webkit-backdrop-filter", f); }
     tintClip.current.style.clipPath = `inset(${ly}px ${W - lx - lw}px ${H - ly - lh}px ${lx}px round ${r}px)`;
     tint.current.style.transformOrigin = `${cx}px ${cy}px`;
@@ -87,6 +101,7 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
     if (ph.raf) return;
     ph.last = 0;
     const tick = (now: number) => {
+      if (ph.pressed && ph.last) { ph.frames++; if (now - ph.last > 25) ph.slow++; }
       const dt = Math.min(0.032, ph.last ? (now - ph.last) / 1000 : 1 / 120);
       ph.last = now;
       // 拉伸跟着镜片的速度走(快甩时拉长),停下就弹回
@@ -133,6 +148,7 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
     const ph = phys.current;
     const fx = local(e);
     ph.pressed = true; ph.fx = fx; ph.ft = e.timeStamp; ph.fv = 0; ph.t0 = e.timeStamp; ph.x0 = fx;
+    ph.frames = 0; ph.slow = 0;
     ph.p.target = 1;
     ph.x.k = 160; ph.x.z = 0.78; // 按下:镜片从原来的位置滑到手指下(约 330ms,和 IT 之家点按一样);开始拖动后才紧跟手指
     follow(fx);
@@ -156,6 +172,13 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
     const ph = phys.current;
     if (!ph.pressed) return;
     ph.pressed = false;
+    // 按住拖动的这段明显掉帧:本次运行降一档玻璃效果
+    if (ph.frames >= 12 && ph.slow / ph.frames > 0.3 && levelRef.current > 0) {
+      const to = levelRef.current - 1;
+      sessionCap = Math.min(sessionCap, to);
+      setCap(sessionCap);
+      toast(`底部导航动画掉帧,已临时改为「${to === 1 ? "只要毛玻璃" : "关闭玻璃效果"}」`, { description: "设置 → 外观 → 液态玻璃 可以固定选择;重启应用后会重新尝试" });
+    }
     ph.p.target = 0;
     ph.shift.target = 0;
     // 松手:拖过的带一点回弹地吸附;没拖动(点按 / 长按)的继续按原来的速度滑过去
@@ -183,7 +206,7 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
   return (
     <nav className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-center" style={{ paddingBottom: "calc(var(--sab) + 12px)" }}>
       {/* 液态玻璃:背后的内容先按位移图在边缘折射(像透镜一样往里弯),再轻微模糊、提高饱和度 */}
-      <svg width="0" height="0" className="absolute" aria-hidden>
+      {level === 2 && <svg width="0" height="0" className="absolute" aria-hidden>
         {([["bar", W, H, BAR_REFRACT, false], ["lens", lw0, lh0, LENS_REFRACT, true]] as const).map(([k, w, h, scale, disperse]) => (
           <filter key={k} id={ids[k]} x="0" y="0" width={w} height={h} filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
             <feImage href={maps.current[k]} x="0" y="0" width={w} height={h} preserveAspectRatio="none" result="map" />
@@ -199,7 +222,7 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
             {disperse && <feComposite in="rg" in2="b" operator="arithmetic" k2="1" k3="1" />}
           </filter>
         ))}
-      </svg>
+      </svg>}
       <div
         role="tablist" aria-label="主导航"
         className="pointer-events-auto relative touch-none select-none"
@@ -208,7 +231,10 @@ export function TabBar({ items, value, onChange }: { items: TabBarItem[]; value:
       >
         <div ref={stage} className="absolute inset-0" style={{ transformOrigin: "50% 50%" }}>
           {/* backdrop-filter 必须直接写在元素上:WebView 里经 CSS 变量传进来的 url(#…) 会被丢掉,整个滤镜(连模糊)失效 */}
-          <div className="tabbar-glass absolute inset-0 rounded-full" style={glassFilter(`url(#${ids.bar}) blur(4px) saturate(1.8) brightness(1.05)`)}>
+          <div
+            className={`absolute inset-0 rounded-full ${level === 0 ? "tabbar-solid" : "tabbar-glass"}`}
+            style={level === 2 ? glassFilter(`url(#${ids.bar}) blur(4px) saturate(1.8) brightness(1.05)`) : level === 1 ? glassFilter("blur(14px) saturate(1.6)") : undefined}
+          >
             <div className="tabbar-sheen absolute inset-0 rounded-full" />
           </div>
           <div

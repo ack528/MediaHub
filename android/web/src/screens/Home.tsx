@@ -89,7 +89,7 @@ export function Home() {
           {visited.has(t.id) && (t.id === "folders" ? <FoldersPage /> : t.id === "random" ? <RandomPage /> : <SettingsPage />)}
         </div>
       ))}
-      <TabBar items={TABS} value={tab} onChange={select} />
+      <TabBar items={TABS} value={tab} onChange={select} glass={settings.glass} />
     </div>
   );
 }

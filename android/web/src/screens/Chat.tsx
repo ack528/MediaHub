@@ -10,6 +10,9 @@ import type { Dialog, DialogView, HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
 import { StateView } from "../components/List";
 import { MediaTile, Thumb, useLongPress } from "../components/Thumb";
+import { Chunk, adaptiveColumns, gridChunk, revealItem, useChunks, useViewportWidth } from "../components/Windowed";
+import { DateScrubber, DayPill, createStore } from "../components/DateScrubber";
+import { GridSkeleton, MasonrySkeleton, TimelineSkeleton } from "../components/Skeleton";
 import { dialogCache } from "./Folders";
 import { HistorySheet } from "./ChatHistory";
 
@@ -32,7 +35,7 @@ function historyPath(id: string, o: Pick<Opts, "sort" | "asc" | "types">, extra:
 }
 
 /** 一个文件夹里的图片和视频:三种视图共用同一个排序方向,打开时回到上次的位置(和服务器同步)。 */
-export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }) {
+export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: string; focus?: string }) {
   const { settings: s, session, boot } = useApp();
   const nav = useNav();
   const [dialog, setDialog] = useState<Dialog | null>(() => dialogCache.get(id) ?? null);
@@ -111,7 +114,14 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
           optsRef.current = o; setOpts(o);
           anchor = v.itemId ?? null; offset = v.offsetPx ?? 0;
         }
-        if (r?.from) toast(`已接着「${r.from}」上次的浏览位置`);
+        if (r?.from && !focus) toast(`已接着「${r.from}」上次的浏览位置`);
+      }
+      // 从查看器「在文件夹中定位」打开:视图设置沿用记住的,但围绕那一项加载(不回到上次的位置)
+      // 类型过滤要包含它(记住的过滤可能把这一类排除了,围绕它加载会找不到)
+      if (focus) {
+        anchor = focus; offset = 0;
+        const o: Opts = { ...optsRef.current, types: ["photo", "video", "gif"] };
+        optsRef.current = o; setOpts(o);
       }
       if (!alive) return;
       setReady(true);
@@ -136,9 +146,12 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
     return null;
   }, []);
 
-  const scrollToItem = useCallback((target: { id: string; offset: number }, smooth = false) => {
+  const scrollToItem = useCallback(function go(target: { id: string; offset: number }, smooth = false, retry = true): boolean {
+    // 它所在的块可能正是占位(分块渲染):这里多在 layout effect 里调用,不能同步渲染,先发起显示,找不到就下一帧再定位一次
+    revealItem(target.id, false);
     const sc = scroller.current;
     const el = sc?.querySelector<HTMLElement>(`[data-item="${CSS.escape(target.id)}"]`);
+    if (!el && sc && retry) { requestAnimationFrame(() => { go(target, smooth, false); }); return true; }
     if (!sc || !el) return false;
     const delta = el.getBoundingClientRect().top - headerBottom() + target.offset / dpr();
     // 往前插入内容时浏览器的滚动锚定通常已经保持住位置了;再 scrollBy(哪怕 0)会打断正在进行的惯性滑动
@@ -221,11 +234,42 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
     return () => io.disconnect();
   }, [status, loadNext, loadPrev, items.length]);
 
+  // 屏幕顶端那一项的时间(浮动日期胶囊、日期滑条用;只在按时间排序时更新)
+  const topTime = useMemo(() => createStore<number | null>(null), []);
+  const timeOf = useMemo(() => new Map(items.map((x) => [x.id, x.takenAt ? Date.parse(x.takenAt) : NaN])), [items]);
+  const lastTop = useRef<{ id: string; offset: number } | null>(null); // 转屏时用:变宽 / 变窄后滚回这一项
+  const updateTop = useCallback(() => {
+    if (window.innerWidth !== prevWidth.current) return; // 正在转屏:布局还没换好,这时的顶端项不对
+    const t = topItem();
+    lastTop.current = t;
+    if (optsRef.current.sort !== "taken") { topTime.set(null); return; }
+    const ms = t ? timeOf.get(t.id) : undefined;
+    topTime.set(ms != null && isFinite(ms) ? ms : null);
+  }, [topItem, timeOf, topTime]);
+  useEffect(() => { if (status === "ready") requestAnimationFrame(updateTop); }, [status, items, opts.mode, opts.sort, updateTop]);
+
   const onScroll = useRef(0);
   const handleScroll = () => {
     if (onScroll.current) return;
-    onScroll.current = requestAnimationFrame(() => { onScroll.current = 0; saveSoon(); });
+    onScroll.current = requestAnimationFrame(() => { onScroll.current = 0; updateTop(); saveSoon(); });
   };
+
+  // 日期滑条的范围:当前顺序里第一项和最后一项的时间(各取 1 条)
+  const [range, setRange] = useState<{ a: number; b: number } | null>(null);
+  const typesKey = opts.types.join(",");
+  useEffect(() => {
+    if (opts.sort !== "taken") { setRange(null); return; }
+    let alive = true;
+    const o = { sort: opts.sort, asc: opts.asc, types: typesKey.split(",") };
+    Promise.all([
+      api<HistoryResp>(historyPath(id, o, { limit: 1 }), { cache: true }),
+      api<HistoryResp>(historyPath(id, { ...o, asc: !o.asc }, { limit: 1 }), { cache: true }),
+    ]).then(([x, y]) => {
+      const a = Date.parse(x.items[0]?.takenAt ?? ""), b = Date.parse(y.items[0]?.takenAt ?? "");
+      if (alive) setRange(isFinite(a) && isFinite(b) && a !== b ? { a, b } : null);
+    }).catch(() => { if (alive) setRange(null); });
+    return () => { alive = false; };
+  }, [id, opts.sort, opts.asc, typesKey]);
 
   // ---- 修改视图:排序 / 方向 / 类型变了要重新取(回到开头),视图 / 列数只换布局(保持在当前这一条)
   const change = (patch: Partial<Opts>) => {
@@ -252,7 +296,7 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
   useEffect(() => on("viewerClosed", (d: { origin: string; itemId: string }) => {
     if (d.origin !== id || !d.itemId) return;
     // 看的过程中列表已经跟着滚到了那一项(返回动画落在那里);查看器里翻到了列表还没加载的部分时,围绕它重新加载
-    if (!scroller.current?.querySelector(`[data-item="${CSS.escape(d.itemId)}"]`)) reload(d.itemId);
+    if (!itemsRef.current.some((x) => x.id === d.itemId)) reload(d.itemId); // 分块渲染:列表里有但所在块是占位的也算"有"
   }), [id, reload]);
   // 查看器翻到了列表还没加载的部分:趁查看器还盖着,围绕那一项重新加载(返回时列表已经在那里,动画落在它上面)
   useEffect(() => on("viewerMissing", (itemId: string) => { if (itemId) reload(itemId); }), [reload]);
@@ -280,6 +324,14 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
     ? [counts.photo && `${counts.photo} 张照片`, counts.video && `${counts.video} 个视频`, counts.gif && `${counts.gif} 个动图`].filter(Boolean).join(" · ")
     : `${total} 项`;
   const nextMode = MODES[(opts.mode + 1) % 3];
+  const width = useViewportWidth();
+  // 转屏 / 分屏改变宽度:列数和每格大小都变了,滚回转屏前顶端的那一项
+  const prevWidth = useRef(width);
+  useLayoutEffect(() => {
+    if (prevWidth.current === width) return;
+    prevWidth.current = width;
+    if (lastTop.current && restored.current) scrollToItem(lastTop.current);
+  }, [width, scrollToItem]);
 
   return (
     <div ref={scroller} className="page" style={{ overflowAnchor: "none" }} onScroll={handleScroll}>
@@ -305,7 +357,9 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
       </div>
 
       {!ready || (status === "loading" && items.length === 0) ? (
-        <StateView loading />
+        opts.mode === 1 ? <GridSkeleton columns={adaptiveColumns(opts.columns, width)} gap={s.gridSpacing} />
+          : opts.mode === 2 ? <MasonrySkeleton />
+          : <TimelineSkeleton widthPct={Math.min(100, Math.max(40, Number(s.bubbleWidth ?? 72)))} />
       ) : status === "error" && items.length === 0 ? (
         <StateView error={error} onRetry={() => reload(null)} />
       ) : items.length === 0 ? (
@@ -327,6 +381,9 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
           </div>
         </div>
       )}
+
+      {status === "ready" && items.length > 0 && opts.mode === 0 && opts.sort === "taken" && s.showDatePills && <DayPill top={topTime} />}
+      {status === "ready" && range && total >= 100 && <DateScrubber scroller={scroller} top={topTime} range={range} onJump={jumpToDate} />}
 
       {status === "loading" && items.length > 0 && (
         <div className="pointer-events-none fixed inset-x-0 top-[calc(var(--sat)+64px)] z-30 flex justify-center">
@@ -355,24 +412,43 @@ export function ChatScreen({ id, titleHint }: { id: string; titleHint?: string }
 
 // ---------------------------------------------------------------- 三种视图
 
+/**
+ * 网格:分块渲染(每块整数行),离屏的块换成同高占位。宽屏(横屏 / 平板)按宽度自动加列。
+ * 原点前面最靠上的那块可能不满整行:把它的空位留在最上面一行的开头,下面的行都是满的(块和块之间不会出现缺口)。
+ */
 function GridView({ items, columns, onOpen, onLong }: { items: Item[]; columns: number; onOpen: (i: Item) => void; onLong: (i: Item) => void }) {
   const { settings: s } = useApp();
+  const cols = adaptiveColumns(columns, useViewportWidth());
+  const size = gridChunk(cols);
+  const chunks = useChunks(items, size);
+  const gap = s.gridSpacing;
+  const tpl = `repeat(${cols}, minmax(0, 1fr))`;
   return (
-    <div className="grid" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gap: s.gridSpacing }}>
-      {items.map((it) => (
-        <MediaTile
-          key={it.id} item={it} width={s.gridThumbWidth} showName={s.showVideoName} showDuration={s.showDuration}
-          className="aspect-square" onOpen={() => onOpen(it)} onLongPress={() => onLong(it)}
-        />
-      ))}
+    <div className="flex flex-col" style={{ gap }}>
+      {chunks.map((c, ci) => {
+        const part = items.slice(c.start, c.end);
+        const lead = ci === 0 && chunks.length > 1 && part.length < size ? (cols - (part.length % cols)) % cols : 0;
+        return (
+          <Chunk key={c.key} ids={part.map((x) => x.id)} className="grid" style={{ gridTemplateColumns: tpl, gap }}>
+            {part.map((it, i) => (
+              <MediaTile
+                key={it.id} item={it} width={s.gridThumbWidth} showName={s.showVideoName} showDuration={s.showDuration}
+                className="aspect-square" style={i === 0 && lead ? { gridColumnStart: lead + 1 } : undefined}
+                onOpen={() => onOpen(it)} onLongPress={() => onLong(it)}
+              />
+            ))}
+          </Chunk>
+        );
+      })}
     </div>
   );
 }
 
-/** 瀑布流:按原比例的卡片,依次放进当前最矮的一列(顺序从上到下大致保持)。 */
+/** 瀑布流:按原比例的卡片,依次放进当前最矮的一列(顺序从上到下大致保持)。宽屏按宽度加列;每一列各自分块渲染。 */
 function MasonryView({ items, columns, onOpen }: { items: Item[]; columns: number; onOpen: (i: Item) => void }) {
   const { settings: s } = useApp();
-  const n = columns >= 5 ? 3 : 2;
+  const width = useViewportWidth();
+  const n = Math.min(6, Math.max(columns >= 5 ? 3 : 2, Math.round(width / 300)));
   const cols = useMemo(() => {
     const out: Item[][] = Array.from({ length: n }, () => []);
     const h = new Array(n).fill(0);
@@ -386,11 +462,23 @@ function MasonryView({ items, columns, onOpen }: { items: Item[]; columns: numbe
   }, [items, n]);
   return (
     <div className="flex items-start gap-3 px-4 pt-1">
-      {cols.map((col, i) => (
-        <div key={i} className="flex min-w-0 flex-1 flex-col gap-3">
-          {col.map((it) => <FeedCard key={it.id} item={it} width={s.gridThumbWidth} onOpen={() => onOpen(it)} />)}
-        </div>
-      ))}
+      {cols.map((col, i) => <MasonryColumn key={i} items={col} width={s.gridThumbWidth} onOpen={onOpen} />)}
+    </div>
+  );
+}
+
+function MasonryColumn({ items, width, onOpen }: { items: Item[]; width: number; onOpen: (i: Item) => void }) {
+  const chunks = useChunks(items, 16);
+  return (
+    <div className="flex min-w-0 flex-1 flex-col gap-3">
+      {chunks.map((c) => {
+        const part = items.slice(c.start, c.end);
+        return (
+          <Chunk key={c.key} ids={part.map((x) => x.id)} className="flex flex-col gap-3">
+            {part.map((it) => <FeedCard key={it.id} item={it} width={width} onOpen={() => onOpen(it)} />)}
+          </Chunk>
+        );
+      })}
     </div>
   );
 }
@@ -421,19 +509,27 @@ function TimelineView({ items, dated, onOpen }: { items: Item[]; dated: boolean;
   const { settings: s } = useApp();
   const bubble = Math.min(100, Math.max(40, Number(s.bubbleWidth ?? 72)));
   const gap = Math.max(4, Number(s.chatSpacing ?? 3) * 2);
+  const chunks = useChunks(items, 24);
+  const showDay = (i: number) => dated && (i === 0 || dayKey(items[i - 1].takenAt) !== dayKey(items[i].takenAt));
   return (
     <div className="mx-auto flex max-w-xl flex-col px-3 pt-1" style={{ gap }}>
-      {items.map((it, i) => {
-        const showDay = dated && (i === 0 || dayKey(items[i - 1].takenAt) !== dayKey(it.takenAt));
+      {chunks.map((c) => {
+        const part = items.slice(c.start, c.end);
+        // 块的第一项有没有日期胶囊取决于前一块的最后一项(往前加载后可能变):变了就换键重新挂载,不沿用旧的高度
         return (
-          <Fragment key={it.id}>
-            {showDay && (
-              <div className="sticky top-[calc(var(--sat)+60px)] z-10 flex justify-center py-1.5">
-                <Chip size="sm" variant="soft" color="accent" className="shadow-surface backdrop-blur">{dayLabel(it.takenAt)}</Chip>
-              </div>
-            )}
-            <TimelineBubble item={it} width={s.chatImageWidth} widthPct={bubble} onOpen={() => onOpen(it)} />
-          </Fragment>
+          <Chunk key={`${c.key}${showDay(c.start) ? "d" : ""}`} ids={part.map((x) => x.id)} className="flex flex-col" style={{ gap }}>
+            {part.map((it, j) => (
+              <Fragment key={it.id}>
+                {/* 日期胶囊不再吸顶:当前这一天由页面顶部的浮动胶囊显示(DayPill) */}
+                {showDay(c.start + j) && (
+                  <div className="flex justify-center py-1.5">
+                    <Chip size="sm" variant="soft" color="accent">{dayLabel(it.takenAt)}</Chip>
+                  </div>
+                )}
+                <TimelineBubble item={it} width={s.chatImageWidth} widthPct={bubble} onOpen={() => onOpen(it)} />
+              </Fragment>
+            ))}
+          </Chunk>
         );
       })}
     </div>

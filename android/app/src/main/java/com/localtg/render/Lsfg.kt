@@ -147,10 +147,20 @@ class LsfgSession(val w: Int, val h: Int, val generated: Int, val key: String) {
     private var started = false
     var counter = 0L
 
-    fun create(cacheDir: String, flowScale: Float, perf: Boolean, fp16: Boolean): Boolean {
+    /**
+     * 第一步:原生部分(新建 Vulkan 设备、编译管线、分配 AHB),耗时几百毫秒到几秒,**在后台线程调用**,渲染线程不等。
+     * 这一步没有 GL 调用;原生层的全局状态此时只能由这个线程访问(渲染线程在建立完成之前不碰原生接口)。
+     */
+    fun startNative(cacheDir: String, flowScale: Float, perf: Boolean, fp16: Boolean): Boolean {
         val rc = LsfgNative.nativeStart(cacheDir, w, h, generated, flowScale, perf, fp16)
         if (rc != 0) { AppLog.w("lsfg", "帧生成启动失败(代码 $rc):${LsfgNative.nativeLastError()}"); return false }
         started = true
+        return true
+    }
+
+    /** 第二步:把 AHB 绑定成 GL 纹理 + FBO,**在 GL 渲染线程调用**(很快)。 */
+    fun bindGl(): Boolean {
+        if (!started) return false
         val all = IntArray(2 + generated)
         GLES30.glGenTextures(all.size, all, 0)
         // AHB → EGLImage → 这几张 GL 纹理

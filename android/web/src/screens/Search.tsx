@@ -8,6 +8,7 @@ import type { HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
 import { StateView } from "../components/List";
 import { MediaTile } from "../components/Thumb";
+import { adaptiveColumns, useViewportWidth } from "../components/Windowed";
 import { heroArgs } from "../lib/hero";
 
 const TYPE_TABS = [["all", "全部", "photo,video,gif"], ["photo", "照片", "photo,gif"], ["video", "视频", "video"]] as const;
@@ -28,6 +29,7 @@ export function SearchScreen({ dialogId, dialogTitle }: { dialogId?: string; dia
   const [searched, setSearched] = useState("");
   const gen = useRef(0);
   const types = TYPE_TABS.find((t) => t[0] === tab)![2];
+  const cols = adaptiveColumns(3, useViewportWidth()); // 横屏 / 平板按宽度加列
 
   const run = useCallback(async (text: string, cursor: string | null) => {
     const my = cursor ? gen.current : ++gen.current;
@@ -111,7 +113,7 @@ export function SearchScreen({ dialogId, dialogTitle }: { dialogId?: string; dia
       ) : (
         <div className="pb-safe">
           <p className="px-4 py-2 text-xs text-muted">{next ? `已显示 ${items.length} 项` : `共 ${items.length} 项`}</p>
-          <div className="grid grid-cols-3" style={{ gap: s.gridSpacing }}>
+          <div className="grid" style={{ gap: s.gridSpacing, gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
             {items.map((it) => (
               <MediaTile key={it.id} item={it} width={s.gridThumbWidth} showName showDuration={s.showDuration} className="aspect-square"
                 onOpen={() => pick(it)} onLongPress={dialogId ? () => open(it) : undefined} />

@@ -123,6 +123,8 @@ export type Settings = Record<string, unknown> & {
   defaultColumns: number;
   rememberPosition: boolean;
   showDatePills: boolean;
+  /** 底部导航的玻璃效果:on(折射)/ frosted(只要毛玻璃)/ off(半透明底色) */
+  glass?: string;
   heicMode: "server" | "native";
   randomSeed: number;
   randomType: number;

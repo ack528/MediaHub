@@ -8,6 +8,8 @@ import { useNav, usePageActive } from "../lib/nav";
 import type { Dialog, DialogsResp } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
 import { StateView } from "../components/List";
+import { Chunk, useChunks } from "../components/Windowed";
+import { RowsSkeleton } from "../components/Skeleton";
 import { TAB_BAR_SPACE } from "./Home";
 import { gradientFor } from "../lib/tones";
 
@@ -72,6 +74,7 @@ export function FoldersScreen() {
     }
   }, [all, label, settings.dialogMinCount, settings.dialogSort]);
 
+  const chunks = useChunks(shown, 40);
   const roots = label === "all" ? null : [...new Set(all.filter((d) => rootLabel(d) === label).map((d) => d.rootId))].join(",");
 
   // 列表上左右滑动切换盘符(左滑下一个、右滑上一个);明显是横向的滑动才算,不影响上下滚动
@@ -139,9 +142,10 @@ export function FoldersScreen() {
       </PageHeader>
 
       {/* 文件夹直接排在页面上(不包在卡片里),行之间是从文字开始的细分隔线 */}
-      <div ref={listRef} className="flex min-h-[60vh] flex-col pt-1">
+      {/* 宽屏(横屏 / 平板)居中,行分两栏 */}
+      <div ref={listRef} className="mx-auto flex min-h-[60vh] w-full max-w-5xl flex-col pt-1">
         {shown.length === 0 ? (
-          <StateView loading={loading} error={error} empty="没有可显示的文件夹" onRetry={load} />
+          loading && !error ? <RowsSkeleton /> : <StateView error={error} empty="没有可显示的文件夹" onRetry={load} />
         ) : (
           <div>
             {/* 置顶的特殊"会话":随机浏览(全部页随机所有盘符,盘符页只随机这个盘符) */}
@@ -153,9 +157,16 @@ export function FoldersScreen() {
                 <span className="truncate text-sm text-muted">{label === "all" ? "随机所有盘符里的图片或视频" : `只随机 ${label} 里的图片或视频`}</span>
               </span>
             </button>
-            {shown.map((d) => (
-              <DialogRow key={d.id} d={d} first={false} recent={recent[d.id]} onOpen={() => nav.push({ name: "chat", params: { id: d.id, title: d.title } })} />
-            ))}
+            {chunks.map((c) => {
+              const part = shown.slice(c.start, c.end);
+              return (
+                <Chunk key={c.key} ids={part.map((d) => d.id)} className="grid md:grid-cols-2 md:gap-x-4">
+                  {part.map((d) => (
+                    <DialogRow key={d.id} d={d} first={false} recent={recent[d.id]} onOpen={() => nav.push({ name: "chat", params: { id: d.id, title: d.title } })} />
+                  ))}
+                </Chunk>
+              );
+            })}
           </div>
         )}
         {error && shown.length > 0 && <p className="px-6 pt-3 text-center text-xs text-danger">刷新失败:{error}</p>}

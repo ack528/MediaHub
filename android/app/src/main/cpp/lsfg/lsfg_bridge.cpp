@@ -21,6 +21,7 @@
 #include <volk.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <string>
@@ -106,6 +107,88 @@ bool queryDevice(uint64_t &uuid, std::string &name, uint32_t &apiVersion) {
     return true;
 }
 
+// ---- 管线缓存(VkPipelineCache)落盘 ----
+// 每次打开视频都要新建 Vulkan 设备并把几十个计算管线从零编译(framegen 创建管线时不带缓存),在移动 GPU 上要几百毫秒到几秒,
+// 这段时间补帧用不了,画面开头就卡。framegen 在 vendor 里(不入库),所以这里把 vkCreateComputePipelines 换成"自动带上缓存"的包装,
+// 缓存数据存在着色器缓存目录里(pipelines.bin):第一次编译完存盘,之后每次打开视频直接从缓存取,驱动版本变了会自己丢掉旧数据。
+PFN_vkCreateComputePipelines realCreatePipelines = nullptr;
+VkPipelineCache gPc = VK_NULL_HANDLE;
+VkDevice gPcDev = VK_NULL_HANDLE;
+std::string gPcPath;
+size_t gPcSaved = 0; // 已经存盘的数据大小(没变就不重写)
+
+std::vector<uint8_t> readFile(const std::string &p) {
+    std::vector<uint8_t> v;
+    FILE *f = fopen(p.c_str(), "rb");
+    if (!f) return v;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n > 0 && n < (64L << 20)) {
+        v.resize(static_cast<size_t>(n));
+        if (fread(v.data(), 1, v.size(), f) != v.size()) v.clear();
+    }
+    fclose(f);
+    return v;
+}
+
+VkPipelineCache pipelineCacheFor(VkDevice dev) {
+    if (gPcDev == dev && gPc != VK_NULL_HANDLE) return gPc;
+    gPc = VK_NULL_HANDLE; // 旧设备已经没了
+    gPcDev = dev;
+    if (!vkCreatePipelineCache) return VK_NULL_HANDLE;
+    std::vector<uint8_t> data = gPcPath.empty() ? std::vector<uint8_t>() : readFile(gPcPath);
+    VkPipelineCacheCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    ci.initialDataSize = data.size();
+    ci.pInitialData = data.empty() ? nullptr : data.data();
+    if (vkCreatePipelineCache(dev, &ci, nullptr, &gPc) != VK_SUCCESS && !data.empty()) {
+        ci.initialDataSize = 0; ci.pInitialData = nullptr; data.clear();
+        if (vkCreatePipelineCache(dev, &ci, nullptr, &gPc) != VK_SUCCESS) gPc = VK_NULL_HANDLE;
+    }
+    gPcSaved = data.size();
+    LOGI("管线缓存:%s,已有 %zu 字节", gPc ? "已创建" : "创建失败", data.size());
+    return gPc;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL cachedCreatePipelines(VkDevice dev, VkPipelineCache cache, uint32_t n,
+        const VkComputePipelineCreateInfo *ci, const VkAllocationCallbacks *a, VkPipeline *out) {
+    if (cache == VK_NULL_HANDLE) cache = pipelineCacheFor(dev);
+    return realCreatePipelines(dev, cache, n, ci, a, out);
+}
+
+// volkLoadDevice 每建一个设备都会重新填函数指针,所以每个会话都要重新挂一次(重复挂无害)
+void hookPipelineCache() {
+    if (vkCreateComputePipelines && vkCreateComputePipelines != cachedCreatePipelines) {
+        realCreatePipelines = vkCreateComputePipelines;
+        vkCreateComputePipelines = cachedCreatePipelines;
+    }
+}
+
+// 管线都建好之后把缓存写回磁盘(数据变大了才写)
+void savePipelineCache() {
+    if (gPc == VK_NULL_HANDLE || gPcDev == VK_NULL_HANDLE || gPcPath.empty() || !vkGetPipelineCacheData) return;
+    size_t sz = 0;
+    if (vkGetPipelineCacheData(gPcDev, gPc, &sz, nullptr) != VK_SUCCESS || sz == 0 || sz == gPcSaved) return;
+    std::vector<uint8_t> data(sz);
+    if (vkGetPipelineCacheData(gPcDev, gPc, &sz, data.data()) != VK_SUCCESS) return;
+    data.resize(sz);
+    const std::string tmp = gPcPath + ".tmp";
+    FILE *f = fopen(tmp.c_str(), "wb");
+    if (!f) return;
+    const bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
+    fclose(f);
+    if (ok && rename(tmp.c_str(), gPcPath.c_str()) == 0) { gPcSaved = sz; LOGI("管线缓存已保存 %zu 字节", sz); }
+    else remove(tmp.c_str());
+}
+
+// 设备销毁之前释放缓存对象;初始化失败时设备已经没了,只清句柄
+void releasePipelineCache(bool deviceAlive) {
+    if (gPc != VK_NULL_HANDLE && deviceAlive && gPcDev != VK_NULL_HANDLE && vkDestroyPipelineCache) vkDestroyPipelineCache(gPcDev, gPc, nullptr);
+    gPc = VK_NULL_HANDLE;
+    gPcDev = VK_NULL_HANDLE;
+}
+
 PFNEGLCREATEIMAGEKHRPROC pCreateImage = nullptr;
 PFNEGLDESTROYIMAGEKHRPROC pDestroyImage = nullptr;
 PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC pGetClientBuffer = nullptr;
@@ -129,6 +212,7 @@ void destroyImages() {
 
 void teardown() {
     destroyImages();
+    releasePipelineCache(S.initialized);
     if (S.initialized) {
         try {
             if (S.ctx >= 0) {
@@ -178,6 +262,7 @@ JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeStart(
     S.w = static_cast<uint32_t>(width);
     S.h = static_cast<uint32_t>(height);
     S.perf = perf;
+    gPcPath = cache + "/pipelines.bin";
 
     uint64_t uuid = 0; std::string gpu; uint32_t api = 0;
     if (!queryDevice(uuid, gpu, api)) return 2;
@@ -194,6 +279,7 @@ JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeStart(
     const bool fixConstOffset = (uuid >> 32) == 0x13B5;
     auto makeLoader = [cache, fixConstOffset](int mode) {
         return [cache, mode, fixConstOffset](const std::string &name) -> std::vector<uint8_t> {
+            hookPipelineCache(); // 设备这时已经建好,管线马上要建:换上带缓存的创建函数
             std::vector<uint8_t> spirv;
             if (mode == 16) {
                 const uint32_t id = lsfg_android::shader_name_to_resource_id_fp16(name);
@@ -262,6 +348,8 @@ JNIEXPORT jint JNICALL Java_com_localtg_render_LsfgNative_nativeStart(
         }
         return 5;
     }
+    hookPipelineCache();
+    savePipelineCache();
     LOGI("帧生成已就绪 %ux%u 每帧生成 %d 张 flowScale=%.2f %s", S.w, S.h, generated, flowScale, S.perf ? "(3.1P 性能模式)" : "(3.1)");
     return 0;
 }

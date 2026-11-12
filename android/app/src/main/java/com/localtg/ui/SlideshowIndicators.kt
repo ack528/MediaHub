@@ -40,12 +40,12 @@ internal fun PhotoSlideshowCountdown(playing: Boolean, seconds: Float, remaining
 ) {
     // Reading the animation through derived state updates only the small number, in 0.1-second steps.
     val label by remember(seconds, remaining) { derivedStateOf { slideCountdownText(seconds, remaining()) } }
-    Row(modifier.clip(RoundedCornerShape(22.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(end = 8.dp),
+    Row(modifier.clip(RoundedCornerShape(22.dp)).background(Vx.Glass).padding(end = 12.dp),
         verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onToggle, modifier = Modifier.size(44.dp)) {
-            Icon(if (playing) TgIcons.Pause else TgIcons.Play, if (playing) "暂停幻灯片" else "继续幻灯片", Modifier.size(22.dp), tint = Color.White)
+            Icon(if (playing) HeroIcons.Pause else HeroIcons.Play, if (playing) "暂停幻灯片" else "继续幻灯片", Modifier.size(22.dp), tint = Color.White)
         }
-        Text(label, color = Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1,
+        Text(label, color = Color.White, style = Vx.Small.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium, fontFeatureSettings = "tnum"), maxLines = 1,
             modifier = Modifier.widthIn(min = 32.dp).semantics { contentDescription = "剩余 $label 秒" })
     }
 }

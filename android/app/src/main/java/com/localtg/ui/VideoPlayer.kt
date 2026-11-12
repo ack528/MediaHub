@@ -64,6 +64,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -282,7 +283,7 @@ fun VideoPage(
             positionMs?.let { resumeMs = it }
             compatUrl = c.api.compatUrl(item)
             AppLog.i("player", "使用兼容版本(视频原样复制,音频 AAC) ${item.name}")
-            showHud(Hud(TgIcons.Speed, "已使用兼容版本(画质无损)"))
+            showHud(Hud(HeroIcons.Speed, "已使用兼容版本(画质无损)"))
             return
         }
         val prep = if (st.state == "preparing") st else c.api.compatPrepare(item)
@@ -290,7 +291,7 @@ fun VideoPage(
         if (transcodeBitrate == null && cfg.autoTranscode && c.api.transcodeOk) {
             positionMs?.let { resumeMs = it }
             transcodeBitrate = autoBitrate(item, cfg)
-            showHud(Hud(TgIcons.Speed, if (prep.state == "failed") "手机无法直接播放,已改用服务端转码" else "音轨 / 容器手机不支持,先用转码播放;服务端正在后台生成兼容版本,下次直接播放"))
+            showHud(Hud(HeroIcons.Speed, if (prep.state == "failed") "手机无法直接播放,已改用服务端转码" else "音轨 / 容器手机不支持,先用转码播放;服务端正在后台生成兼容版本,下次直接播放"))
         }
     }
     LaunchedEffect(isCurrent, item.id, compatChecked) {
@@ -384,7 +385,7 @@ fun VideoPage(
                         e.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
                     if (netErr && netRetries < 6) {
                         netRetries++
-                        showHud(Hud(TgIcons.Warning, "网络中断,恢复后自动继续($netRetries / 6)"))
+                        showHud(Hud(HeroIcons.Warning, "网络中断,恢复后自动继续($netRetries / 6)"))
                         scope.launch {
                             delay(1500)
                             com.localtg.data.Net.awaitOnline(30_000)
@@ -414,7 +415,7 @@ fun VideoPage(
                         resumeMs = pl.currentPosition
                         useSoftware = false
                         transcodeBitrate = br
-                        showHud(Hud(TgIcons.Speed, "手机无法直接播放,已改用服务端转码(${"%.1f".format(br / 1_000_000f)} Mbps,分辨率不变)"))
+                        showHud(Hud(HeroIcons.Speed, "手机无法直接播放,已改用服务端转码(${"%.1f".format(br / 1_000_000f)} Mbps,分辨率不变)"))
                     } else {
                         error = if (transcodeBitrate != null) {
                             if (e.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) "服务端转码失败(多半是服务端的 ffmpeg 无法处理这个文件,详情见服务端日志)"
@@ -519,7 +520,7 @@ fun VideoPage(
         val now = android.os.SystemClock.elapsedRealtime()
         val curT = transcodeBitrate
         if (tier == null || (curT != null && tier >= curT)) {
-            if (stalls.stepsDone < 3) showHud(Hud(TgIcons.Warning, "网络太慢,已经是最低的转码档位了"))
+            if (stalls.stepsDone < 3) showHud(Hud(HeroIcons.Warning, "网络太慢,已经是最低的转码档位了"))
             stalls.switched(now)
             return
         }
@@ -528,7 +529,7 @@ fun VideoPage(
         useSoftware = false
         transcodeBitrate = tier
         stalls.switched(now)
-        showHud(Hud(TgIcons.Speed, "网络较慢,已自动降到 ${com.localtg.data.QualityTiers.label(tier)} 转码(可在画质菜单里改回)"))
+        showHud(Hud(HeroIcons.Speed, "网络较慢,已自动降到 ${com.localtg.data.QualityTiers.label(tier)} 转码(可在画质菜单里改回)"))
     }
     LaunchedEffect(player, state, firstFrame, manuallySelectedQuality, cfg.playerQuality, cfg.rememberPlayback, cfg.autoQuality) {
         if (player == null || !isCurrent || !firstFrame || state != Player.STATE_BUFFERING) return@LaunchedEffect
@@ -546,7 +547,7 @@ fun VideoPage(
 
     // 不完整的视频:提醒一下,播放到被截断处会停止
     LaunchedEffect(isCurrent, item.id) {
-        if (isCurrent && item.flags.truncated && !blocked) showHud(Hud(TgIcons.Warning, "文件不完整(下载可能中断),播放到被截断处会停止"))
+        if (isCurrent && item.flags.truncated && !blocked) showHud(Hud(HeroIcons.Warning, "文件不完整(下载可能中断),播放到被截断处会停止"))
     }
 
     // 加载提示:点开视频到出画面(以及中途卡住缓冲)超过 3 秒后,显示下载速度和预计还要多久。
@@ -604,7 +605,7 @@ fun VideoPage(
             val wait = at - android.os.SystemClock.elapsedRealtime()
             if (wait > 0) delay(wait)
             pl.pause(); ui.sleepAt = 0
-            showHud(Hud(TgIcons.Timer, "睡眠定时:已暂停"))
+            showHud(Hud(HeroIcons.Timer, "睡眠定时:已暂停"))
             AppLog.i("player", "睡眠定时到点,已暂停")
         }
     }
@@ -724,7 +725,7 @@ fun VideoPage(
             androidx.compose.runtime.key(cfg.enhHdr != "off") {
             AndroidView(
                 factory = { com.localtg.render.EnhancedVideoView(it).apply {
-                    onFailure = { enhFailed = true; showHud(Hud(TgIcons.Warning, "画质增强不可用,已改回普通播放")) }
+                    onFailure = { enhFailed = true; showHud(Hud(HeroIcons.Warning, "画质增强不可用,已改回普通播放")) }
                     enhView = this
                     surfaceView = this
                 } },
@@ -813,7 +814,7 @@ fun VideoPage(
                             if (side == 0) {
                                 hap.perform(Hap.Click)
                                 pl?.let { if (it.playWhenReady) it.pause() else it.play() }
-                                showHud(Hud(if (pl?.isPlaying == true) TgIcons.Play else TgIcons.Pause, if (pl?.isPlaying == true) "播放" else "暂停"))
+                                showHud(Hud(if (pl?.isPlaying == true) HeroIcons.Play else HeroIcons.Pause, if (pl?.isPlaying == true) "播放" else "暂停"))
                             } else {
                                 tapSide = side; tapAccum = 1; tapUntil = android.os.SystemClock.elapsedRealtime() + 600
                                 seekBy(side, 1)
@@ -825,7 +826,7 @@ fun VideoPage(
                                 longPress = true
                                 hap.perform(Hap.Long)
                                 it.playbackParameters = it.playbackParameters.withSpeed(cfg.longPressSpeed)
-                                showHud(Hud(TgIcons.Speed, "${cfg.longPressSpeed}x 倍速播放中"))
+                                showHud(Hud(HeroIcons.Speed, "${cfg.longPressSpeed}x 倍速播放中"))
                                 hudTick = Int.MAX_VALUE / 2 // 长按期间一直显示
                             }
                         },
@@ -884,11 +885,11 @@ fun VideoPage(
                             val v = (startVal + acc / size.height * cfg.gestureSense).coerceIn(0f, 1f)
                             if (left) {
                                 act?.window?.let { w -> w.attributes = w.attributes.also { it.screenBrightness = v.coerceAtLeast(0.01f) } }
-                                showHud(Hud(TgIcons.Brightness, "亮度 ${(v * 100).roundToInt()}%", v))
+                                showHud(Hud(HeroIcons.Brightness, "亮度 ${(v * 100).roundToInt()}%", v))
                             } else {
                                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                                 audio.setStreamVolume(AudioManager.STREAM_MUSIC, (v * max).roundToInt(), 0)
-                                showHud(Hud(TgIcons.Volume, "音量 ${(v * 100).roundToInt()}%", v))
+                                showHud(Hud(HeroIcons.Volume, "音量 ${(v * 100).roundToInt()}%", v))
                             }
                             hudTick = Int.MAX_VALUE / 2 - 2
                         }
@@ -905,8 +906,8 @@ fun VideoPage(
                             val ev = awaitPointerEvent()
                             if (ev.changes.size >= 2) zoom *= ev.calculateZoom()
                         } while (ev.changes.any { it.pressed })
-                        if (zoom > 1.15f && resize != "zoom") { resize = "zoom"; showHud(Hud(TgIcons.AspectRatio, "画面:裁剪填满")) }
-                        else if (zoom < 0.87f && resize != "fit") { resize = "fit"; showHud(Hud(TgIcons.AspectRatio, "画面:适应屏幕")) }
+                        if (zoom > 1.15f && resize != "zoom") { resize = "zoom"; showHud(Hud(HeroIcons.AspectRatio, "画面:裁剪填满")) }
+                        else if (zoom < 0.87f && resize != "fit") { resize = "fit"; showHud(Hud(HeroIcons.AspectRatio, "画面:适应屏幕")) }
                     }
                 },
         )
@@ -914,27 +915,30 @@ fun VideoPage(
         // 服务端判定损坏(0 字节 / 无法解析):不创建播放器,直接说明原因
         if (blocked && isCurrent) {
             Column(Modifier.align(Alignment.Center).padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(TgIcons.Warning, null, tint = Color(0xFFFFB74D), modifier = Modifier.size(48.dp))
-                Text(item.problem ?: "文件已损坏", color = Color.White, fontSize = 16.sp, modifier = Modifier.padding(top = 12.dp))
+                Box(Modifier.size(56.dp).clip(CircleShape).background(Vx.Warning.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+                    Icon(HeroIcons.Warning, null, tint = Vx.Warning, modifier = Modifier.size(26.dp))
+                }
+                Text(item.problem ?: "文件已损坏", color = Vx.Fg, style = Vx.Title, modifier = Modifier.padding(top = 12.dp))
                 Text(
-                    formatSize(item.size) + " · " + item.name, color = Color(0xB3FFFFFF), fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 6.dp), maxLines = 2,
+                    formatSize(item.size) + " · " + item.name, color = Vx.Muted, style = Vx.Small,
+                    modifier = Modifier.padding(top = 4.dp), maxLines = 2, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
-                if (item.size > 0L) TextButton(onClick = { forceTry = true }) { Text("仍然尝试播放") }
+                if (item.size > 0L) VxButton("仍然尝试播放", Modifier.padding(top = 16.dp)) { forceTry = true }
             }
         }
 
         // 缓冲圈
         if (player != null && !blocked && error == null && state != Player.STATE_ENDED && (state == Player.STATE_BUFFERING || !firstFrame)) {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(Modifier.size(44.dp), color = Color.White)
+                // 网页 Spinner 同款:细圆环、强调色,底下一圈浅色轨道
+                CircularProgressIndicator(Modifier.size(40.dp), color = Vx.Accent, strokeWidth = 3.dp, trackColor = Color(0x33FFFFFF))
                 if (loadLine1.isNotEmpty()) {
                     Column(
-                        Modifier.padding(top = 14.dp).clip(RoundedCornerShape(10.dp)).background(Color(0x99000000)).padding(horizontal = 14.dp, vertical = 8.dp),
+                        Modifier.padding(top = 14.dp).clip(Vx.RowShape).background(Vx.Overlay).padding(horizontal = 16.dp, vertical = 10.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Text(loadLine1, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        if (loadLine2.isNotEmpty()) Text(loadLine2, color = Color(0xCCFFFFFF), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
+                        Text(loadLine1, color = Vx.Fg, style = Vx.BodyMedium)
+                        if (loadLine2.isNotEmpty()) Text(loadLine2, color = Vx.Muted, style = Vx.Small, modifier = Modifier.padding(top = 2.dp))
                     }
                 }
             }
@@ -942,17 +946,18 @@ fun VideoPage(
 
         // HUD(手势提示)
         hud?.let { h ->
+            // 网页 Toast 同款:深色浮层胶囊、14sp 中粗、进度用强调色
             Row(
                 Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 72.dp)
-                    .clip(RoundedCornerShape(24.dp)).background(Color(0xB3000000)).padding(horizontal = 16.dp, vertical = 10.dp),
+                    .shadow(12.dp, CircleShape).clip(CircleShape).background(Vx.Overlay).padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                h.icon?.let { Icon(it, null, tint = Color.White, modifier = Modifier.size(22.dp)); Spacer(Modifier.width(8.dp)) }
-                Text(h.text, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                h.icon?.let { Icon(it, null, tint = Vx.Fg, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)) }
+                Text(h.text, color = Vx.Fg, style = Vx.BodyMedium.copy(fontFeatureSettings = "tnum"))
                 h.progress?.let { p ->
-                    Spacer(Modifier.width(10.dp))
-                    Box(Modifier.width(80.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0x55FFFFFF))) {
-                        Box(Modifier.fillMaxWidth(p).height(4.dp).background(Color.White))
+                    Spacer(Modifier.width(12.dp))
+                    Box(Modifier.width(88.dp).height(4.dp).clip(CircleShape).background(Vx.Segment)) {
+                        Box(Modifier.fillMaxWidth(p).height(4.dp).clip(CircleShape).background(Vx.Accent))
                     }
                 }
             }
@@ -960,7 +965,7 @@ fun VideoPage(
 
         // 播完提示
         if (state == Player.STATE_ENDED && !loop && showControls) {
-            RoundBtn(TgIcons.Replay, "重播", 64.dp, Modifier.align(Alignment.Center)) { pl?.let { it.seekTo(0); it.play() } }
+            RoundBtn(HeroIcons.Replay, "重播", 64.dp, Modifier.align(Alignment.Center)) { pl?.let { it.seekTo(0); it.play() } }
         }
 
         // ---------------- 顶栏(返回、标题、字幕(有才显示)、更多;其余选项都在「更多」的右上角浮层里)
@@ -973,19 +978,20 @@ fun VideoPage(
                     .statusBarsPadding().padding(horizontal = 4.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                CtrlIcon(TgIcons.Back, "返回") { onBack() }
+                CtrlIcon(HeroIcons.Back, "返回") { onBack() }
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                    Text(item.name, color = Color.White, fontSize = 16.sp, maxLines = 1, fontWeight = FontWeight.Medium)
+                    // 网页 PageHeader 同款:标题 16sp 半粗,副标题 12sp 弱化
+                    Text(item.name, color = Color.White, style = Vx.Title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     Text(
                         listOfNotNull(item.w?.let { "${item.w}×${item.h}" }, sizeLabel(item, transcodeBitrate, player?.duration?.takeIf { it > 0 } ?: 0L, short = true), transcodeBitrate?.let { "转码 ${"%.1f".format(it / 1_000_000f)}M" }, decoderName[0].takeIf { it.isNotEmpty() }?.let { if (it.startsWith("c2.android") || it.startsWith("OMX.google")) "软解" else "硬解" }).joinToString(" · "),
-                        color = Color(0xB3FFFFFF), fontSize = 12.sp, maxLines = 1,
+                        color = Vx.OnMediaMuted, style = Vx.Small, maxLines = 1,
                     )
                 }
                 if (!locked) {
-                    val accent = com.localtg.ui.tg.LocalTg.current.accent
+                    val accent = Vx.Accent
                     val enhOn = cfg.enhUpscale != "off" || cfg.enhFrc != "off" || cfg.enhHdr != "off"
-                    if (trackOpts(tracks, C.TRACK_TYPE_TEXT).isNotEmpty()) CtrlIcon(TgIcons.Subtitles, "字幕") { panel = "sub" }
-                    CtrlIcon(TgIcons.More, "更多", tint = if (enhOn) accent else Color.White) { panel = if (panel.isEmpty()) "main" else "" }
+                    if (trackOpts(tracks, C.TRACK_TYPE_TEXT).isNotEmpty()) CtrlIcon(HeroIcons.Subtitles, "字幕") { panel = "sub" }
+                    CtrlIcon(HeroIcons.More, "更多", tint = if (enhOn) accent else Color.White) { panel = if (panel.isEmpty()) "main" else "" }
                 }
             }
         }
@@ -1025,25 +1031,25 @@ fun VideoPage(
                         },
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        CtrlIcon(TgIcons.Lock, "锁定控制") { ui.locked = true; ui.chrome = false; showHud(Hud(TgIcons.Lock, "已锁定,点击屏幕解锁")) }
+                        CtrlIcon(HeroIcons.Lock, "锁定控制") { ui.locked = true; ui.chrome = false; showHud(Hud(HeroIcons.Lock, "已锁定,点击屏幕解锁")) }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            CtrlIcon(TgIcons.SkipPrev, "上一个", enabled = onPrev != null) { onPrev?.invoke() }
+                            CtrlIcon(HeroIcons.SkipPrev, "上一个", enabled = onPrev != null) { onPrev?.invoke() }
                             TextCtrl("−${cfg.seekBackSec}") { pl?.let { it.seekTo((it.currentPosition - cfg.seekBackSec * 1000L).coerceAtLeast(0)) } }
-                            RoundBtn(if (playing) TgIcons.Pause else TgIcons.Play, if (playing) "暂停" else "播放", 56.dp) {
+                            RoundBtn(if (playing) HeroIcons.Pause else HeroIcons.Play, if (playing) "暂停" else "播放", 56.dp) {
                                 pl?.let { if (it.playbackState == Player.STATE_ENDED) { it.seekTo(0); it.play() } else if (it.playWhenReady) it.pause() else it.play() }
                             }
                             TextCtrl("+${cfg.seekForwardSec}") { pl?.let { it.seekTo(it.currentPosition + cfg.seekForwardSec * 1000L) } }
-                            CtrlIcon(TgIcons.SkipNext, "下一个", enabled = onNext != null) { onNext?.invoke() }
+                            CtrlIcon(HeroIcons.SkipNext, "下一个", enabled = onNext != null) { onNext?.invoke() }
                         }
                         Row {
-                            CtrlIcon(TgIcons.Rotate, "屏幕方向") {
+                            CtrlIcon(HeroIcons.Rotate, "屏幕方向") {
                                 ui.orientation = (ui.orientation + 1) % 3
                                 ui.autoRotated = false
-                                showHud(Hud(TgIcons.Rotate, listOf("方向:自动", "方向:横屏", "方向:竖屏")[ui.orientation]))
+                                showHud(Hud(HeroIcons.Rotate, listOf("方向:自动", "方向:横屏", "方向:竖屏")[ui.orientation]))
                             }
-                            CtrlIcon(TgIcons.AspectRatio, "画面比例") {
+                            CtrlIcon(HeroIcons.AspectRatio, "画面比例") {
                                 resize = when (resize) { "fit" -> "zoom"; "zoom" -> "fill"; else -> "fit" }
-                                showHud(Hud(TgIcons.AspectRatio, "画面:" + when (resize) { "fit" -> "适应屏幕"; "zoom" -> "裁剪填满"; else -> "拉伸填满" }))
+                                showHud(Hud(HeroIcons.AspectRatio, "画面:" + when (resize) { "fit" -> "适应屏幕"; "zoom" -> "裁剪填满"; else -> "拉伸填满" }))
                             }
                         }
                     }
@@ -1052,7 +1058,7 @@ fun VideoPage(
         }
         // 锁定后只留一个解锁按钮
         if (locked && ui.chrome && !inPip) {
-            RoundBtn(TgIcons.LockOpen, "解锁", 52.dp, Modifier.align(Alignment.CenterStart).padding(start = 16.dp)) { ui.locked = false; ui.chrome = true }
+            RoundBtn(HeroIcons.LockOpen, "解锁", 52.dp, Modifier.align(Alignment.CenterStart).padding(start = 16.dp)) { ui.locked = false; ui.chrome = true }
         }
 
         if ((stats.isNotEmpty() || enhStats.isNotEmpty()) && !inPip) {
@@ -1066,24 +1072,33 @@ fun VideoPage(
         // 补帧时右上角的帧率小字(控制条显示时让到顶栏下面)
         if (frcText.isNotEmpty() && !inPip) {
             Text(
-                frcText, color = Color(0xFFB9F6CA), fontSize = 11.sp,
+                frcText, color = Color.White, style = Vx.Small.copy(fontSize = 11.sp, fontWeight = FontWeight.Medium, fontFeatureSettings = "tnum"),
                 modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = if (showControls) 56.dp else 4.dp, end = 10.dp)
-                    .background(Color(0x66000000), androidx.compose.foundation.shape.RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+                    .clip(CircleShape).background(Vx.Glass).padding(horizontal = 10.dp, vertical = 3.dp),
             )
         }
 
         error?.let { msg ->
-            Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(msg, color = Color(0xFFFF8A80), fontSize = 16.sp)
-                Row {
-                    TextButton(onClick = { error = null; resumeMs = 0L; modeOverride = "sw_first" }) { Text("软解重试") }
-                    TextButton(onClick = { error = null; resumeMs = 0L; modeOverride = "hw_first" }) { Text("硬解重试") }
-                    if (transcodeBitrate == null) TextButton(onClick = { error = null; resumeMs = 0L; transcodeBitrate = autoBitrate(item, c.settings.value) }) { Text("服务端转码") }
-                    else TextButton(onClick = { error = null; resumeMs = 0L; transcodeBitrate = null }) { Text("直接播放") }
-                    TextButton(onClick = {
+            // 网页出错提示同款:危险色图标圈 + 说明,下面一排胶囊按钮(主操作强调色)
+            Column(
+                Modifier.align(Alignment.Center).padding(24.dp).clip(Vx.CardShape).background(Vx.Overlay).padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box(Modifier.size(48.dp).clip(CircleShape).background(Vx.Danger.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+                    Icon(HeroIcons.Warning, null, tint = Vx.Danger, modifier = Modifier.size(22.dp))
+                }
+                Text(msg, color = Vx.Fg, style = Vx.BodyMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.padding(top = 12.dp, bottom = 16.dp))
+                androidx.compose.foundation.layout.FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (transcodeBitrate == null) VxButton("服务端转码", primary = true) { error = null; resumeMs = 0L; transcodeBitrate = autoBitrate(item, c.settings.value) }
+                    else VxButton("直接播放", primary = true) { error = null; resumeMs = 0L; transcodeBitrate = null }
+                    VxButton("软解重试") { error = null; resumeMs = 0L; modeOverride = "sw_first" }
+                    VxButton("硬解重试") { error = null; resumeMs = 0L; modeOverride = "hw_first" }
+                    VxButton("复制日志") {
                         val n = AppLog.copyRecent(ctx)
                         Toast.makeText(ctx, "已复制 $n 字日志", Toast.LENGTH_SHORT).show()
-                    }) { Text("复制日志") }
+                    }
                 }
             }
         }
@@ -1104,7 +1119,7 @@ fun VideoPage(
                 title = when (page) {
                     "slides" -> "幻灯片播放";
                     "speed" -> "倍速"; "sub" -> "字幕"; "audio" -> "音轨"; "loop" -> "循环"; "enhance" -> "画质增强"
-                    "quality" -> "画质与解码"; "more" -> "更多"; "sleep" -> "睡眠定时"; "info" -> "媒体信息"; else -> null
+                    "quality" -> "画质与解码"; "more" -> "更多"; "sleep" -> "睡眠定时"; "info" -> "信息"; else -> null
                 },
                 onBack = { panel = "main" },
                 onClose = { panel = "" },
@@ -1150,9 +1165,9 @@ fun VideoPage(
                                 else -> {
                                     val now = pp?.currentPosition ?: 0L
                                     when {
-                                        abA == null -> { abA = now; showHud(Hud(TgIcons.Repeat, "起点 A ${fmt(now)}")) }
-                                        abB == null -> if (now > abA!!) { abB = now; loop = false; pp?.repeatMode = Player.REPEAT_MODE_OFF; showHud(Hud(TgIcons.Repeat, "循环 ${fmt(abA!!)} – ${fmt(now)}")) } else showHud(Hud(TgIcons.Repeat, "终点要在起点之后"))
-                                        else -> { abA = null; abB = null; showHud(Hud(TgIcons.Repeat, "已取消 A-B 循环")) }
+                                        abA == null -> { abA = now; showHud(Hud(HeroIcons.Repeat, "起点 A ${fmt(now)}")) }
+                                        abB == null -> if (now > abA!!) { abB = now; loop = false; pp?.repeatMode = Player.REPEAT_MODE_OFF; showHud(Hud(HeroIcons.Repeat, "循环 ${fmt(abA!!)} – ${fmt(now)}")) } else showHud(Hud(HeroIcons.Repeat, "终点要在起点之后"))
+                                        else -> { abA = null; abB = null; showHud(Hud(HeroIcons.Repeat, "已取消 A-B 循环")) }
                                     }
                                 }
                             }
@@ -1254,11 +1269,11 @@ fun VideoPage(
                     }
                     "info" -> {
                         val v = pp?.videoFormat
-                        MenuInfo("文件", item.name)
-                        MenuInfo("大小", sizeLabel(item, transcodeBitrate, pp?.duration ?: 0L))
+                        // 开头几行和图片信息一样(名称、位置、大小、时间、格式),下面是视频特有的
+                        CommonInfoRows(c, item, size = sizeLabel(item, transcodeBitrate, pp?.duration ?: 0L))
                         if (transcodeBitrate != null) MenuInfo("原文件", formatSize(item.size))
+                        MenuDivider()
                         MenuInfo("时长", fmt(pp?.duration ?: 0L))
-                        MenuInfo("时间", formatDateTime(item.takenAt))
                         MenuInfo("解码器", decoderName[0].ifEmpty { "—" })
                         if (v != null) {
                             MenuDivider()
@@ -1280,8 +1295,6 @@ fun VideoPage(
                         MenuRow("跳转到指定时间", arrow = false) { panel = ""; dialog = "jump" }
                         MenuRow("小窗播放", arrow = false) { panel = ""; enterPip() }
                         MenuRow("睡眠定时", if (ui.sleepAt != 0L) "已设置" else "关闭") { panel = "sleep" }
-                        if (!c.isLocal) MenuRow("保存到手机", arrow = false) { panel = ""; scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, item) } }
-                        MenuRow("媒体信息") { panel = "info" }
                     }
                     else -> {
                         MenuRow("幻灯片播放", slideshowSummary(ui)) { panel = "slides" }
@@ -1303,8 +1316,10 @@ fun VideoPage(
                             ).joinToString(" · ").ifEmpty { "关闭" },
                         ) { panel = "enhance" }
                         MenuRow("画质与解码", (transcodeBitrate?.let { "转码 ${"%.1f".format(it / 1_000_000f)}M" } ?: "原画") + if (decoderName[0].isEmpty()) "" else if (soft) " · 软解" else " · 硬解") { panel = "quality" }
+                        MenuRow("更多", "跳转 · 小窗 · 睡眠") { panel = "more" }
                         MenuDivider()
-                        MenuRow("更多") { panel = "more" }
+                        // 和图片菜单同一组、同一顺序的文件操作
+                        CommonFileRows(c, item, onClose = { panel = "" }, onBack = onBack, onInfo = { panel = "info" })
                     }
                 }
             }
@@ -1354,33 +1369,23 @@ private fun selectTrack(p: ExoPlayer, o: TrackOpt) {
 
 // ---------------------------------------------------------------- 组件
 
+// 控制按钮统一用 ViewerStyle.kt 里和网页一致的样式(ghost 圆形图标按钮 / 半透明圆形大按钮)
 @Composable
-private fun CtrlIcon(icon: ImageVector, desc: String, enabled: Boolean = true, tint: Color = Color.White, onClick: () -> Unit) {
-    val hap = LocalHaptics.current
-    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    Box(
-        Modifier.size(44.dp).pressScale(src, 0.14f).clip(CircleShape)
-            .clickable(interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current, enabled = enabled) { hap.perform(Hap.Click); onClick() },
-        contentAlignment = Alignment.Center,
-    ) { Icon(icon, desc, tint = if (enabled) tint else Color(0x55FFFFFF), modifier = Modifier.size(24.dp)) }
-}
+private fun CtrlIcon(icon: ImageVector, desc: String, enabled: Boolean = true, tint: Color = Color.White, onClick: () -> Unit) =
+    VxIconButton(icon, desc, enabled, tint, onClick = onClick)
 
+/** 快退 / 快进的秒数按钮:14sp 中粗等宽数字。 */
 @Composable
 private fun TextCtrl(text: String, onClick: () -> Unit) {
     val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    Box(Modifier.size(44.dp).pressScale(src, 0.14f).clip(CircleShape).hapticClickable(src, onClick = onClick), contentAlignment = Alignment.Center) {
-        Text(text, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+    Box(Modifier.size(44.dp).pressScale(src, 0.12f).clip(CircleShape).hapticClickable(src, onClick = onClick), contentAlignment = Alignment.Center) {
+        Text(text, color = Color.White, style = Vx.BodyMedium.copy(fontWeight = FontWeight.SemiBold, fontFeatureSettings = "tnum"))
     }
 }
 
 @Composable
-private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    Box(
-        modifier.size(size).pressScale(src, 0.1f).clip(CircleShape).background(Color(0x66000000)).hapticClickable(src, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) { Icon(icon, desc, tint = Color.White, modifier = Modifier.size(size * 0.55f)) }
-}
+private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, onClick: () -> Unit) =
+    VxGlassButton(icon, desc, size, modifier, onClick)
 
 /**
  * 进度条(重做):
@@ -1396,7 +1401,7 @@ private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.
  */
 @Composable
 private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggleRemaining: () -> Unit) {
-    val accent = com.localtg.ui.tg.LocalTg.current.accent
+    val accent = Vx.Accent
     var pos by remember { mutableLongStateOf(0L) }
     var dur by remember { mutableLongStateOf(0L) }
     var buf by remember { mutableLongStateOf(0L) }
@@ -1429,7 +1434,7 @@ private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggl
     val thumbR by androidx.compose.animation.core.animateDpAsState(if (dragging) 10.dp else 6.dp, label = "thumbR")
 
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(fmt(shown), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.width(52.dp))
+        Text(fmt(shown), color = Color.White, style = Vx.Num, modifier = Modifier.width(52.dp))
         Box(Modifier.weight(1f).height(40.dp)) {
             val padPx = with(androidx.compose.ui.platform.LocalDensity.current) { 12.dp.toPx() }
             androidx.compose.foundation.Canvas(
@@ -1477,30 +1482,30 @@ private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggl
                 if (dur > 0) bar(xs(bufStart), xs(maxOf(buf, bufStart)), Color(0x8CFFFFFF)) // 已缓冲
                 val px = x0 + w * frac
                 bar(x0, px, accent)                                              // 已播放
+                // 滑块:网页 Slider 同款的白色圆点 + 柔和阴影(不再是中间带强调色小点的双圈)
                 val tr = thumbR.toPx()
-                drawCircle(Color(0x40000000), tr + 2.dp.toPx(), androidx.compose.ui.geometry.Offset(px, cy))  // 滑块的软阴影
+                drawCircle(Color(0x33000000), tr + 3.dp.toPx(), androidx.compose.ui.geometry.Offset(px, cy + 1.dp.toPx()))
                 drawCircle(Color.White, tr, androidx.compose.ui.geometry.Offset(px, cy))
-                drawCircle(accent, tr * 0.45f, androidx.compose.ui.geometry.Offset(px, cy))
             }
             if (dragging && dur > 0) {
                 val delta = shown - pos
                 Row(
-                    Modifier.align(Alignment.TopCenter).offset(y = (-38).dp)
-                        .background(Color(0xCC000000), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    Modifier.align(Alignment.TopCenter).offset(y = (-40).dp)
+                        .shadow(10.dp, CircleShape).clip(CircleShape).background(Vx.Overlay)
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(fmt(shown), color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    Text(fmt(shown), color = Vx.Fg, style = Vx.Num.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold))
                     Text(
                         "  " + (if (delta >= 0) "+" else "−") + fmt(kotlin.math.abs(delta)),
-                        color = if (delta >= 0) Color(0xFF9FE3A8) else Color(0xFFFFB4A9), fontSize = 12.sp,
+                        color = if (delta >= 0) Vx.Success else Vx.Danger, style = Vx.Small.copy(fontFeatureSettings = "tnum"),
                     )
-                    if (shown !in bufStart..buf) Text("  需要加载", color = Color(0xB3FFFFFF), fontSize = 12.sp)
+                    if (shown !in bufStart..buf) Text("  需要加载", color = Vx.Muted, style = Vx.Small)
                 }
             }
         }
         Text(
-            if (remaining) "-" + fmt(dur - shown) else fmt(dur), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+            if (remaining) "-" + fmt(dur - shown) else fmt(dur), color = Color.White, style = Vx.Num,
             modifier = Modifier.width(60.dp).clickable(onClick = onToggleRemaining), textAlign = androidx.compose.ui.text.style.TextAlign.End,
         )
     }
@@ -1511,18 +1516,16 @@ private fun SpeedDialog(current: Float, onDismiss: () -> Unit, onSet: (Float) ->
     var v by remember { mutableFloatStateOf(current) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("播放速度  ${"%.2f".format(v)}x") },
+        containerColor = Vx.Overlay, shape = Vx.CardShape, titleContentColor = Vx.Fg, textContentColor = Vx.Fg,
+        title = { Text("播放速度  ${"%.2f".format(v)}x", style = Vx.Title.copy(fontFeatureSettings = "tnum")) },
         text = {
             Column {
-                Slider(value = v, onValueChange = { v = (it * 20).roundToInt() / 20f; onSet(v) }, valueRange = 0.25f..4f)
-                Row(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f).forEach { s ->
-                        TextButton(onClick = { v = s; onSet(s) }) { Text("${s}x") }
-                    }
-                }
+                Slider(value = v, onValueChange = { v = (it * 20).roundToInt() / 20f; onSet(v) }, valueRange = 0.25f..4f, colors = vxSliderColors())
+                val presets = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
+                MenuChips(presets.map { "${it}x".replace(".0x", "x") }, presets.indexOfFirst { kotlin.math.abs(it - v) < 0.01f }) { i -> v = presets[i]; onSet(presets[i]) }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
+        confirmButton = { VxButton("完成", primary = true, onClick = onDismiss) },
     )
 }
 
@@ -1531,25 +1534,36 @@ private fun JumpDialog(durationMs: Long, onDismiss: () -> Unit, onJump: (Long) -
     var text by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("跳转到指定时间") },
+        containerColor = Vx.Overlay, shape = Vx.CardShape, titleContentColor = Vx.Fg, textContentColor = Vx.Fg,
+        title = { Text("跳转到指定时间", style = Vx.Title) },
         text = {
             Column {
+                // 网页输入框同款:圆角 12dp、次级表面底色、聚焦时强调色描边
                 androidx.compose.material3.OutlinedTextField(
                     value = text, onValueChange = { text = it.filter { ch -> ch.isDigit() || ch == ':' } }, singleLine = true,
-                    label = { Text("格式 分:秒 或 时:分:秒,例如 12:30") },
+                    placeholder = { Text("例如 12:30 或 1:02:30", color = Vx.Muted, style = Vx.Body) },
+                    textStyle = Vx.Body.copy(color = Vx.Fg, fontFeatureSettings = "tnum"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Vx.Accent, unfocusedBorderColor = Color.Transparent, cursorColor = Vx.Accent,
+                        focusedContainerColor = Vx.Surface2, unfocusedContainerColor = Vx.Surface2,
+                    ),
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
                 )
-                if (durationMs > 0) Text("总时长 ${fmt(durationMs)}", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                Text(
+                    "格式 分:秒 或 时:分:秒" + if (durationMs > 0) ",总时长 ${fmt(durationMs)}" else "",
+                    color = Vx.Muted, style = Vx.Small, modifier = Modifier.padding(top = 8.dp),
+                )
             }
         },
         confirmButton = {
-            TextButton(onClick = {
+            VxButton("跳转", primary = true) {
                 val parts = text.split(':').mapNotNull { it.toLongOrNull() }
                 val sec = when (parts.size) { 1 -> parts[0]; 2 -> parts[0] * 60 + parts[1]; 3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]; else -> -1L }
                 if (sec >= 0) onJump((sec * 1000).coerceAtMost(if (durationMs > 0) durationMs else Long.MAX_VALUE))
-            }) { Text("跳转") }
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { VxButton("取消", onClick = onDismiss) },
     )
 }
 

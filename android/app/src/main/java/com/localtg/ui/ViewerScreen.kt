@@ -311,12 +311,10 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
                         .statusBarsPadding().padding(horizontal = 4.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    ViewerIcon(TgIcons.Back, "返回") { onBack() }
-                    Text(
-                        cur.name, Modifier.weight(1f).padding(horizontal = 4.dp), color = Color.White, fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
-                    ViewerIcon(TgIcons.More, "更多") { panel = if (panel.isEmpty()) "main" else "" }
+                    ViewerIcon(HeroIcons.Back, "返回") { onBack() }
+                    // 和视频页、网页 PageHeader 一致:标题 16sp 半粗
+                    Text(cur.name, Modifier.weight(1f).padding(horizontal = 4.dp), color = Color.White, style = Vx.Title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    ViewerIcon(HeroIcons.More, "更多") { panel = if (panel.isEmpty()) "main" else "" }
                 }
             }
             AnimatedVisibility(
@@ -329,14 +327,14 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
                     verticalAlignment = Alignment.Bottom,
                 ) {
                     if (!slides.active) Column(Modifier.weight(1f)) {
-                        Text(formatDateTime(cur.takenAt), color = Color.White, fontSize = 14.sp)
+                        Text(formatDateTime(cur.takenAt), color = Color.White, style = Vx.BodyMedium.copy(fontFeatureSettings = "tnum"))
                         Text(
                             listOfNotNull(cur.w?.let { "${cur.w}×${cur.h}" }, if (cur.isVideo) sizeLabel(cur, ui.transcodeBps, 0L, short = true) else formatSize(cur.size), cur.ext.uppercase().takeIf { it.isNotEmpty() }).joinToString(" · "),
-                            color = Color(0xB3FFFFFF), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp),
+                            color = Vx.OnMediaMuted, style = Vx.Small, modifier = Modifier.padding(top = 2.dp),
                         )
                     }
-                    if (slides.active) ViewerIcon(if (slides.playing) TgIcons.Pause else TgIcons.Play, if (slides.playing) "暂停幻灯片" else "继续幻灯片") { ui.toggleSlides() }
-                    if (!slides.active) Pill("${pager.currentPage + 1} / ${items.size}", sizeSp = 12)
+                    if (slides.active) ViewerIcon(if (slides.playing) HeroIcons.Pause else HeroIcons.Play, if (slides.playing) "暂停幻灯片" else "继续幻灯片") { ui.toggleSlides() }
+                    if (!slides.active) VxGlassPill("${pager.currentPage + 1} / ${items.size}")
                 }
             }
             val lastPage = remember { arrayOf("main") }
@@ -344,20 +342,25 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
             val page = panel.ifEmpty { lastPage[0] }
             PlayerMenuHost(
                 open = panel.isNotEmpty() && !inPip,
-                title = when (page) { "info" -> "图片信息"; "slides" -> "幻灯片播放"; else -> null },
+                title = when (page) { "info" -> "信息"; "slides" -> "幻灯片播放"; else -> null },
                 onBack = { panel = "main" },
                 onClose = { panel = "" },
             ) {
                 if (page == "slides") {
                     SlideshowMenu(c, ui, feed.slideSource)
                 } else if (page == "info") {
-                    photoInfoRows(cur).forEach { (k, v) -> MenuInfo(k, v) }
-                } else {
-                    if (!c.isLocal && cur.size > 0L && !cur.flags.corrupt) {
-                        MenuRow("保存到手机", arrow = false) { panel = ""; scope.launch { com.localtg.data.saveToPhoneWithToast(ctx, c.http, c.api, cur) } }
+                    CommonInfoRows(c, cur)
+                    cur.w?.let { w ->
+                        val h = cur.h ?: 0
+                        val mp = w.toLong() * h / 1_000_000
+                        MenuDivider()
+                        MenuInfo("尺寸", "$w × $h" + if (mp > 0) "($mp 百万像素)" else "")
                     }
+                } else {
+                    // 和视频菜单同一结构:先是这一类特有的,分隔线下面是两边一样的文件操作
                     MenuRow("幻灯片播放", slideshowSummary(ui)) { panel = "slides" }
-                    MenuRow("图片信息") { panel = "info" }
+                    MenuDivider()
+                    CommonFileRows(c, cur, onClose = { panel = "" }, onBack = onBack, onInfo = { panel = "info" })
                 }
             }
         }
@@ -389,28 +392,9 @@ internal fun rememberChromeState(ui: ViewerUi, visible: Boolean): androidx.compo
     return st
 }
 
-/** 顶栏上的圆形图标按钮(和视频页的控制按钮同尺寸)。 */
+/** 顶栏上的圆形图标按钮:和视频页的控制按钮同一个组件(ViewerStyle.kt)。 */
 @Composable
-private fun ViewerIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, onClick: () -> Unit) {
-    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    Box(
-        Modifier.size(44.dp).pressScale(src, 0.14f).clip(CircleShape)
-            .clickable(interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(icon, desc, tint = Color.White, modifier = Modifier.size(24.dp))
-    }
-}
-
-private fun photoInfoRows(item: Item): List<Pair<String, String>> = listOfNotNull(
-    "名称" to item.name,
-    "格式" to listOf(item.ext.uppercase(), item.mime).filter { it.isNotEmpty() }.joinToString(" · "),
-    item.w?.let { "尺寸" to "${item.w} × ${item.h}" },
-    "大小" to "${formatSize(item.size)}(${"%,d".format(item.size)} 字节)",
-    formatDateTime(item.takenAt).takeIf { it.isNotEmpty() }?.let { "拍摄" to it },
-    formatDateTime(item.modifiedAt).takeIf { it.isNotEmpty() }?.let { "修改" to it },
-    formatDateTime(item.createdAt).takeIf { it.isNotEmpty() }?.let { "创建" to it },
-).filter { it.second.isNotEmpty() }
+private fun ViewerIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, onClick: () -> Unit) = VxIconButton(icon, desc, onClick = onClick)
 
 @Composable
 private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean, onSlideReady: (Boolean) -> Unit = {}) {
@@ -419,7 +403,7 @@ private fun PhotoPage(item: Item, c: AppContainer, ui: ViewerUi, shared: Boolean
     if (!item.canShowNatively()) {
         LaunchedEffect(item.id, shared) { ready(item.id); if (shared) currentSlideReady(false) }
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("暂不支持预览 ${item.ext.uppercase()} 格式\n(服务端转换将在后续版本提供)", color = Color.White)
+            Text("暂不支持预览 ${item.ext.uppercase()} 格式\n可以在右上角菜单里保存到手机或分享,用其它应用打开", color = Vx.Muted, style = Vx.Body, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.padding(32.dp))
         }
         return
     }

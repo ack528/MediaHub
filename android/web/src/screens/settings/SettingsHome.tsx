@@ -9,7 +9,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { TAB_BAR_SPACE } from "../Home";
 
 export const SECTIONS: Record<string, { title: string; desc: string; icon: typeof Sun; tone: Tone }> = {
-  appearance: { title: "外观", desc: "主题、文字大小、屏幕刷新率、震动、隐私", icon: Sun, tone: "violet" },
+  appearance: { title: "外观", desc: "主题、文字大小、屏幕刷新率、震动、底部导航、隐私", icon: Sun, tone: "violet" },
   folders: { title: "文件夹列表", desc: "排序、隐藏小文件夹、头像与第二行内容", icon: Folder, tone: "accent" },
   browse: { title: "浏览", desc: "默认排序、网格间距与清晰度、时间线", icon: LayoutCellsLarge, tone: "success" },
   viewer: { title: "图片查看器", desc: "预加载、清晰度、缩放、幻灯片全屏提示", icon: Picture, tone: "warning" },

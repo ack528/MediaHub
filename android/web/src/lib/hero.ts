@@ -1,6 +1,7 @@
 // 缩略图 ↔ 原生查看器的展开 / 收回动画(以前版本的 Hero.kt,原生画):网页只报告缩略图在屏幕上的位置。
 // 列表里的一格用 data-item="条目 id" 标记,里面真正显示图片的那块用 data-hero 标记(没有就用整格)。
 import { call, emitLocal, on } from "./bridge";
+import { revealItem } from "../components/Windowed";
 
 export interface HeroRect { x: number; y: number; w: number; h: number }
 /** full = 完整的图片框,visible = 没被顶栏 / 列表边缘挡住的部分,r = 圆角(都是 CSS 像素)。 */
@@ -8,6 +9,7 @@ export interface HeroInfo { full: HeroRect; visible: HeroRect; r: number }
 
 /** 这一项在当前页面上显示着的那一格(被盖住 / 隐藏的标签页里的不算)。 */
 function tileOf(id: string): HTMLElement | null {
+  revealItem(id); // 分块渲染:这一项所在的块可能正是占位,先渲染出来
   for (const el of document.querySelectorAll<HTMLElement>(`[data-item="${CSS.escape(id)}"]`)) {
     if (el.closest("[inert]") || !el.checkVisibility({ visibilityProperty: true })) continue;
     return el;

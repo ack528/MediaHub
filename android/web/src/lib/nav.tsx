@@ -5,7 +5,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { call, inApp, on } from "./bridge";
 
 export type Route =
-  | { name: "chat"; params: { id: string; title?: string } }
+  | { name: "chat"; params: { id: string; title?: string; focus?: string } }
   | { name: "search"; params?: { dialogId?: string; title?: string } }
   | { name: "random"; params: { label?: string | null; roots?: string | null } }
   | { name: "settings"; params: { section: string } };

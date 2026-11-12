@@ -32,7 +32,7 @@ internal fun SlideshowMenu(c: AppContainer, ui: ViewerUi, source: SlideSource?) 
         onValueChangeFinished = { c.settings.update { copy(slideshowSeconds = seconds) }; state.interval(seconds) },
         valueRange = 0.5f..10f, steps = 94,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(36.dp),
-        colors = SliderDefaults.colors(thumbColor = com.localtg.ui.tg.LocalTg.current.accent, activeTrackColor = com.localtg.ui.tg.LocalTg.current.accent),
+        colors = vxSliderColors(),
     )
     if (state.active) {
         MenuDivider()

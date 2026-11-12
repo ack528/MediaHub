@@ -147,6 +147,9 @@ class VideoRenderer(
     private var lsfgSkipFlow = false         // 降光流精度没有变快:以后只降输入分辨率
     private var ingestedWin = 0
     private var lsfg: LsfgSession? = null
+    private var lsfgNew: LsfgSession? = null       // 正在后台建立的会话(建立期间渲染线程不碰原生接口)
+    private var lsfgBuilder: Thread? = null
+    private var lsfgVariant = "?"                  // 当前会话用的着色器变体(建立时记下,不在渲染线程里调原生接口)
     private var lsfgFail = 0
     private var pBlit = 0
     private val lsfgPending = ArrayDeque<Slot>() // 等 worker 空出来的帧(最多 2 个,丢最旧的):排队而不是丢,否则一次丢帧会让下一帧也失去前一帧(生成帧只在连续两帧之间有效)
@@ -368,6 +371,11 @@ class VideoRenderer(
         runCatching { meter?.destroy() }
         lsfgExec?.let { ex -> ex.shutdown(); runCatching { ex.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS) } } // 等 worker 生成完,原生层才能安全释放
         lsfgBusy = false
+        // 后台还在建会话:等它结束(原生层是全局状态,必须建完才能释放),然后立刻销毁
+        lsfgBuilder?.let { runCatching { it.join(8000) } }
+        lsfgBuilder = null
+        lsfgNew?.let { runCatching { it.destroy() } }
+        lsfgNew = null
         stopLsfg()
         runCatching { st?.release() }
         runCatching { inputSurface?.release() }
@@ -868,7 +876,7 @@ class VideoRenderer(
                 "性能模式=${cfg.lsfgPerf || cfg.lowPower} 自动降级=${cfg.frcAdaptive}(已停用=$lsfgGaveUp) | 屏幕 ${"%.1f".format(1e9 / period)}Hz(间隔 ${"%.2f".format(period / 1e6)}ms,目标 ${"%.0f".format(targetHz(cfg))}Hz) | " +
                 "源 ${"%.2f".format(srcFps)}fps ${a.img.w}×${a.img.h} 输出 ${"%.1f".format(fps)}fps | 热状态=${thermalStatus()} | ingest 平均 ${"%.1f".format(ingestEma)}ms"
             val pf = run { var x = Math.atan2(pacingSin, pacingCos) / (2 * Math.PI); if (x < 0) x += 1.0; x }
-            val extra = "节拍 f=${"%.2f".format(pf)} 校准=${"%.1f".format(pacingShift / 1e6)}ms | 覆盖=${if (lsfgCoverage >= 0) "$lsfgCoverage%" else "-"} 档位=$lsfgStep 输入=${(lsfgInScale(cfg) * 100).toInt()}% 着色器=${runCatching { LsfgNative.nativeVariant() }.getOrDefault("?")} 会话=${if (lsfg != null) "有" else "无"} 失败=$lsfgFail"
+            val extra = "节拍 f=${"%.2f".format(pf)} 校准=${"%.1f".format(pacingShift / 1e6)}ms | 覆盖=${if (lsfgCoverage >= 0) "$lsfgCoverage%" else "-"} 档位=$lsfgStep 输入=${(lsfgInScale(cfg) * 100).toInt()}% 着色器=$lsfgVariant 会话=${if (lsfg != null) "有" else if (lsfgNew != null) "建立中" else "无"} 失败=$lsfgFail"
             trace.flush(nowMs, header, extra, true)
         }
     }
@@ -886,6 +894,7 @@ class VideoRenderer(
         Lsfg.state == 3 -> Lsfg.error.take(40)
         lsfgFail >= 2 -> lsfgLastError.take(40).ifEmpty { "启动失败" }
         lsfgGaveUp -> "性能跟不上,已暂停(稍后自动重试)"
+        lsfgNew != null -> "正在后台建立会话"
         else -> "等待第一帧"
     }
 
@@ -1023,19 +1032,22 @@ class VideoRenderer(
         var s = lsfg
         if (s != null && (s.w != sw || s.h != sh || s.generated != k || s.key != key)) { stopLsfg(); s = null }
         if (s == null) {
+            // 建立会话(新建 Vulkan 设备 + 编译几十个管线)要几百毫秒到几秒:放到后台线程,渲染线程继续正常上屏(这期间没有生成帧),
+            // 以前在这里同步等,画面开头就卡住好几秒。建好后在 [onLsfgCreated] 里接上。
+            if (lsfgNew != null) return
             val app = Assets.app ?: return
             val ns = LsfgSession(sw, sh, k, key)
-            if (!ns.create(Lsfg.cacheDir(app), scale, perf, fp16)) {
-                lsfgLastError = LsfgNative.nativeLastError().ifEmpty { "启动失败" }
-                ns.destroy()
-                lsfgFail++
-                AppLog.w("lsfg", "LSFG 启动失败 $lsfgFail 次(${lsfgLastError});两次失败后本次播放不再补帧")
-                return
-            }
-            lsfg = ns; s = ns; lsfgFail = 0; lsfgLastError = ""
-            lsfgStartId = slot.id
-            covTotal = 0; covOk = 0; lsfgWindows = 0; presentEma = 0.0
-            AppLog.i("lsfg", "LSFG 会话已建立 ${sw}×${sh}(源 ${slot.img.w}×${slot.img.h})每帧生成 $k 张 光流精度 ${(scale * 100).toInt()}% 着色器 ${runCatching { LsfgNative.nativeVariant() }.getOrDefault("?")}")
+            val cacheDir = Lsfg.cacheDir(app)
+            val t0 = SystemClock.elapsedRealtime()
+            lsfgNew = ns
+            val srcW = slot.img.w; val srcH = slot.img.h
+            lsfgBuilder = Thread({
+                val ok = try { ns.startNative(cacheDir, scale, perf, fp16) } catch (e: Throwable) { AppLog.w("lsfg", "LSFG 建立会话出错:${e.message}"); false }
+                val err = if (ok) "" else runCatching { LsfgNative.nativeLastError() }.getOrDefault("")
+                val variant = if (ok) runCatching { LsfgNative.nativeVariant() }.getOrDefault("?") else ""
+                handler.post { onLsfgCreated(ns, ok, err, variant, SystemClock.elapsedRealtime() - t0, srcW, srcH, scale) }
+            }, "lsfg-create").also { it.start() }
+            return
         }
         val tw0 = System.nanoTime()
         s.writeInput(pBlit, slot.img.id) // 含 glFinish:GL 写完,Vulkan 才能安全地读
@@ -1051,6 +1063,24 @@ class VideoRenderer(
             val pms = (System.nanoTime() - tp0) / 1e6
             handler.post { onLsfgDone(sess, id, rc, consecutive, k, pms) }
         }
+    }
+
+    /** 后台线程建好了原生会话(渲染线程):绑定 GL 纹理,接上。 */
+    private fun onLsfgCreated(ns: LsfgSession, ok: Boolean, err: String, variant: String, ms: Long, srcW: Int, srcH: Int, scale: Float) {
+        if (lsfgNew !== ns) { ns.destroy(); return } // 已经被 teardown 清理过 / 不再需要
+        lsfgNew = null; lsfgBuilder = null
+        if (released) { ns.destroy(); return }
+        if (!ok || !ns.bindGl()) {
+            lsfgLastError = err.ifEmpty { "启动失败" }
+            ns.destroy()
+            lsfgFail++
+            AppLog.w("lsfg", "LSFG 启动失败 $lsfgFail 次(${lsfgLastError});两次失败后本次播放不再补帧")
+            return
+        }
+        lsfg = ns; lsfgFail = 0; lsfgLastError = ""; lsfgVariant = variant
+        lsfgStartId = ring.maxOfOrNull { it.id } ?: -1L
+        covTotal = 0; covOk = 0; lsfgWindows = 0; presentEma = 0.0
+        AppLog.i("lsfg", "LSFG 会话已建立 ${ns.w}×${ns.h}(源 ${srcW}×${srcH})每帧生成 ${ns.generated} 张 光流精度 ${(scale * 100).toInt()}% 着色器 $variant 用时 ${ms}ms(后台建立,播放没有被阻塞)")
     }
 
     /** worker 做完(渲染线程)。 */

@@ -24,7 +24,7 @@ export function App({ boot }: { boot: BootInfo }) {
 
 function renderRoute(r: Route) {
   switch (r.name) {
-    case "chat": return <ChatScreen id={r.params.id} titleHint={r.params.title} />;
+    case "chat": return <ChatScreen id={r.params.id} titleHint={r.params.title} focus={r.params.focus} />;
     case "search": return <SearchScreen dialogId={r.params?.dialogId} dialogTitle={r.params?.title} />;
     case "random": return <RandomScreen label={r.params.label ?? null} roots={r.params.roots ?? null} />;
     case "settings": return <SettingsPage section={r.params.section} />;

@@ -130,5 +130,11 @@ img { -webkit-user-drag: none; }
     inset 0 0 12px rgb(255 255 255 / 0.05);
 }
 .dark .tabbar-sheen { opacity: 0.35; }
+/* 关闭玻璃效果:不采样背后的内容(省 GPU),只是一层接近不透明的底色 */
+.tabbar-solid {
+  background: rgb(255 255 255 / 0.94);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12), 0 0 0 0.5px rgb(0 0 0 / 0.08);
+}
+.dark .tabbar-solid { background: rgb(52 52 57 / 0.96); box-shadow: 0 8px 24px rgb(0 0 0 / 0.45), inset 0 0 0 0.5px rgb(255 255 255 / 0.08); }
 .dark .tabbar-lens-fill { background: rgb(255 255 255 / 0.12); box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.12); }
 .dark .tabbar-lens-rim { background: radial-gradient(120% 90% at 30% 15%, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0.02) 55%, rgb(255 255 255 / 0.06) 100%); }

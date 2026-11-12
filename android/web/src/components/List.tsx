@@ -9,7 +9,7 @@ import { TONE_BADGE, type Tone } from "../lib/tones";
  */
 export function ListGroup({ title, footer, children, className = "" }: { title?: ReactNode; footer?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className={`px-4 ${className}`}>
+    <section className={`mx-auto w-full max-w-2xl px-4 ${className}`}>
       <div className="rounded-3xl bg-surface p-1.5 shadow-surface">
         {title && <h2 className="px-3 pt-2 pb-1 text-xs text-muted">{title}</h2>}
         {children}

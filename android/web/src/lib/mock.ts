@@ -10,7 +10,8 @@ function rnd(seed: number) { let x = seed; return () => (x = (x * 1103515245 + 1
 
 const dialogs: Dialog[] = NAMES.map((n, i) => {
   const r = rnd(i + 7);
-  const photo = Math.floor(r() * 400) + 5, video = Math.floor(r() * 60);
+  // 「相机胶卷」做成几千项的大文件夹:测分块渲染和日期滑条
+  const photo = n === "相机胶卷" ? 3200 : Math.floor(r() * 400) + 5, video = Math.floor(r() * 60);
   const drive = DRIVES[i % DRIVES.length];
   return {
     id: `d${i}`, rootId: `r${i % DRIVES.length}`, title: n, pathDisplay: `${drive}\\媒体\\${n}`,
@@ -118,6 +119,12 @@ export function installBrowserMock() {
       const limit = Number(q.limit ?? 60);
       if (q.cursor) { const [s] = q.cursor.slice(1).split(":").map(Number); return page(list, s, limit); }
       if (q.around) { const i = list.findIndex((x) => x.id === q.around); return page(list, Math.max(0, i - Math.floor(limit / 2)), limit); }
+      if (q.aroundDate) {
+        const day = new Date(q.aroundDate + "T00:00:00").getTime(), desc = q.dir === "desc";
+        let i = list.findIndex((x) => { const t = Date.parse(x.takenAt ?? ""); return desc ? t <= day + 86400000 - 1 : t >= day; });
+        if (i < 0) i = list.length - 1;
+        return page(list, Math.max(0, i - Math.floor(limit / 2)), limit);
+      }
       return page(list, 0, limit);
     }
     if (u.pathname === "/api/v1/search") {

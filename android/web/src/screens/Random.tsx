@@ -8,6 +8,8 @@ import type { HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
 import { StateView } from "../components/List";
 import { MediaTile } from "../components/Thumb";
+import { Chunk, adaptiveColumns, gridChunk, useChunks, useViewportWidth } from "../components/Windowed";
+import { GridSkeleton } from "../components/Skeleton";
 import { heroArgs } from "../lib/hero";
 import { TAB_BAR_SPACE } from "./Home";
 
@@ -84,6 +86,9 @@ export function RandomScreen({ label, roots, asTab }: { label: string | null; ro
     }
   }), []);
 
+  const cols = adaptiveColumns(3, useViewportWidth());
+  const chunks = useChunks(items, gridChunk(cols));
+
   const open = (it: Item) => call("viewer.open", {
     items, index: Math.max(0, items.findIndex((x) => x.id === it.id)), ...heroArgs(it.id),
     source: { kind: "random", types, roots, seed, batch: batch.current },
@@ -94,7 +99,7 @@ export function RandomScreen({ label, roots, asTab }: { label: string | null; ro
       <PageHeader
         large={asTab}
         title={label ? `随机浏览 · ${label}` : "随机浏览"}
-        subtitle={`第 ${seed || "-"} 组随机序列`}
+        subtitle={items.length ? `已加载 ${items.length} 项 · 滑到底自动加载更多` : label ? `从 ${label} 里随机挑选` : "从整个库里随机挑选"}
         onBack={asTab ? undefined : nav.pop}
         actions={
           <Button variant="secondary" size="sm" onPress={() => { haptic("Click"); update({ randomSeed: newSeed(seed) }); }}>
@@ -113,13 +118,22 @@ export function RandomScreen({ label, roots, asTab }: { label: string | null; ro
         </div>
       </PageHeader>
       {items.length === 0 ? (
-        <StateView loading={loading || !seed} error={error} onRetry={() => more(true)} empty="没有可显示的文件" />
+        (loading || !seed) && !error ? <GridSkeleton columns={cols} gap={s.gridSpacing} />
+          : <StateView error={error} onRetry={() => more(true)} empty="没有可显示的文件" />
       ) : (
         <>
-          <div className="grid grid-cols-3" style={{ gap: s.gridSpacing }}>
-            {items.map((it) => (
-              <MediaTile key={it.id} item={it} width={s.gridThumbWidth} showName={s.showVideoName} showDuration={s.showDuration} className="aspect-square" onOpen={() => open(it)} />
-            ))}
+          {/* 分块渲染:随机浏览可以一直往下滑,几千格时只有屏幕附近的块真正在页面上 */}
+          <div className="flex flex-col" style={{ gap: s.gridSpacing }}>
+            {chunks.map((c) => {
+              const part = items.slice(c.start, c.end);
+              return (
+                <Chunk key={c.key} ids={part.map((x) => x.id)} className="grid" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap: s.gridSpacing }}>
+                  {part.map((it) => (
+                    <MediaTile key={it.id} item={it} width={s.gridThumbWidth} showName={s.showVideoName} showDuration={s.showDuration} className="aspect-square" onOpen={() => open(it)} />
+                  ))}
+                </Chunk>
+              );
+            })}
           </div>
           <div ref={bottom} className="grid h-16 place-items-center pb-safe">
             {loading ? <Spinner size="sm" /> : error ? <Button size="sm" variant="tertiary" onPress={() => more(false)}>加载失败,重试</Button> : null}
