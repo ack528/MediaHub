@@ -946,6 +946,30 @@ export const SETTING_PAGES: Record<string, SettingRow[]> = {
     },
     {
       "type": "choice",
+      "key": "seekBarSensitivity",
+      "title": "进度条灵敏度",
+      "options": [
+        [
+          1,
+          "×1(滑满进度条 = 整个视频)"
+        ],
+        [
+          2,
+          "×2"
+        ],
+        [
+          3,
+          "×3(默认)"
+        ],
+        [
+          5,
+          "×5(最快)"
+        ]
+      ],
+      "desc": "在进度条上任何位置按住左右滑动,都从当前进度开始按比例增减(不会跳到手指按的位置),适合单手握着平板用拇指调进度;×3 = 滑进度条宽度的三分之一就走完整个视频。滑动时画面实时跟着走,松手精确定位。轻点进度条仍是直接跳到点的位置"
+    },
+    {
+      "type": "choice",
       "key": "gestureSense",
       "title": "亮度 / 音量滑动灵敏度",
       "options": [

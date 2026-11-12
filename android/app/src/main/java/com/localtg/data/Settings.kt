@@ -107,6 +107,7 @@ data class AppSettings(
     val resumeRewindSec: Int = 0,              // 续播时往回退几秒,方便接上剧情
     val pauseOnUnplug: Boolean = true,         // 拔掉耳机 / 蓝牙断开时暂停
     val volumeNormalize: Boolean = true,       // 自动音量均衡:不同视频的响度拉到差不多(应用内部乘系数,不改系统音量)
+    val seekBarSensitivity: Int = 3,           // 拖动进度条的灵敏度:滑动距离 / 进度条宽度 × 这个数 = 进度变化的比例(相对拖动,不管按在进度条哪里)
     val autoLandscape: Boolean = false,        // 横向视频自动转横屏
     val volumeBoostMb: Int = 0,                // 音量增益(毫贝,1000 = +10 dB),0 = 关闭
     val subtitleScale: Float = 1f,

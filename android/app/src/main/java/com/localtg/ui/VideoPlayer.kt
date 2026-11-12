@@ -1014,7 +1014,7 @@ fun VideoPage(
                     .navigationBarsPadding().padding(horizontal = 12.dp).padding(top = 24.dp, bottom = 6.dp),
             ) {
                 if (!locked) {
-                    pl?.let { SeekBar(it, remaining, backBufferMs(cfg.bufferMode)) { remaining = !remaining } }
+                    pl?.let { SeekBar(it, remaining, backBufferMs(cfg.bufferMode), cfg.seekBarSensitivity.toFloat()) { remaining = !remaining } }
                     // 功能条(进度条下面这一排)上左右滑动 = 切换到上一个 / 下一个媒体。视频页的横向滑动被"快进快退"手势占着、翻页被关掉了,
                     // 所以在功能条上滑动来翻页(滑动方向和设置里「右滑上一个」一致)。翻页没被关掉(没开滑动快进)时,整个页面本来就能滑,这里不重复处理。
                     val barSwipe = cfg.gestures && cfg.swipeSeek
@@ -1396,7 +1396,7 @@ private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.
  * 进度条(重做):
  *  - 三层轨道:底(白 24%)/ **已缓冲**(白 55%,从"还留在缓冲里的最早位置"到 ExoPlayer 的 bufferedPosition)/ 已播放(强调色),
  *    圆角、拖动时变粗、滑块变大;
- *  - 点一下轨道任意位置直接跳过去;按住滑块左右拖动:**拖动时暂停、画面实时跟手(已缓冲区域每 70ms 跳一次,没缓冲的每 150ms 按关键帧跳一次)**,
+ *  - 点一下轨道任意位置直接跳过去;在进度条任意位置按住左右拖动 = **相对拖动**:从当前进度开始,按"滑动距离 / 轨道宽度 × 灵敏度"增减(不跳到手指位置);拖动时暂停、画面实时跟着走(已缓冲区域每 70ms、没缓冲的每 150ms 按关键帧跳一次),
  *    松手后精确定位到那一帧、恢复原来的播放状态;拖过的地方都进视频缓存,来回拖不会重复下载;
  *  - 拖动时上方浮出时间气泡("目标时间 / 总时长",带相对当前位置的 ±偏移);
  *  - 左边已播放时间,右边总时长(点一下切换成剩余时间)。
@@ -1405,7 +1405,7 @@ private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.
  * 所以这里自己记一个"缓冲起点":连续播放时起点跟着往前挪(只保留 backMs 的后向缓冲);用户跳到缓冲之外时,起点重置为新位置。
  */
 @Composable
-private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggleRemaining: () -> Unit) {
+private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, sensitivity: Float, onToggleRemaining: () -> Unit) {
     val accent = Vx.Accent
     var pos by remember { mutableLongStateOf(0L) }
     var dur by remember { mutableLongStateOf(0L) }
@@ -1413,6 +1413,9 @@ private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggl
     var bufStart by remember { mutableLongStateOf(0L) }
     var dragging by remember { mutableStateOf(false) }
     var dragFrac by remember { mutableFloatStateOf(0f) }
+    // 相对拖动:按下时的手指位置和当时的播放进度(不管手指按在进度条哪里,都从当前进度开始加减)
+    var dragStartX by remember { mutableFloatStateOf(0f) }
+    var dragStartFrac by remember { mutableFloatStateOf(0f) }
     var lastLiveSeek by remember { mutableLongStateOf(0L) }
     var wasPlaying by remember { mutableStateOf(false) }
     var widthPx by remember { mutableFloatStateOf(1f) }
@@ -1459,11 +1462,17 @@ private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggl
                     // 拖动:画面实时跟着走(已缓冲区域每 70ms、其它每 150ms 按关键帧跳),松手精确定位
                     .pointerInput(dur) { // 不能把 bufStart / buf 当 key:它们每 100ms 变一次,会把正在进行的拖动打断
                         detectHorizontalDragGestures(
-                            // 按住进度条滑动 = 快速搓动:拖动期间暂停播放、按关键帧快速跳(画面实时跟着手指走,不管有没有缓冲),
-                            // 松手再精确定位到那一帧并恢复原来的播放状态。拖过的地方都进视频缓存,来回拖不会重复下载。
+                            // 按住进度条滑动 = 相对、高灵敏度的搓动(单手握平板时拇指够不到当前播放点也能用):
+                            //  - 在进度条上任何位置按下都不跳,从**当前进度**开始;
+                            //  - 左右滑动按"滑动距离 / 进度条宽度 × 灵敏度"增减百分比(灵敏度 ×3 = 滑进度条宽度的 1/3 走完整个视频);
+                            //  - 拖动期间暂停播放、按关键帧快速跳(画面实时跟着走),松手精确定位并恢复原来的播放状态;
+                            //  - 拖过的地方都进视频缓存,来回拖不会重复下载。轻点进度条仍是直接跳到点的位置。
                             onDragStart = { off ->
                                 if (dur > 0) {
-                                    dragging = true; dragFrac = fracAt(off.x, padPx)
+                                    dragging = true
+                                    dragStartX = off.x
+                                    dragStartFrac = (pos.toFloat() / dur).coerceIn(0f, 1f)
+                                    dragFrac = dragStartFrac
                                     wasPlaying = player.playWhenReady
                                     player.playWhenReady = false
                                     player.setSeekParameters(androidx.media3.exoplayer.SeekParameters.CLOSEST_SYNC)
@@ -1484,7 +1493,8 @@ private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggl
                             },
                         ) { change, _ ->
                             change.consume()
-                            dragFrac = fracAt(change.position.x, padPx)
+                            val trackW = (widthPx - 2 * padPx).coerceAtLeast(1f)
+                            dragFrac = (dragStartFrac + (change.position.x - dragStartX) / trackW * sensitivity).coerceIn(0f, 1f)
                             val t = (dragFrac * dur).toLong()
                             val now = android.os.SystemClock.elapsedRealtime()
                             // 已缓冲的区域跟得更紧(每 70ms);没缓冲的每 150ms 跳一次关键帧(网络请求不至于太密)
