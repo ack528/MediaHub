@@ -20,7 +20,7 @@ export function EnhancePage({ open }: { open: (s: string) => void }) {
     <>
       <Note>开启任意一项后,视频改由本应用自己的 OpenGL 渲染器显示(普通播放不受影响)。全部在手机 GPU 上实时处理,耗电和发热会增加;处理跟不上时会自动停用。播放时在「更多 → 画质增强」里也能快速切换。</Note>
       <ListGroup>
-        <ListRow title="硬件支持检测" description="实测这部手机能不能流畅超分 / 补帧,并给出推荐设置" onPress={() => open("enhance-hw")} />
+        <ListRow title="硬件支持检测" description="检测这部手机能不能补帧 / SDR 转 HDR,并给出推荐设置" onPress={() => open("enhance-hw")} />
         <ListRow title="LSFG 帧生成" description="内置的 Lossless Scaling 帧生成:状态、着色器提取" onPress={() => open("lsfg")} />
       </ListGroup>
       {lsfg && !lsfg.supported && <div className="px-4"><Alert status="warning"><Alert.Indicator /><Alert.Content><Alert.Description>此设备不支持补帧(需要 arm64 处理器和 Vulkan)</Alert.Description></Alert.Content></Alert></div>}
@@ -30,7 +30,6 @@ export function EnhancePage({ open }: { open: (s: string) => void }) {
 }
 
 interface HwReport { time: number; lines: { title: string; level: number; text: string }[]; note: string; recUpscale: string; recFrc: string; lsfgReady?: boolean }
-const UPSCALE: Record<string, string> = { fsr: "FSR", anime4k_s: "Anime4K 小模型", anime4k_m: "Anime4K 中模型", fsrcnnx_s: "FSRCNNX 小模型", fsrcnnx_m: "FSRCNNX 中模型" };
 const FRC: Record<string, string> = { lsfg: "LSFG 标准", lsfg_low: "LSFG 低功耗" };
 const LEVEL: Record<number, { label: string; color: "success" | "warning" | "danger" | "default" }> = {
   2: { label: "良好", color: "success" }, 1: { label: "勉强", color: "warning" }, 0: { label: "不支持", color: "danger" },
@@ -48,9 +47,9 @@ export function HardwarePage() {
   };
   return (
     <>
-      <Note>实际运行一遍超分着色器(540p→1080p),量出每帧耗时,再和 30 / 60fps 的帧间隔比较;补帧按前提条件和 GPU 型号判断。检测期间画面可能短暂卡顿。</Note>
+      <Note>检查 OpenGL ES / Vulkan 能力、显示器刷新率和 HDR、LSFG 补帧的前提条件,按 GPU 型号给出补帧建议。</Note>
       <div className="px-4">
-        <Button fullWidth size="lg" isPending={running} onPress={run}>{running ? step || "准备中…" : report ? "重新检测" : "开始检测(约 5 ~ 15 秒)"}</Button>
+        <Button fullWidth size="lg" isPending={running} onPress={run}>{running ? step || "准备中…" : report ? "重新检测" : "开始检测(约 1 秒)"}</Button>
       </div>
       {report && (
         <>
@@ -62,8 +61,8 @@ export function HardwarePage() {
           </ListGroup>
           <ListGroup title="推荐">
             <p className="px-3 py-2.5 text-sm">{report.note}</p>
-            <ActionRow title="应用推荐设置" description={`超分设为「${UPSCALE[report.recUpscale] ?? "关闭"}」、补帧设为「${FRC[report.recFrc] ?? "关闭"}」(其它设置不动)`}
-              action={() => { update({ enhUpscale: report.recUpscale, enhFrc: report.recFrc }); toast.success("已应用推荐设置"); }} />
+            <ActionRow title="应用推荐设置" description={`补帧设为「${FRC[report.recFrc] ?? "关闭"}」(其它设置不动)`}
+              action={() => { update({ enhFrc: report.recFrc }); toast.success("已应用推荐设置"); }} />
           </ListGroup>
         </>
       )}

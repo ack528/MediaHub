@@ -1152,6 +1152,12 @@ export const SETTING_PAGES: Record<string, SettingRow[]> = {
       "desc": "耳机拔出或蓝牙断开时自动暂停,避免外放"
     },
     {
+      "type": "switch",
+      "key": "volumeNormalize",
+      "title": "自动音量均衡",
+      "desc": "不同视频的音量自动调到差不多:录得小声的放大、太吵的压低(最多 ±12dB,带防爆音)。在应用内部给声音乘一个系数,不改系统音量;每个视频的系数会记住,下次打开直接生效"
+    },
+    {
       "type": "header",
       "title": "字幕样式"
     },
@@ -1515,76 +1521,6 @@ export const SETTING_PAGES: Record<string, SettingRow[]> = {
     }
   ],
   "enhance": [
-    {
-      "type": "header",
-      "title": "实时超分"
-    },
-    {
-      "type": "choice",
-      "key": "enhUpscale",
-      "title": "超分算法",
-      "options": [
-        [
-          "off",
-          "关闭"
-        ],
-        [
-          "fsr",
-          "FSR 1.0(通用,很快)"
-        ],
-        [
-          "anime4k_s",
-          "Anime4K 小模型(动漫,较快)"
-        ],
-        [
-          "anime4k_m",
-          "Anime4K 中模型(动漫,画质更好)"
-        ],
-        [
-          "fsrcnnx_s",
-          "FSRCNNX 小模型(真人 / 影视,神经网络)"
-        ],
-        [
-          "fsrcnnx_m",
-          "FSRCNNX 中模型(真人 / 影视,更清楚更慢)"
-        ]
-      ],
-      "desc": "FSR:AMD 的边缘自适应放大 + 锐化,效果温和;FSRCNNX:卷积神经网络,真人 / 影视片源还原细节明显优于 FSR;Anime4K:线条更干净,只适合动画。视频已经比屏幕大时不处理"
-    },
-    {
-      "type": "choice",
-      "key": "enhMaxH",
-      "title": "只对低于此分辨率的视频超分",
-      "options": [
-        [
-          540,
-          "540p"
-        ],
-        [
-          720,
-          "720p"
-        ],
-        [
-          900,
-          "900p"
-        ],
-        [
-          1080,
-          "1080p"
-        ],
-        [
-          1440,
-          "1440p"
-        ]
-      ],
-      "desc": "高分辨率视频超分计算量很大;超过这个高度的视频直接显示"
-    },
-    {
-      "type": "switch",
-      "key": "enhAuto",
-      "title": "按画面实际清晰度处理",
-      "desc": "标称 1080p / 4K 但画面其实很糊(低清片源放大来的)时,先缩回有效分辨率再超分,上面的分辨率上限也按有效分辨率判断;关闭则只看标称分辨率"
-    },
     {
       "type": "header",
       "title": "补帧(LSFG)"

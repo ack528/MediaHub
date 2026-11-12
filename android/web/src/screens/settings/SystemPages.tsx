@@ -134,17 +134,38 @@ function SpeedCard({ title, live, v, secs, flow }: { title: string; live: boolea
 
 // ---------------------------------------------------------------- 存储与缓存
 
+interface CacheKind { key: string; label: string; used: number; quota: number; demand: number }
+interface CacheInfo { limit: number; total: number; free: number; storage: number; kinds: CacheKind[] }
+
+/** 每一类缓存的颜色(堆叠条和图例共用)。 */
+const KIND_COLOR: Record<string, string> = { thumb: "var(--accent)", image: "#22b8cf", video: "#a855f7", api: "var(--warning)" };
+const LIMITS = [512, 1024, 2048, 3072];
+const MB = 1024 * 1024;
+
 export function StoragePage() {
-  const { session, update } = useApp();
-  const [info, setInfo] = useState<{ images: number; playback: number } | null>(null);
+  const { session, update, settings: s } = useApp();
+  const [info, setInfo] = useState<{ images: number; playback: number; cache?: CacheInfo } | null>(null);
   const reload = useCallback(() => { call("storage.info").then(setInfo).catch(() => {}); }, []);
   useEffect(reload, [reload]);
   const done = (msg: string) => () => { toast.success(msg); reload(); };
+  const limitMb = Math.min(3072, Number(s.cacheLimitMb ?? 3072));
+  const pendingLimit = info?.cache && Math.round(info.cache.limit / MB) !== limitMb;
   return (
     <>
-      <ListGroup title="缓存">
-        <ActionRow icon={<Picture className="size-4" />} tone="cyan" title="清除图片缓存" description={info ? `当前占用 ${formatSize(info.images)}` : "计算中…"} confirm="删除手机里已缓存的缩略图和图片?之后需要重新从服务器下载。"
+      <LocalCacheCard info={info?.cache} />
+      <ListGroup title="本地缓存" footer={pendingLimit ? "新的上限在重启应用后生效。" : "各类缓存的上限在每次启动应用时按近期使用情况重新分配;超出上限时自动删掉最久没用的部分。"}>
+        <ChoiceField title="缓存上限" desc="缩略图、查看器图片、视频和列表数据一共最多占这么多空间"
+          options={LIMITS.map((m) => (m >= 1024 ? `${m / 1024} GB` : `${m} MB`) + (m === 3072 ? "(最大)" : ""))}
+          selected={Math.max(0, LIMITS.indexOf(limitMb))} onSelect={(i) => update({ cacheLimitMb: LIMITS[i] })} />
+        {pendingLimit && <ActionRow title="立即重启应用" description="让新的缓存上限马上生效" action={() => call("app.restart")} />}
+      </ListGroup>
+      <ListGroup title="清理缓存">
+        <ActionRow icon={<Picture className="size-4" />} tone="cyan" title="清除图片缓存" description={info ? `缩略图和查看器图片,当前占用 ${formatSize(info.images)}` : "计算中…"} confirm="删除手机里已缓存的缩略图和图片?之后需要重新从服务器下载。"
           action={() => call("storage.clearImages").then(done("图片缓存已清除"))} />
+        <ActionRow icon={<Play className="size-4" />} tone="violet" title="清除视频缓存" description={info?.cache ? `当前占用 ${formatSize(kindOf(info.cache, "video")?.used ?? 0)}` : "计算中…"} confirm="删除手机里已缓存的视频片段?正在播放的视频会重新从服务器加载。"
+          action={() => call("storage.clearVideo").then(done("视频缓存已清除"))} />
+        <ActionRow danger icon={<TrashBin className="size-4" />} tone="danger" title="清除全部缓存" description={info?.cache ? `共 ${formatSize(info.cache.kinds.reduce((a, k) => a + k.used, 0))}` : undefined} confirm="删除所有本地缓存(图片、视频、列表数据)?浏览记录和设置不受影响。"
+          action={() => call("storage.clearAll").then(done("缓存已全部清除"))} />
       </ListGroup>
       <ListGroup title="记录">
         <ActionRow icon={<Bookmark className="size-4" />} tone="accent" title="清除浏览位置记录" description="所有文件夹下次打开都从开头开始(同时清除服务器上同步的记录)" confirm="清除所有文件夹的浏览位置?"
@@ -163,6 +184,56 @@ export function StoragePage() {
           action={() => call("settings.reset").then(() => toast.success("已恢复默认设置"))} />
       </ListGroup>
     </>
+  );
+}
+
+const kindOf = (c: CacheInfo, key: string) => c.kinds.find((k) => k.key === key);
+
+/**
+ * 本地缓存概览:一条按总额画的堆叠条(每一类的实际占用),下面每一类一行:占用 / 分到的额度 + 自己的小进度条,
+ * 以及"智能分配"的依据(近期需求占比)和手机剩余空间造成的收缩。
+ */
+function LocalCacheCard({ info }: { info?: CacheInfo }) {
+  if (!info) return <ListGroup title="本地缓存占用"><div className="grid h-24 place-items-center"><Spinner size="sm" /></div></ListGroup>;
+  const used = info.kinds.reduce((a, k) => a + k.used, 0);
+  const demandSum = info.kinds.filter((k) => k.key !== "api").reduce((a, k) => a + k.demand, 0);
+  const shrunk = info.total < info.limit - MB;
+  return (
+    <ListGroup title="本地缓存占用">
+      <div className="px-3 pt-1 pb-3">
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-2xl font-semibold tabular-nums">{formatSize(used)}</span>
+          <span className="text-sm text-muted tabular-nums">/ {formatSize(info.total)}</span>
+        </div>
+        {/* 堆叠条:总长 = 这次运行的总额 */}
+        <div className="mt-3 flex h-2.5 w-full overflow-hidden rounded-full bg-surface-tertiary">
+          {info.kinds.map((k) => (
+            <div key={k.key} style={{ width: `${Math.min(100, (k.used / Math.max(1, info.total)) * 100)}%`, background: KIND_COLOR[k.key] }} />
+          ))}
+        </div>
+        <div className="mt-4 flex flex-col gap-3">
+          {info.kinds.map((k) => (
+            <div key={k.key}>
+              <div className="flex items-center gap-2 text-sm">
+                <span className="size-2.5 shrink-0 rounded-full" style={{ background: KIND_COLOR[k.key] }} />
+                <span className="flex-1 font-medium">{k.label}</span>
+                <span className="text-muted tabular-nums">{formatSize(k.used)} / {formatSize(k.quota)}</span>
+              </div>
+              <div className="mt-1.5 ml-[18px] h-1.5 overflow-hidden rounded-full bg-surface-tertiary">
+                <div className="h-full rounded-full" style={{ width: `${Math.min(100, (k.used / Math.max(1, k.quota)) * 100)}%`, background: KIND_COLOR[k.key] }} />
+              </div>
+              {k.key !== "api" && demandSum > 0 && (
+                <p className="mt-1 ml-[18px] text-xs text-muted tabular-nums">近期使用 {Math.round((k.demand / demandSum) * 100)}% · 最近下载 {formatSize(k.demand)}</p>
+              )}
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-xs leading-relaxed text-muted">
+          智能分配:每次启动时按最近 2 周各类内容实际从网络下载的量重新分配额度,常用的一类多分,不常用的慢慢让出空间;缩略图、图片、视频都有保底。
+          {shrunk ? `手机剩余空间只有 ${formatSize(info.free)},为给系统留出空间,这次只用了 ${formatSize(info.total)}(上限 ${formatSize(info.limit)})。` : `手机剩余 ${formatSize(info.free)}。`}
+        </p>
+      </div>
+    </ListGroup>
   );
 }
 

@@ -132,7 +132,7 @@ private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont 
 
 /**
  * 列表接口(群组列表 / 历史)的磁盘缓存:服务端给了 ETag,下次请求带 If-None-Match,没变就 304(没有正文);
- * 同时能先把缓存的上次内容拿出来马上显示(进入群组 / 打开应用时不用等网络)。缓存总量超过 24MB 时删掉最旧的四分之一。
+ * 同时能先把缓存的上次内容拿出来马上显示(进入群组 / 打开应用时不用等网络)。缓存总量超过分配给"列表数据"的额度(CacheBudget,32MB)时删掉最旧的四分之一。
  */
 object ApiDiskCache {
     @Volatile private var dir: java.io.File? = null
@@ -164,7 +164,7 @@ object ApiDiskCache {
     private fun trim() {
         val files = dir?.listFiles() ?: return
         var total = files.sumOf { it.length() }
-        if (total <= 24L * 1024 * 1024) return
+        if (total <= CacheBudget.current[CacheBudget.Kind.Api]) return
         for (f in files.sortedBy { it.lastModified() }.take(files.size / 4 + 1)) { total -= f.length(); f.delete() }
     }
 }

@@ -58,8 +58,18 @@ class LoadMeter : TransferListener {
 }
 
 /** 按设置创建播放器。forceSoftware = 上一次硬解失败后的自动重试。 */
-fun createPlayer(ctx: Context, c: AppContainer, s: AppSettings, forceSoftware: Boolean, modeOverride: String? = null, meter: LoadMeter? = null): ExoPlayer {
-    val renderers = DefaultRenderersFactory(ctx).apply {
+fun createPlayer(ctx: Context, c: AppContainer, s: AppSettings, forceSoftware: Boolean, modeOverride: String? = null, meter: LoadMeter? = null, normalizer: LoudnessNormalizer? = null): ExoPlayer {
+    // 自动音量均衡:把处理器插进音频输出链(解码后的 PCM 乘一个系数,不动系统音量)
+    val renderers = object : DefaultRenderersFactory(ctx) {
+        override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): androidx.media3.exoplayer.audio.AudioSink? {
+            if (normalizer == null) return super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
+            return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                .setEnableFloatOutput(enableFloatOutput)
+                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                .setAudioProcessors(arrayOf(normalizer))
+                .build()
+        }
+    }.apply {
         setEnableDecoderFallback(s.decoderFallback)
         val mode = modeOverride ?: if (forceSoftware && s.decoderMode != "sw_only") "sw_first" else s.decoderMode
         com.localtg.AppLog.i("player", "创建播放器 解码方式=$mode 缓冲=${s.bufferMode} 异步队列=${s.asyncQueueing} 隧道=${s.tunneling}")

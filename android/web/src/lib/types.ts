@@ -123,6 +123,8 @@ export type Settings = Record<string, unknown> & {
   defaultColumns: number;
   rememberPosition: boolean;
   showDatePills: boolean;
+  /** 本地缓存总上限(MB,最大 3072),各类缓存按使用情况自动分配 */
+  cacheLimitMb?: number;
   /** 底部导航的玻璃效果:on(折射)/ frosted(只要毛玻璃)/ off(半透明底色) */
   glass?: string;
   heicMode: "server" | "native";

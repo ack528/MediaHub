@@ -249,6 +249,9 @@ fun VideoPage(
     var enhStats by remember { mutableStateOf("") }
     var frcText by remember { mutableStateOf("") }
     val meter = remember { LoadMeter() }
+    /** 当前播放器的自动音量均衡处理器(菜单里显示 ×系数、开关) */
+    var normalizer by remember { mutableStateOf<LoudnessNormalizer?>(null) }
+    LaunchedEffect(cfg.volumeNormalize, normalizer) { normalizer?.enabled = cfg.volumeNormalize }
     var loadLine1 by remember { mutableStateOf("") } // 加载提示:速度
     var loadLine2 by remember { mutableStateOf("") } // 加载提示:预计剩余时间
     var enhView by remember { mutableStateOf<com.localtg.render.EnhancedVideoView?>(null) }
@@ -326,7 +329,10 @@ fun VideoPage(
         val loudness = arrayOfNulls<android.media.audiofx.LoudnessEnhancer>(1)
         if (isCurrent && resumeMs >= 0 && !blocked && compatChecked) {
             meter.reset()
-            val pl = createPlayer(ctx, c, c.settings.value, useSoftware, modeOverride, meter)
+            // 自动音量均衡:这个视频上次收敛的系数直接拿来用(没有就从 ×1 开始,开头 2 秒内快速收敛)
+            val norm = LoudnessNormalizer(LoudnessMemory.get(ctx, item.id)).apply { enabled = c.settings.value.volumeNormalize }
+            normalizer = norm
+            val pl = createPlayer(ctx, c, c.settings.value, useSoftware, modeOverride, meter, norm)
             p = pl
             pl.addListener(object : Player.Listener {
                 // 音量增益:挂在播放器的音频会话上
@@ -451,6 +457,8 @@ fun VideoPage(
         onDispose {
             disposed = true
             runCatching { loudness[0]?.release() }
+            normalizer?.let { n -> if (n.converged) LoudnessMemory.put(ctx, item.id, n.gainDb) }
+            normalizer = null
             p?.let { pl ->
                 // 保存进度:播放不足 5 秒或快播完时视为没看,清除记录
                 val pos = pl.currentPosition
@@ -638,7 +646,7 @@ fun VideoPage(
         }
     }
 
-    // 增强渲染的实时信息(输出帧率 / 处理耗时 / 是否已因性能停用超分)
+    // 增强渲染的实时信息(输出帧率 / 处理耗时 / 补帧状态)
     LaunchedEffect(enhView, cfg.showStats, cfg.enhFrc, cfg.enhFpsOverlay) {
         while (true) {
             enhStats = if (cfg.showStats) enhView?.stats.orEmpty() else ""
@@ -715,7 +723,7 @@ fun VideoPage(
     // 退出中:截到图就盖图,没截到(还没出首帧等)也把 SurfaceView 藏起来,底下垫缩略图
     val hideSurface = exiting && (snap != null || snapTried)
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        val enh = com.localtg.render.EnhanceConfig(upscale = cfg.enhUpscale, frc = if (com.localtg.render.Lsfg.deviceSupported) cfg.enhFrc else "off", frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, lsfgFp32 = cfg.lsfgFp32, trace = cfg.frcTrace, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak, upscaleMaxSrcHeight = cfg.enhMaxH, upscaleAuto = cfg.enhAuto)
+        val enh = com.localtg.render.EnhanceConfig(frc = if (com.localtg.render.Lsfg.deviceSupported) cfg.enhFrc else "off", frcMultiplier = cfg.enhFrcMultiplier, lsfgFlowScale = cfg.lsfgFlowScale, lsfgPerf = cfg.lsfgPerf, lsfgFp32 = cfg.lsfgFp32, trace = cfg.frcTrace, frcAdaptive = cfg.enhFrcAdaptive, hdr = cfg.enhHdr, hdrPeakNits = cfg.enhPeak)
         var enhFailed by remember(item.id) { mutableStateOf(false) }
         // HDR 片源本身不处理;转码播放的是 H.264 SDR,可以处理
         val useEnh = enh.active && !enhFailed && item.video?.hdr.isNullOrEmpty() && android.os.Build.VERSION.SDK_INT >= 26
@@ -989,7 +997,7 @@ fun VideoPage(
                 }
                 if (!locked) {
                     val accent = Vx.Accent
-                    val enhOn = cfg.enhUpscale != "off" || cfg.enhFrc != "off" || cfg.enhHdr != "off"
+                    val enhOn = cfg.enhFrc != "off" || cfg.enhHdr != "off"
                     if (trackOpts(tracks, C.TRACK_TYPE_TEXT).isNotEmpty()) CtrlIcon(HeroIcons.Subtitles, "字幕") { panel = "sub" }
                     CtrlIcon(HeroIcons.More, "更多", tint = if (enhOn) accent else Color.White) { panel = if (panel.isEmpty()) "main" else "" }
                 }
@@ -1175,14 +1183,10 @@ fun VideoPage(
                         }
                     }
                     "enhance" -> {
-                        val ups = listOf("off", "fsr", "fsrcnnx_s", "fsrcnnx_m", "anime4k_s", "anime4k_m")
-                        MenuLabel("超分")
-                        MenuChips(listOf("关闭", "FSR", "真人·小", "真人·中", "动漫·小", "动漫·中"), ups.indexOf(cfg.enhUpscale).coerceAtLeast(0)) { i -> c.settings.update { copy(enhUpscale = ups[i]) } }
-                        MenuNote("FSR 效果温和;真人 = FSRCNNX(神经网络,真人 / 影视更清楚);动漫 = Anime4K。视频高度超过 ${cfg.enhMaxH}p 不处理。")
                         val frcs = listOf("off", "lsfg_low", "lsfg")
                         MenuLabel("补帧(LSFG)")
                         if (!com.localtg.render.Lsfg.deviceSupported) {
-                            MenuNote(com.localtg.render.Lsfg.UNSUPPORTED_TEXT, com.localtg.ui.tg.LocalTg.current.danger)
+                            MenuNote(com.localtg.render.Lsfg.UNSUPPORTED_TEXT, Vx.Danger)
                         } else {
                         MenuChips(listOf("关闭", "低功耗", "标准"), frcs.indexOf(cfg.enhFrc).coerceAtLeast(0)) { i -> c.settings.update { copy(enhFrc = frcs[i]) } }
                         MenuNote(
@@ -1194,17 +1198,16 @@ fun VideoPage(
                         )
                         }
                         if (cfg.enhFrc != "off" && com.localtg.render.Lsfg.deviceSupported) {
-                            val tg = com.localtg.ui.tg.LocalTg.current
                             when (com.localtg.render.Lsfg.state) {
-                                1 -> MenuNote("正在提取着色器(只有第一次需要几秒)…", tg.warn)
-                                3 -> MenuNote("LSFG 不可用:" + com.localtg.render.Lsfg.error, tg.danger)
+                                1 -> MenuNote("正在提取着色器(只有第一次需要几秒)…", Vx.Warning)
+                                3 -> MenuNote("LSFG 不可用:" + com.localtg.render.Lsfg.error, Vx.Danger)
                                 else -> {}
                             }
                         }
                         MenuDivider()
                         MenuSwitch("SDR 转 HDR", cfg.enhHdr != "off") { on -> c.settings.update { copy(enhHdr = if (on) "auto" else "off") } }
                         MenuDivider()
-                        MenuRow("关闭全部增强", arrow = false) { c.settings.update { copy(enhUpscale = "off", enhFrc = "off", enhHdr = "off") } }
+                        MenuRow("关闭全部增强", arrow = false) { c.settings.update { copy(enhFrc = "off", enhHdr = "off") } }
                     }
                     "quality" -> {
                         // 转码只改码率,不改分辨率;只提供 6M 及以下的档位(再高不如直接播原文件),低码率档位给得更密
@@ -1301,6 +1304,9 @@ fun VideoPage(
                         MenuRow("倍速", speedText) { panel = "speed" }
                         MenuRow("字幕", if (subOpts.isEmpty()) "无" else if (subOff) "关闭" else subOpts.firstOrNull { it.selected }?.label) { panel = "sub" }
                         MenuRow("音轨", audioOpts.firstOrNull { it.selected }?.label ?: "—") { panel = "audio" }
+                        // 自动音量均衡:标题后面是当前的内部系数(×1.0 = 原样;不影响系统音量条)
+                        val gain = normalizer?.let { n -> if (cfg.volumeNormalize) "  ×" + "%.1f".format(LoudnessNormalizer.dbToLin(n.gainDb)) else "" } ?: ""
+                        MenuSwitch("音量均衡$gain", cfg.volumeNormalize) { on -> c.settings.update { copy(volumeNormalize = on) } }
                         MenuDivider()
                         MenuRow("画面比例", when (resize) { "fit" -> "适应屏幕"; "zoom" -> "裁剪填满"; else -> "拉伸填满" }, arrow = false) {
                             resize = when (resize) { "fit" -> "zoom"; "zoom" -> "fill"; else -> "fit" }
@@ -1310,7 +1316,6 @@ fun VideoPage(
                         MenuRow(
                             "画质增强",
                             listOfNotNull(
-                                when (cfg.enhUpscale) { "fsr" -> "FSR"; "fsrcnnx_s", "fsrcnnx_m" -> "FSRCNNX"; "anime4k_s", "anime4k_m" -> "动漫"; else -> null },
                                 when (cfg.enhFrc) { "lsfg" -> "补帧"; "lsfg_low" -> "补帧·低功耗"; else -> null },
                                 if (cfg.enhHdr != "off") "HDR" else null,
                             ).joinToString(" · ").ifEmpty { "关闭" },
@@ -1391,8 +1396,8 @@ private fun RoundBtn(icon: ImageVector, desc: String, size: androidx.compose.ui.
  * 进度条(重做):
  *  - 三层轨道:底(白 24%)/ **已缓冲**(白 55%,从"还留在缓冲里的最早位置"到 ExoPlayer 的 bufferedPosition)/ 已播放(强调色),
  *    圆角、拖动时变粗、滑块变大;
- *  - 点一下轨道任意位置直接跳过去;按住滑块左右拖动:**落在已缓冲区域里时边拖边跳(画面实时跟手,不用等网络)**,
- *    拖到没缓冲的位置只在松手时才请求,不会每动一下就发一次网络请求;
+ *  - 点一下轨道任意位置直接跳过去;按住滑块左右拖动:**拖动时暂停、画面实时跟手(已缓冲区域每 70ms 跳一次,没缓冲的每 150ms 按关键帧跳一次)**,
+ *    松手后精确定位到那一帧、恢复原来的播放状态;拖过的地方都进视频缓存,来回拖不会重复下载;
  *  - 拖动时上方浮出时间气泡("目标时间 / 总时长",带相对当前位置的 ±偏移);
  *  - 左边已播放时间,右边总时长(点一下切换成剩余时间)。
  *
@@ -1409,6 +1414,7 @@ private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggl
     var dragging by remember { mutableStateOf(false) }
     var dragFrac by remember { mutableFloatStateOf(0f) }
     var lastLiveSeek by remember { mutableLongStateOf(0L) }
+    var wasPlaying by remember { mutableStateOf(false) }
     var widthPx by remember { mutableFloatStateOf(1f) }
 
     LaunchedEffect(player) {
@@ -1450,21 +1456,40 @@ private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggl
                             }
                         }
                     }
-                    // 拖动:在已缓冲区域里边拖边跳;缓冲之外只在松手时跳
+                    // 拖动:画面实时跟着走(已缓冲区域每 70ms、其它每 150ms 按关键帧跳),松手精确定位
                     .pointerInput(dur) { // 不能把 bufStart / buf 当 key:它们每 100ms 变一次,会把正在进行的拖动打断
                         detectHorizontalDragGestures(
-                            onDragStart = { off -> if (dur > 0) { dragging = true; dragFrac = fracAt(off.x, padPx) } },
+                            // 按住进度条滑动 = 快速搓动:拖动期间暂停播放、按关键帧快速跳(画面实时跟着手指走,不管有没有缓冲),
+                            // 松手再精确定位到那一帧并恢复原来的播放状态。拖过的地方都进视频缓存,来回拖不会重复下载。
+                            onDragStart = { off ->
+                                if (dur > 0) {
+                                    dragging = true; dragFrac = fracAt(off.x, padPx)
+                                    wasPlaying = player.playWhenReady
+                                    player.playWhenReady = false
+                                    player.setSeekParameters(androidx.media3.exoplayer.SeekParameters.CLOSEST_SYNC)
+                                }
+                            },
                             onDragEnd = {
-                                if (dragging) { val t = (dragFrac * dur).toLong(); player.seekTo(t); pos = t }
+                                if (dragging) {
+                                    val t = (dragFrac * dur).toLong()
+                                    player.setSeekParameters(androidx.media3.exoplayer.SeekParameters.EXACT)
+                                    player.seekTo(t); pos = t
+                                    player.playWhenReady = wasPlaying
+                                }
                                 dragging = false
                             },
-                            onDragCancel = { dragging = false },
+                            onDragCancel = {
+                                if (dragging) { player.setSeekParameters(androidx.media3.exoplayer.SeekParameters.EXACT); player.playWhenReady = wasPlaying }
+                                dragging = false
+                            },
                         ) { change, _ ->
                             change.consume()
                             dragFrac = fracAt(change.position.x, padPx)
                             val t = (dragFrac * dur).toLong()
                             val now = android.os.SystemClock.elapsedRealtime()
-                            if (t in bufStart..buf && now - lastLiveSeek > 70) { lastLiveSeek = now; player.seekTo(t) }
+                            // 已缓冲的区域跟得更紧(每 70ms);没缓冲的每 150ms 跳一次关键帧(网络请求不至于太密)
+                            val gap = if (t in bufStart..buf) 70 else 150
+                            if (now - lastLiveSeek > gap) { lastLiveSeek = now; player.seekTo(t) }
                         }
                     },
             ) {
@@ -1500,7 +1525,7 @@ private fun SeekBar(player: ExoPlayer, remaining: Boolean, backMs: Long, onToggl
                         "  " + (if (delta >= 0) "+" else "−") + fmt(kotlin.math.abs(delta)),
                         color = if (delta >= 0) Vx.Success else Vx.Danger, style = Vx.Small.copy(fontFeatureSettings = "tnum"),
                     )
-                    if (shown !in bufStart..buf) Text("  需要加载", color = Vx.Muted, style = Vx.Small)
+                    if (shown !in bufStart..buf) Text("  加载中", color = Vx.Muted, style = Vx.Small)
                 }
             }
         }

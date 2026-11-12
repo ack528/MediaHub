@@ -88,7 +88,7 @@ export function installBrowserMock() {
       case "viewer.open": console.info("viewer.open", a.index, a.source); return null;
       case "log.info": return { size: 123456, crashes: [] };
       case "log.tail": return "10-31 12:00:00.000 I/app: 启动\n10-31 12:00:01.000 W/net: 慢请求\n";
-      case "storage.info": return { images: 52_000_000, playback: 12 };
+      case "storage.info": { const M = 1048576; return { images: 812 * M, playback: 12, cache: { limit: 3072 * M, total: 3072 * M, free: 41_000 * M, storage: 238_000 * M, kinds: [{ key: "thumb", label: "缩略图", used: 420 * M, quota: 905 * M, demand: 310 * M }, { key: "image", label: "查看器图片", used: 392 * M, quota: 640 * M, demand: 120 * M }, { key: "video", label: "视频", used: 1210 * M, quota: 1495 * M, demand: 2600 * M }, { key: "api", label: "列表数据", used: 6 * M, quota: 32 * M, demand: 0 }] } }; }
       case "app.changelog": return [{ version: "5.0.0", items: ["全新界面:React + HeroUI"] }];
       case "update.pending": return { pending: "", downloading: false, progress: -1, version: "", error: "" };
       case "lsfg.status": return { supported: true, lib: false, dllInAssets: false, bundled: false, cacheReady: false, state: 0, error: "" };

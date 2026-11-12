@@ -26,8 +26,6 @@ import kotlin.math.sqrt
 
 /** 增强渲染的配置。 */
 data class EnhanceConfig(
-    /** off | fsr | anime4k_s | anime4k_m | fsrcnnx_s | fsrcnnx_m */
-    val upscale: String = "off",
     /** off | lsfg(标准:补到屏幕最高刷新率,≤120Hz)| lsfg_low(低功耗:补到 60fps,光流精度从 50% 起步、自动降级始终开启) */
     val frc: String = "off",
     /** 标准模式的补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 8 = 固定倍数(低功耗模式忽略) */
@@ -45,24 +43,22 @@ data class EnhanceConfig(
     /** off | auto(显示器支持 HDR 才启用)| on */
     val hdr: String = "off",
     val hdrPeakNits: Int = 600,
-    /** 视频高度超过这个值就不做超分(1080p 以上本来就够清晰,且计算量大) */
-    val upscaleMaxSrcHeight: Int = 1080,
-    /** 按"有效清晰度"处理:标称分辨率很高但画面其实很糊(低清片源放大来的)时,先缩回有效分辨率再超分;高度上限也按有效分辨率判断 */
-    val upscaleAuto: Boolean = true,
 ) {
     val frcOn get() = frc == "lsfg" || frc == "lsfg_low"
     val lowPower get() = frc == "lsfg_low"
-    val active get() = upscale != "off" || frcOn || hdr != "off"
+    val active get() = frcOn || hdr != "off"
 }
 
 /**
  * 增强渲染器:ExoPlayer 解码到 SurfaceTexture,在这里用 OpenGL ES 3 处理后显示到 SurfaceView。
  *
  * 处理流程:
- *   每个源帧到达时(onFrameAvailable)  OES → RGBA16F → [mpv 着色器链:FSR / Anime4K 超分] → 帧环形缓冲(+HDR 用的亮度图)→ [LSFG 帧生成:异步]
+ *   每个源帧到达时(onFrameAvailable)  OES → RGBA16F → 帧环形缓冲(+HDR 用的亮度图)→ [LSFG 帧生成:异步]
  *   每个屏幕刷新时(Choreographer vsync) 按相位累加器从"真实帧 + LSFG 生成帧"里选一张 → [SDR→HDR 逆色调映射] → 窗口表面
  *
  * 补帧只有 LSFG 一种(标准 / 低功耗两档);运动补偿、帧混合、OpenCV 光流都已删除。
+ * 实时超分(FSR / Anime4K / FSRCNNX)在 5.1.1 删除:手机上常见的 1080p 片源显示尺寸不比原片大(竖屏更小),放大倍数很小看不出区别,
+ * 低清片源又常因 GPU 跟不上被自动停用。
  *
  * 帧上屏时间:ExoPlayer 用 releaseOutputBuffer(index, releaseTimeNs) 释放解码帧,SurfaceTexture.getTimestamp() 就是这个时间
  * (System.nanoTime 时钟),而且帧会比上屏时间早到几帧 —— 所以能在两个真实帧之间上屏生成帧。
@@ -102,17 +98,9 @@ class VideoRenderer(
     private val stMatrix = FloatArray(16)
 
     // 程序
-    private var pOes = 0; private var pLuma = 0; private var pMerge = 0; private var pFinal = 0
+    private var pOes = 0; private var pFinal = 0
     private lateinit var pool: Gl.Pool
     private var luma: LumaBuilder? = null
-    private var meter: SharpnessMeter? = null
-    private var pDown = 0
-    // 有效清晰度:EMA 平滑后的 R、当前采用的缩小倍数(1 = 本来就清晰),连续两次判成同一档才切换
-    private var sharpR = -1f
-    private var effScale = 1f
-    private var effPending = 1f
-    private var effLogged = false
-    private val chains = HashMap<String, ShaderChain?>()
 
     // 视频信息(由播放器回调设置)
     @Volatile private var vw = 0
@@ -189,7 +177,6 @@ class VideoRenderer(
     private var lastVsync = 0L
     private var ingestEma = 0.0
     private var ingestN = 0
-    private var degraded = false
     private var overBudget = 0
     private var frames = 0L
     private var shown = 0L
@@ -219,7 +206,6 @@ class VideoRenderer(
 
     private fun poke() { handler.post { dirty = true; if (!released && !choreoPosted && ring.isNotEmpty()) scheduleVsync() } }
     fun setVideoSize(w: Int, h: Int, par: Float) {
-        if (w != vw || h != vh) handler.post { sharpR = -1f; effScale = 1f; effPending = 1f } // 换了视频:有效清晰度重新测
         vw = w; vh = h; vpar = if (par > 0f) par else 1f; poke()
     }
     fun setResizeMode(m: String) { resizeMode = m; poke() }
@@ -231,8 +217,6 @@ class VideoRenderer(
         trace.enabled = c.trace
         if (c.frc != config.frc) { lsfgGaveUp = false; lsfgBadStreak = 0; lsfgCoverage = -1; resetScaleTuning() }
         if (c.lsfgFlowScale != config.lsfgFlowScale || c.lsfgFp32 != config.lsfgFp32) resetScaleTuning()
-        // 换了超分算法 / 分辨率上限:之前"跟不上而停用"的状态作废(否则从重模型切到 FSR 也一直是关着的)
-        if (c.upscale != config.upscale || c.upscaleMaxSrcHeight != config.upscaleMaxSrcHeight) handler.post { degraded = false; overBudget = 0 }
         config = c; poke()
     }
 
@@ -319,15 +303,9 @@ class VideoRenderer(
         pool8 = Gl.Pool(false)
 
         pOes = Gl.program(OES_FRAG)
-        pLuma = Gl.program(ChainShaders.LUMA)
-        pMerge = Gl.program(ChainShaders.MERGE)
         pFinal = Gl.program(FINAL_FRAG)
         pBlit = Gl.program(BLIT_FRAG)
         luma = LumaBuilder(pool)
-        if (halfOk) {
-            meter = runCatching { SharpnessMeter() }.onFailure { AppLog.w("enhance", "有效清晰度检测不可用:${it.message}") }.getOrNull()
-            pDown = Gl.program(DOWNSCALE_FRAG)
-        }
 
         val t = IntArray(1)
         GLES30.glGenTextures(1, t, 0)
@@ -364,11 +342,9 @@ class VideoRenderer(
 
     private fun teardown() {
         runCatching { stopRecordingNow() }
-        chains.clear()
         ring.forEach { retire(it) }
         ring.clear()
         runCatching { luma?.destroy() }
-        runCatching { meter?.destroy() }
         lsfgExec?.let { ex -> ex.shutdown(); runCatching { ex.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS) } } // 等 worker 生成完,原生层才能安全释放
         lsfgBusy = false
         // 后台还在建会话:等它结束(原生层是全局状态,必须建完才能释放),然后立刻销毁
@@ -405,36 +381,6 @@ class VideoRenderer(
 
     // ---------------------------------------------------------------- 源帧到达
 
-    private fun chain(name: String): ShaderChain? = chains.getOrPut(name) {
-        val files = when (name) {
-            "fsr" -> listOf("FSR.glsl")
-            "anime4k_s" -> listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_S.glsl", "Anime4K_Upscale_CNN_x2_S.glsl", "Anime4K_AutoDownscalePre_x2.glsl")
-            "anime4k_m" -> listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_M.glsl", "Anime4K_Upscale_CNN_x2_M.glsl", "Anime4K_AutoDownscalePre_x2.glsl", "Anime4K_Upscale_CNN_x2_S.glsl")
-            "fsrcnnx_s" -> listOf("FSRCNNX_x2_8-0-4-1.glsl")
-            "fsrcnnx_m" -> listOf("FSRCNNX_x2_16-0-4-1.glsl")
-            else -> return@getOrPut null
-        }
-        try {
-            val passes = files.flatMap { f -> MpvShaderParser.parse(Assets.read("shaders/$f")) }
-            ShaderChain(name, passes, pool, pLuma, pMerge)
-        } catch (e: Exception) {
-            AppLog.w("enhance", "加载着色器 $name 失败:${e.message}"); null
-        }
-    }
-
-    /** 测一次有效清晰度,更新 [effScale](平滑 + 两次确认,避免在两档之间来回跳、让补帧会话反复重建)。 */
-    private fun updateEffectiveScale(src: Gl.Tex) {
-        val r = meter?.measure(src) ?: return
-        if (r < 0f) return
-        sharpR = if (sharpR < 0f) r else sharpR * 0.6f + r * 0.4f
-        val f = SharpnessMeter.scaleFromR(sharpR)
-        if (f == effScale) { effPending = f; return }
-        if (f == effPending) {
-            AppLog.i("enhance", "有效清晰度变化:R=${"%.3f".format(sharpR)} → 画面相当于 ${(vw / f).toInt()}×${(vh / f).toInt()}(标称 ${vw}×${vh},缩小 ${f}×)")
-            effScale = f
-        } else effPending = f
-    }
-
     private fun ingest() {
         val s = st ?: return
         val t0 = SystemClock.elapsedRealtimeNanos()
@@ -470,35 +416,7 @@ class VideoRenderer(
 
         val lsfgOn = lsfgUsable(cfg)
         val pyr = if (hdrActive(cfg) && halfOk) luma?.build(src) else null
-        var img = src
-        if (cfg.upscale != "off" && halfOk && !degraded) {
-            if (cfg.upscaleAuto && frames % 24L == 5L) updateEffectiveScale(src)
-            val f = if (cfg.upscaleAuto) effScale else 1f
-            // 有效分辨率:糊的 4K 片源其实只有 1080p 的清晰度,上限按有效分辨率判断
-            val ew = max(((w / f).toInt()) and 1.inv(), 16); val eh = max(((h / f).toInt()) and 1.inv(), 16)
-            if (eh <= cfg.upscaleMaxSrcHeight) {
-                val d = destRect()
-                var inp = src
-                var small: Gl.Tex? = null
-                if (f > 1.01f && pDown != 0) {
-                    small = pool.acquire(ew, eh)
-                    Gl.target(small)
-                    Gl.use(pDown)
-                    Gl.bindTex(0, src.id)
-                    GLES20.glUniform1i(Gl.loc(pDown, "uTex"), 0)
-                    GLES20.glUniform2f(Gl.loc(pDown, "uRatio"), w.toFloat() / ew, h.toFloat() / eh)
-                    GLES20.glUniform1i(Gl.loc(pDown, "uN"), kotlin.math.ceil(f).toInt().coerceIn(2, 4))
-                    Gl.draw()
-                    inp = small
-                }
-                val up = chain(cfg.upscale)?.run(inp, d.w, d.h)
-                if (small != null) {
-                    pool.release(small)
-                    if (!effLogged) { effLogged = true; AppLog.i("enhance", "有效清晰度模式:超分输入 ${ew}×$eh → 输出 ${up?.w}×${up?.h}(目标显示区 ${d.w}×${d.h})") }
-                }
-                if (up != null) { img = up; pool.release(src) }
-            }
-        }
+        val img = src
         val slot = Slot(ts, img, pyr, nextId++)
         val prev = ring.lastOrNull()
         if (lsfgOn && frcNeeded(cfg)) { notNeededSince = 0L; runLsfg(slot, cfg) }
@@ -529,11 +447,8 @@ class VideoRenderer(
             val budget = (if (interval > 0) interval else 41_000_000L) / 1e6
             // 连续 6 次采样(约 2 秒)都超过帧间隔的 90% 才算跟不上,偶发的卡一下(换页、系统繁忙)不算
             overBudget = if (ms > budget * 0.9) overBudget + 1 else 0
-            if (overBudget >= 6 && cfg.upscale != "off" && !degraded) {
-                degraded = true
-                AppLog.w("enhance", "超分耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms,自动停用超分")
-            } else if (overBudget >= 6 && (cfg.frcAdaptive || cfg.lowPower) && lsfgOn && (cfg.upscale == "off" || degraded)) {
-                // 超分已经停了(或没开)还是跟不上:降光流精度,降到最低还不够就停用补帧
+            if (overBudget >= 6 && (cfg.frcAdaptive || cfg.lowPower) && lsfgOn) {
+                // 跟不上:降光流精度,降到最低还不够就停用补帧
                 overBudget = 0
                 AppLog.w("enhance", "补帧耗时 ${"%.1f".format(ingestEma)}ms 持续超过帧间隔 ${"%.1f".format(budget)}ms")
                 lowerLsfgQuality(cfg, "处理耗时超过帧间隔")
@@ -835,10 +750,6 @@ class VideoRenderer(
         val engine = if (cfg.lowPower) "LSFG·低功耗" else "LSFG"
         stats = buildString {
             append("增强渲染:")
-            append(
-                when (cfg.upscale) { "fsr" -> "FSR"; "anime4k_s" -> "Anime4K-S"; "anime4k_m" -> "Anime4K-M"; "fsrcnnx_s" -> "FSRCNNX-S"; "fsrcnnx_m" -> "FSRCNNX-M"; else -> "" }.let { if (it.isNotEmpty() && degraded) "$it(已因性能停用)" else it }
-            )
-            if (cfg.upscale != "off" && cfg.upscaleAuto && effScale > 1.01f && !degraded) append("[画面偏糊,按 ${(vw / effScale).toInt()}×${(vh / effScale).toInt()} 处理]")
             if (cfg.frcOn) append(" 补帧($engine)${if (!generating) "·待机" else ""}${if (lsfgGaveUp) "·已因性能停用" else ""}")
             if (hdrActive(cfg)) append(" HDR(PQ,${cfg.hdrPeakNits}nit)") else if (cfg.hdr != "off") append(" HDR:显示器/表面不支持")
             append("\n输出 ${"%.0f".format(fps)}fps  源 ${a.img.w}×${a.img.h}  处理 ${"%.1f".format(ingestEma)}ms  屏幕 ${"%.0f".format(1e9 / period)}Hz")
@@ -1160,28 +1071,6 @@ out vec4 outColor;
 void main() {
     vec2 uv = (uMat * vec4(vPos, 0.0, 1.0)).xy;
     outColor = vec4(texture(uTex, uv).rgb, 1.0);
-}
-"""
-
-        /** 把源帧按有效清晰度缩小:每个输出像素覆盖源帧上 f×f 个像素,在这个范围里等间隔取 n×n 个双线性样点求平均(f 是整数时恰好是盒式滤波,不会多糊一圈)。 */
-        private const val DOWNSCALE_FRAG = """#version 300 es
-precision highp float;
-precision highp sampler2D;
-uniform sampler2D uTex;
-uniform vec2 uRatio;                            // 源 / 输出 的尺寸比(每个轴上的 f)
-uniform int uN;                                 // 每个轴上的样点数
-in vec2 vPos;
-out vec4 outColor;
-void main() {
-    vec2 srcSize = vec2(textureSize(uTex, 0));
-    vec2 start = floor(gl_FragCoord.xy) * uRatio;          // 输出像素在源帧上覆盖的区域起点(源像素单位)
-    vec3 acc = vec3(0.0);
-    for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
-        if (i >= uN || j >= uN) continue;
-        vec2 o = (vec2(float(i), float(j)) + 0.5) / float(uN) * uRatio;
-        acc += texture(uTex, (start + o) / srcSize).rgb;
-    }
-    outColor = vec4(acc / float(uN * uN), 1.0);
 }
 """
 

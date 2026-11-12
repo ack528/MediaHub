@@ -93,7 +93,26 @@ def main():
     text = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read()
     ct, ci = latest_entry(text, "手机端")
     st, si = latest_entry(text, "服务端")
-    body = f"## 手机端 LocalBrowse {ct}\n" + "\n".join(ci) + f"\n\n## 服务端 / 管理程序 MediaHub {st}\n" + "\n".join(si)
+    # 只写这次真正更新了的那一端:沿用上次发布的文件(和 dist/last-release 里同名同大小)说明那一端没改
+    last = os.path.join(ROOT, "dist", "last-release")
+    def carried(pat):
+        for f in files:
+            if re.match(pat, f):
+                lf = os.path.join(last, f)
+                return os.path.isfile(lf) and os.path.getsize(lf) == os.path.getsize(os.path.join(REL, f))
+        return True
+    phone_new = not carried(r"^LocalBrowse-[\d.]+\.apk$")
+    server_new = not carried(r"^MediaHub-[\d.]+-update\.zip$")
+    parts = []
+    if phone_new:
+        parts.append(f"## 手机端 LocalBrowse {ct}\n" + "\n".join(ci))
+    if server_new:
+        parts.append(f"## 服务端 / 管理程序 MediaHub {st}\n" + "\n".join(si))
+    body = "\n\n".join(parts)
+    kept = [n for n, new in (("手机端", phone_new), ("服务端 / 管理程序", server_new)) if not new]
+    if kept:
+        body += f"\n\n> 本次只更新了{'、'.join(n for n, new in (('手机端', phone_new), ('服务端 / 管理程序', server_new)) if new)};" + \
+            f"{'、'.join(kept)}没有改动,附带的是上一版的更新包(自动更新只看最新发布,需要它才能检查更新)。"
     body += "\n\n完整的历史版本见 [CHANGELOG.md](https://github.com/ack528/MediaHub/blob/main/CHANGELOG.md)。\n\n> 发布的 APK 不含 Lossless.dll(版权文件,不公开分发);补帧需自行提供已授权的 DLL。\n"
     tok = token()
     base = f"https://api.github.com/repos/{REPO}"

@@ -45,17 +45,17 @@ export function TimelineSkeleton({ widthPct = 72 }: { widthPct?: number }) {
   );
 }
 
-/** 瀑布流:两列不同高度的卡片。 */
+/** 瀑布流(紧凑版):几列不同高度的图 + 一行小字。 */
 export function MasonrySkeleton({ columns = 2 }: { columns?: number }) {
-  const hs = [[1.2, 0.8, 1.5], [0.9, 1.4, 1]];
+  const hs = [[1.2, 0.8, 1.5, 1], [0.9, 1.4, 1, 1.3], [1.1, 1, 1.4, 0.8], [1.5, 0.9, 1.2, 1]];
   return (
-    <div aria-busy aria-label="加载中" className="flex items-start gap-3 px-4 pt-1">
+    <div aria-busy aria-label="加载中" className="flex items-start gap-1.5 px-1.5 pt-1">
       {Array.from({ length: columns }, (_, c) => (
-        <div key={c} className="flex min-w-0 flex-1 flex-col gap-3">
-          {hs[c % 2].map((r, i) => (
-            <div key={i} className="rounded-3xl bg-surface p-2 shadow-surface">
-              <div className={`w-full rounded-2xl ${block}`} style={{ aspectRatio: String(1 / r), animationDelay: `${(c + i) * 80}ms` }} />
-              <div className={`mt-2 h-3 w-3/4 rounded-full ${block}`} />
+        <div key={c} className="flex min-w-0 flex-1 flex-col gap-1.5">
+          {hs[c % hs.length].map((r, i) => (
+            <div key={i}>
+              <div className={`w-full rounded-xl ${block}`} style={{ aspectRatio: String(1 / r), animationDelay: `${(c + i) * 80}ms` }} />
+              <div className={`mt-1 mb-1 h-2.5 w-2/3 rounded-full ${block}`} />
             </div>
           ))}
         </div>

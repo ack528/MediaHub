@@ -84,26 +84,80 @@ export function FoldersScreen() {
   orderRef.current = order;
   const labelRef = useRef(label);
   labelRef.current = label;
+  /*
+   * 以前只在抬手时判断一次(横向 ≥ 60px、横向 ≥ 纵向 1.6 倍、800ms 内),滑动过程中列表不动,稍微斜一点就被当成上下滚动 → 不灵敏。
+   * 现在:
+   *  - 列表声明 touch-action: pan-y,浏览器只接管上下滚动,横向的手指移动完整交给这里;
+   *  - 移动 10px 内判定方向:横向只要比纵向大 10%(以前要 1.6 倍);判成横向后列表跟手移动(带阻尼),判成纵向就不再管;
+   *  - 抬手:横向超过 48px,或者轻快一甩(超过 20px 且速度 > 0.25 px/ms)就切换;不够就弹回原位;
+   *  - 已经是第一个 / 最后一个盘符:跟手的阻尼更大,抬手弹回并轻震提示。
+   */
   useEffect(() => {
     const el = listRef.current;
     if (!el) return;
-    let x0 = 0, y0 = 0, t0 = 0, track = false;
-    const start = (e: TouchEvent) => { const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; t0 = e.timeStamp; track = e.touches.length === 1; };
+    let x0 = 0, y0 = 0, axis: "" | "x" | "y" = "", track = false, dx = 0;
+    let samples: { x: number; t: number }[] = [];
+    const ease = "cubic-bezier(0.05, 0.7, 0.1, 1)";
+    const target = (d: number) => { const o = orderRef.current, j = o.indexOf(labelRef.current) + (d < 0 ? 1 : -1); return o.length >= 2 && j >= 0 && j < o.length ? o[j] : null; };
+    const settle = (from: number) => {
+      el.style.transform = ""; el.style.opacity = "";
+      if (from) el.animate([{ transform: `translateX(${from}px)` }, { transform: "none" }], { duration: 260, easing: ease });
+    };
+    const start = (e: TouchEvent) => {
+      track = e.touches.length === 1;
+      if (!track) return;
+      const t = e.touches[0];
+      x0 = t.clientX; y0 = t.clientY; axis = ""; dx = 0;
+      samples = [{ x: t.clientX, t: e.timeStamp }];
+    };
+    const move = (e: TouchEvent) => {
+      if (!track) return;
+      if (e.touches.length !== 1) { track = false; settle(dx * 0.5); return; }
+      const t = e.touches[0];
+      dx = t.clientX - x0;
+      const dy = t.clientY - y0;
+      if (!axis) {
+        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+        axis = Math.abs(dx) > Math.abs(dy) * 1.1 ? "x" : "y";
+      }
+      if (axis !== "x") return;
+      samples.push({ x: t.clientX, t: e.timeStamp });
+      if (samples.length > 6) samples.shift();
+      // 跟手:有下一个盘符时阻尼 0.5,到头了阻尼更大
+      const k = target(dx) ? 0.5 : 0.18;
+      el.style.transform = `translateX(${dx * k}px)`;
+      el.style.opacity = String(1 - Math.min(0.35, Math.abs(dx) / 900));
+    };
     const end = (e: TouchEvent) => {
       if (!track) return;
       track = false;
-      const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0;
-      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.6 || e.timeStamp - t0 > 800) return;
-      const o = orderRef.current, i = o.indexOf(labelRef.current), j = i + (dx < 0 ? 1 : -1);
-      if (o.length < 2 || j < 0 || j >= o.length) return;
+      if (axis !== "x") return;
+      const last = samples[samples.length - 1], first = samples[0];
+      const v = last && first && last.t > first.t ? (last.x - first.x) / (last.t - first.t) : 0; // px/ms
+      const shown = dx * (target(dx) ? 0.5 : 0.18);
+      const next = target(dx);
+      const go = Math.abs(dx) > 48 || (Math.abs(dx) > 20 && Math.abs(v) > 0.25 && Math.sign(v) === Math.sign(dx));
+      if (!go || !next) {
+        if (go && !next) haptic("Reject"); // 已经是第一个 / 最后一个
+        settle(shown);
+        return;
+      }
       haptic("Tick");
-      setLabel(o[j]);
-      // 新盘符的列表从滑动方向轻轻滑入
-      el.animate([{ transform: `translateX(${dx < 0 ? 24 : -24}px)`, opacity: 0.4 }, { transform: "none", opacity: 1 }], { duration: 220, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)" });
+      setLabel(next);
+      // 新盘符的列表从手指离开的位置继续滑入
+      el.style.transform = ""; el.style.opacity = "";
+      el.animate([{ transform: `translateX(${dx < 0 ? 40 : -40}px)`, opacity: 0.35 }, { transform: "none", opacity: 1 }], { duration: 240, easing: ease });
+      void e;
     };
+    const cancel = () => { if (track && axis === "x") settle(dx * 0.5); track = false; };
     el.addEventListener("touchstart", start, { passive: true });
+    el.addEventListener("touchmove", move, { passive: true });
     el.addEventListener("touchend", end, { passive: true });
-    return () => { el.removeEventListener("touchstart", start); el.removeEventListener("touchend", end); };
+    el.addEventListener("touchcancel", cancel, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", start); el.removeEventListener("touchmove", move);
+      el.removeEventListener("touchend", end); el.removeEventListener("touchcancel", cancel);
+    };
   }, []);
 
   return (
@@ -143,7 +197,7 @@ export function FoldersScreen() {
 
       {/* 文件夹直接排在页面上(不包在卡片里),行之间是从文字开始的细分隔线 */}
       {/* 宽屏(横屏 / 平板)居中,行分两栏 */}
-      <div ref={listRef} className="mx-auto flex min-h-[60vh] w-full max-w-5xl flex-col pt-1">
+      <div ref={listRef} className="mx-auto flex min-h-[60vh] w-full max-w-5xl flex-col pt-1" style={{ touchAction: "pan-y" }}>
         {shown.length === 0 ? (
           loading && !error ? <RowsSkeleton /> : <StateView error={error} empty="没有可显示的文件夹" onRetry={load} />
         ) : (

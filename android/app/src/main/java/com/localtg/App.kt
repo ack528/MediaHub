@@ -211,17 +211,36 @@ class App : Application(), SingletonImageLoader.Factory {
         AppLog.installCrashHandler()
         if (container.isLocal && com.localtg.data.LocalMedia.hasPermission(this)) container.local.preload()
         AppLog.i("app", "启动\n" + AppLog.deviceInfo().trimEnd() + "\n设置: " + container.settings.value)
+        // 本地缓存:按总上限和近期使用情况给各缓存分配上限(在任何缓存创建之前),之后在后台量一次实际占用;需求统计每 2 分钟写盘一次
+        com.localtg.data.CacheBudget.plan(this, container.settings.value.cacheLimitMb)
+        com.localtg.data.CacheBudget.measureAsync(this)
+        container.scope.launch {
+            while (true) { kotlinx.coroutines.delay(120_000); runCatching { com.localtg.data.CacheBudget.flush(this@App) } }
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // 退到后台:把还没写盘的缓存需求统计存下来(进程随时可能被回收)
+        if (level >= TRIM_MEMORY_UI_HIDDEN) runCatching { com.localtg.data.CacheBudget.flush(this) }
+    }
+
+    /** 查看器大图走的网络请求:只有 Coil 磁盘缓存没命中才会到这里,记作"查看器图片"的需求。 */
+    private val imageHttp by lazy {
+        container.http.newBuilder().addNetworkInterceptor { chain ->
+            chain.proceed(chain.request()).also { r -> com.localtg.data.CacheBudget.record(com.localtg.data.CacheBudget.Kind.Image, r.body.contentLength()) }
+        }.build()
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader {
         val s = container.settings.value
         return ImageLoader.Builder(context)
-            .components { add(OkHttpNetworkFetcherFactory(callFactory = { container.http })) }
+            .components { add(OkHttpNetworkFetcherFactory(callFactory = { imageHttp })) }
             .memoryCache { MemoryCache.Builder().maxSizePercent(context, s.imageMemPercent / 100.0).build() }
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("img").toOkioPath())
-                    .maxSizeBytes(s.imageDiskCacheMb.toLong() * 1024 * 1024)
+                    .maxSizeBytes(com.localtg.data.CacheBudget.current[com.localtg.data.CacheBudget.Kind.Image])
                     .build()
             }
             .eventListenerFactory { _ ->

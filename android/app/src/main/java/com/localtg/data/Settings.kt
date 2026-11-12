@@ -62,7 +62,8 @@ data class AppSettings(
     val pauseThumbsWhenFast: Boolean = true,   // 快速滑动时暂停加载缩略图
     val showDatePills: Boolean = true,         // 聊天流里显示日期胶囊
     // ---- 图片(重启生效)
-    val imageDiskCacheMb: Int = 512,
+    val imageDiskCacheMb: Int = 512,           // 旧设置,已不使用:缓存大小由 cacheLimitMb + 智能分配决定(CacheBudget)
+    val cacheLimitMb: Int = 3072,              // 本地缓存总上限(MB,最大 3072):缩略图 / 查看器图片 / 视频 / 列表数据按使用情况自动分配
     val imageMemPercent: Int = 20,
     val hardwareBitmaps: Boolean = true,
     val crossfade: Boolean = true,
@@ -105,6 +106,7 @@ data class AppSettings(
     val gestureSense: Float = 1.3f,            // 上下滑动调亮度 / 音量的灵敏度(滑满屏幕高度变化 N 倍)
     val resumeRewindSec: Int = 0,              // 续播时往回退几秒,方便接上剧情
     val pauseOnUnplug: Boolean = true,         // 拔掉耳机 / 蓝牙断开时暂停
+    val volumeNormalize: Boolean = true,       // 自动音量均衡:不同视频的响度拉到差不多(应用内部乘系数,不改系统音量)
     val autoLandscape: Boolean = false,        // 横向视频自动转横屏
     val volumeBoostMb: Int = 0,                // 音量增益(毫贝,1000 = +10 dB),0 = 关闭
     val subtitleScale: Float = 1f,
@@ -118,7 +120,7 @@ data class AppSettings(
     val autoSoftwareFallback: Boolean = true,  // 解码失败时自动改用软解重试
     val decoderFallback: Boolean = true,       // 首选解码器初始化失败时尝试下一个
     val useCompat: Boolean = true,             // 视频能解、只是音轨 / 容器不行时,让服务端做一份兼容版本(视频原样复制、音频转 AAC),之后直接播放,不整条转码
-    val videoCacheMb: Int = 1024,              // 直接播放的视频缓存到手机上的大小上限(MB):往回拖 / 重看不用重新下载;0 = 不缓存
+    val videoCacheMb: Int = 1024,              // 旧设置,已不使用:视频缓存的上限由 cacheLimitMb + 智能分配决定(CacheBudget)
     val autoTranscode: Boolean = true,         // 手机解不了(格式 / 编码不支持)时,自动改用服务端转码播放
     val asyncQueueing: String = "auto",        // auto / on / off:MediaCodec 异步队列
     val tunneling: Boolean = false,            // 隧道播放(部分电视 / 手机的硬解可降低功耗,不稳定)
@@ -128,7 +130,7 @@ data class AppSettings(
     val showSubtitles: Boolean = false,
     val subtitleLanguage: String = "",
     // ---- 画质增强(实验):用自己的 OpenGL 渲染器显示视频,可实时超分 / 补帧 / SDR→HDR
-    val enhUpscale: String = "off",            // off / fsr(通用)/ anime4k_s(动漫,较快)/ anime4k_m(动漫,画质更好)
+    val enhUpscale: String = "off",            // 旧设置,已不使用:实时超分在 5.1.1 删除(手机上看不出区别)
     val enhFrc: String = "off",                // off / lsfg(LSFG 标准:补到屏幕最高刷新率)/ lsfg_low(LSFG 低功耗:补到 60fps)
     val enhFrcMultiplier: Int = 0,             // 标准模式的补帧倍率:0 = 自动(补到屏幕刷新率),2 ~ 5 = 固定倍数(源 24fps × 3 = 72fps)
     val hwReport: String = "",                 // 最近一次"硬件支持检测"的结果(JSON)
@@ -140,8 +142,8 @@ data class AppSettings(
     val enhFpsOverlay: Boolean = true,         // 补帧时在画面右上角显示 源帧率 → 输出帧率
     val enhHdr: String = "off",                // off / auto(显示器支持 HDR 才启用)/ on
     val enhPeak: Int = 600,                    // SDR→HDR 的高光峰值亮度(nit)
-    val enhAuto: Boolean = true,               // 超分按画面实际清晰度处理(标称分辨率很高但很糊的视频)
-    val enhMaxH: Int = 1080,                   // 视频高度超过这个值不做超分(以前默认 900:1080p 视频完全不会超分)
+    val enhAuto: Boolean = true,               // 旧设置,已不使用(超分已删除)
+    val enhMaxH: Int = 1080,                   // 旧设置,已不使用(超分已删除)
     // ---- 日志
     val logLevel: String = "info",             // off / warn / info / debug
     // ---- 网络(重启生效)

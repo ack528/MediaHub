@@ -60,9 +60,12 @@ function Body({ section, open }: { section: string; open: (s: string) => void })
     case "image":
       return (
         <>
-          <Note>缓存大小在重启应用后生效。</Note>
           <SchemaRows rows={rows} />
-          <ListGroup><ActionRow title="立即重启应用" description="让上面的设置马上生效" action={() => call("app.restart")} /></ListGroup>
+          <Note>图片缓存的大小由「存储与缓存 → 本地缓存」统一管理,按使用情况自动分配。</Note>
+          <ListGroup>
+            <ListRow title="本地缓存" description="上限、占用和清理" onPress={() => open("storage")} />
+            <ActionRow title="立即重启应用" description="让上面的设置马上生效" action={() => call("app.restart")} />
+          </ListGroup>
         </>
       );
     default:

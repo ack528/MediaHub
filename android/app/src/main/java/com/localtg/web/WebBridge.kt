@@ -233,14 +233,39 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
         }
 
         "storage.info" -> withContext(Dispatchers.IO) {
+            // 本地缓存:每一类的实际占用、这次运行分到的额度、近期需求(字节),以及总额、上限、手机剩余空间
+            val B = com.localtg.data.CacheBudget
+            val plan = B.current
+            val used = B.measure(app).toMutableMap()
+            used[com.localtg.data.CacheBudget.Kind.Image] = SingletonImageLoader.get(app).diskCache?.size ?: used[com.localtg.data.CacheBudget.Kind.Image] ?: 0L
+            used[com.localtg.data.CacheBudget.Kind.Video] = runCatching { com.localtg.ui.VideoCache.size(app) }.getOrDefault(used[com.localtg.data.CacheBudget.Kind.Video] ?: 0L)
+            val demand = B.demand(app)
             buildJsonObject {
-                put("images", (SingletonImageLoader.get(app).diskCache?.size ?: 0L) + WebMedia.cacheSize(app))
+                put("images", (used[com.localtg.data.CacheBudget.Kind.Thumb] ?: 0L) + (used[com.localtg.data.CacheBudget.Kind.Image] ?: 0L))
                 put("playback", c.playback.count())
+                put("cache", buildJsonObject {
+                    put("limit", plan.limit); put("total", plan.total); put("free", plan.free); put("storage", plan.storage)
+                    put("kinds", kotlinx.serialization.json.buildJsonArray {
+                        for (k in com.localtg.data.CacheBudget.Kind.entries) add(buildJsonObject {
+                            put("key", k.key); put("label", k.label)
+                            put("used", used[k] ?: 0L); put("quota", plan[k]); put("demand", (demand[k] ?: 0.0).toLong())
+                        })
+                    })
+                })
             }
         }
         "storage.clearImages" -> withContext(Dispatchers.IO) {
             val l = SingletonImageLoader.get(app); l.diskCache?.clear(); l.memoryCache?.clear()
             WebMedia.clear(app)
+            web.post { web.clearCache(true) }
+            JsonNull
+        }
+        "storage.clearVideo" -> withContext(Dispatchers.IO) { com.localtg.ui.VideoCache.clear(app); JsonNull }
+        "storage.clearAll" -> withContext(Dispatchers.IO) {
+            val l = SingletonImageLoader.get(app); l.diskCache?.clear(); l.memoryCache?.clear()
+            WebMedia.clear(app)
+            com.localtg.ui.VideoCache.clear(app)
+            com.localtg.data.CacheBudget.dir(app, com.localtg.data.CacheBudget.Kind.Api).listFiles()?.forEach { it.delete() }
             web.post { web.clearCache(true) }
             JsonNull
         }

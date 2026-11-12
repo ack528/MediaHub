@@ -8,7 +8,7 @@ import type { Tone } from "../../lib/tones";
 import { toast } from "@heroui/react";
 
 /** 只属于旧版 Compose 界面的设置(Activity 转场、聊天气泡…):新界面里不显示,值原样保留。「液态玻璃」现在控制首页底部导航,又显示出来了。 */
-const OBSOLETE = new Set(["motion", "fineMotion", "avatarShape", "chatBackground", "swipeGroups", "pauseThumbsWhenFast", "preloadCount", "imageMemPercent", "hardwareBitmaps", "crossfade"]);
+const OBSOLETE = new Set(["imageDiskCacheMb", "videoCacheMb", "motion", "fineMotion", "avatarShape", "chatBackground", "swipeGroups", "pauseThumbsWhenFast", "preloadCount", "imageMemPercent", "hardwareBitmaps", "crossfade"]);
 
 /** 把设置清单按小节标题分成若干卡片渲染。 */
 export function SchemaRows({ rows, hide = [] }: { rows: SettingRow[]; hide?: string[] }) {

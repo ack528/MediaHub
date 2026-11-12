@@ -1,9 +1,9 @@
-import { Button, Calendar, Chip, Label, Modal, Sheet, Slider, Spinner, ToggleButton, ToggleButtonGroup, toast } from "@heroui/react";
+import { Button, Calendar, Chip, Modal, Sheet, Spinner, ToggleButton, ToggleButtonGroup, toast } from "@heroui/react";
 import { ArrowUpArrowDown, Bookmark, Calendar as CalendarIcon, ClockArrowRotateLeft, LayoutCellsLarge, LayoutColumns, LayoutList, Magnifier, Sliders } from "@gravity-ui/icons";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Key } from "react";
 import { api, BridgeError, call, errorText, haptic, on, query } from "../lib/bridge";
 import { useApp } from "../lib/app";
-import { aspectOf, dayKey, dayLabel, formatDuration, formatShortTime, formatSize, stripExt } from "../lib/media";
+import { aspectOf, dayKey, dayLabel, formatDuration, formatShortTime, stripExt } from "../lib/media";
 import { heroArgs } from "../lib/hero";
 import { useBackHandler, useNav } from "../lib/nav";
 import type { Dialog, DialogView, HistoryResp, Item } from "../lib/types";
@@ -65,7 +65,8 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
   const gen = useRef(0);
   const restored = useRef(false);
   /** 下一次布局后要滚到的条目(恢复位置 / 往前加载后保持位置 / 跳转)。 */
-  const pendingScroll = useRef<{ id: string; offset: number } | null>(null);
+  /** frac:按"这一格被遮住的比例"定位(切换视图 / 列数时用 —— 新旧视图里一格的高度不同,不能沿用像素偏移) */
+  const pendingScroll = useRef<{ id: string; offset: number; frac?: number } | null>(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
@@ -146,14 +147,15 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
     return null;
   }, []);
 
-  const scrollToItem = useCallback(function go(target: { id: string; offset: number }, smooth = false, retry = true): boolean {
+  const scrollToItem = useCallback(function go(target: { id: string; offset: number; frac?: number }, smooth = false, retry = true): boolean {
     // 它所在的块可能正是占位(分块渲染):这里多在 layout effect 里调用,不能同步渲染,先发起显示,找不到就下一帧再定位一次
     revealItem(target.id, false);
     const sc = scroller.current;
     const el = sc?.querySelector<HTMLElement>(`[data-item="${CSS.escape(target.id)}"]`);
     if (!el && sc && retry) { requestAnimationFrame(() => { go(target, smooth, false); }); return true; }
     if (!sc || !el) return false;
-    const delta = el.getBoundingClientRect().top - headerBottom() + target.offset / dpr();
+    const r = el.getBoundingClientRect();
+    const delta = r.top - headerBottom() + (target.frac != null ? target.frac * r.height : target.offset / dpr());
     // 往前插入内容时浏览器的滚动锚定通常已经保持住位置了;再 scrollBy(哪怕 0)会打断正在进行的惯性滑动
     if (Math.abs(delta) >= 1) sc.scrollBy({ top: delta, behavior: smooth ? "smooth" : "auto" });
     return true;
@@ -279,7 +281,12 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
     optsRef.current = o;
     setOpts(o);
     if (refetch) reload(null, 0, o);
-    else if (keep) pendingScroll.current = keep;
+    else if (keep) {
+      // 换视图 / 列数:一格的高度变了(时间线的大图 → 网格的小格),按被遮住的比例换算,不能沿用像素偏移(会多跳好几行)
+      const el = scroller.current?.querySelector<HTMLElement>(`[data-item="${CSS.escape(keep.id)}"]`);
+      const h = el?.getBoundingClientRect().height ?? 0;
+      pendingScroll.current = { id: keep.id, offset: 0, frac: h > 0 ? Math.min(0.5, Math.max(0, keep.offset / dpr() / h)) : 0 }; // 最多遮住一半:切换后刚才看的那一项一定看得见
+    }
     restored.current = true;
     saveSoon();
   };
@@ -358,7 +365,7 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
 
       {!ready || (status === "loading" && items.length === 0) ? (
         opts.mode === 1 ? <GridSkeleton columns={adaptiveColumns(opts.columns, width)} gap={s.gridSpacing} />
-          : opts.mode === 2 ? <MasonrySkeleton />
+          : opts.mode === 2 ? <MasonrySkeleton columns={2} />
           : <TimelineSkeleton widthPct={Math.min(100, Math.max(40, Number(s.bubbleWidth ?? 72)))} />
       ) : status === "error" && items.length === 0 ? (
         <StateView error={error} onRetry={() => reload(null)} />
@@ -371,7 +378,7 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
           {opts.mode === 1 ? (
             <GridView items={items} columns={opts.columns} onOpen={openViewer} onLong={(it) => { toast("已在时间线中定位到这一条"); change({ mode: 0 }); pendingScroll.current = { id: it.id, offset: 0 }; }} />
           ) : opts.mode === 2 ? (
-            <MasonryView items={items} columns={opts.columns} onOpen={openViewer} />
+            <MasonryView items={items} onOpen={openViewer} />
           ) : (
             <TimelineView items={items} dated={opts.sort === "taken" && s.showDatePills} onOpen={openViewer} />
           )}
@@ -444,11 +451,14 @@ function GridView({ items, columns, onOpen, onLong }: { items: Item[]; columns: 
   );
 }
 
+/** 瀑布流固定 2 列(手机竖屏);横屏 / 平板按宽度等比例加列(约每 420px 两列)。 */
+const MASONRY_COLS = 2;
+
 /** 瀑布流:按原比例的卡片,依次放进当前最矮的一列(顺序从上到下大致保持)。宽屏按宽度加列;每一列各自分块渲染。 */
-function MasonryView({ items, columns, onOpen }: { items: Item[]; columns: number; onOpen: (i: Item) => void }) {
+function MasonryView({ items, onOpen }: { items: Item[]; onOpen: (i: Item) => void }) {
   const { settings: s } = useApp();
   const width = useViewportWidth();
-  const n = Math.min(6, Math.max(columns >= 5 ? 3 : 2, Math.round(width / 300)));
+  const n = width > 600 ? Math.min(6, Math.max(MASONRY_COLS, Math.round((MASONRY_COLS * width) / 420))) : MASONRY_COLS;
   const cols = useMemo(() => {
     const out: Item[][] = Array.from({ length: n }, () => []);
     const h = new Array(n).fill(0);
@@ -461,7 +471,7 @@ function MasonryView({ items, columns, onOpen }: { items: Item[]; columns: numbe
     return out;
   }, [items, n]);
   return (
-    <div className="flex items-start gap-3 px-4 pt-1">
+    <div className="flex items-start gap-1.5 px-1.5 pt-1">
       {cols.map((col, i) => <MasonryColumn key={i} items={col} width={s.gridThumbWidth} onOpen={onOpen} />)}
     </div>
   );
@@ -470,11 +480,11 @@ function MasonryView({ items, columns, onOpen }: { items: Item[]; columns: numbe
 function MasonryColumn({ items, width, onOpen }: { items: Item[]; width: number; onOpen: (i: Item) => void }) {
   const chunks = useChunks(items, 16);
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-3">
+    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
       {chunks.map((c) => {
         const part = items.slice(c.start, c.end);
         return (
-          <Chunk key={c.key} ids={part.map((x) => x.id)} className="flex flex-col gap-3">
+          <Chunk key={c.key} ids={part.map((x) => x.id)} className="flex flex-col gap-1.5">
             {part.map((it) => <FeedCard key={it.id} item={it} width={width} onOpen={() => onOpen(it)} />)}
           </Chunk>
         );
@@ -483,20 +493,21 @@ function MasonryColumn({ items, width, onOpen }: { items: Item[]; width: number;
   );
 }
 
+/**
+ * 瀑布流的一张(紧凑版):以前是白底卡片 + 8px 内边距 + 两行文件名 + 时间大小一行,文字区几乎和图一样高。
+ * 现在图直接铺满(圆角 12px),只在下面留一行小字文件名;时间 / 时长放在图片角上的小胶囊里。
+ */
 function FeedCard({ item, width, onOpen }: { item: Item; width: number; onOpen: () => void }) {
   const ratio = Math.min(2, Math.max(0.5, aspectOf(item)));
   return (
-    <button type="button" data-item={item.id} onClick={onOpen} className="rounded-3xl bg-surface p-2 text-left shadow-surface transition-transform active:scale-[0.98]">
-      <div data-hero className="relative overflow-hidden rounded-2xl" style={{ aspectRatio: String(ratio) }}>
+    <button type="button" data-item={item.id} onClick={onOpen} className="block w-full text-left transition-transform active:scale-[0.98]">
+      <div data-hero className="relative overflow-hidden rounded-xl bg-surface-tertiary" style={{ aspectRatio: String(ratio) }}>
         <Thumb item={item} width={width} className="absolute inset-0" />
-        {item.type === "video" && (
-          <span className="absolute right-1.5 bottom-1.5 rounded-full bg-black/55 px-2 py-0.5 text-[11px] text-white">{formatDuration(item.durationMs) || "视频"}</span>
-        )}
+        <span className="pointer-events-none absolute right-1 bottom-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[10px] leading-none text-white tabular-nums">
+          {item.type === "video" ? formatDuration(item.durationMs) || "视频" : formatShortTime(item.takenAt)}
+        </span>
       </div>
-      <div className="px-1.5 pt-2 pb-1">
-        <p className="line-clamp-2 text-sm leading-snug font-medium">{stripExt(item.name)}</p>
-        <p className="mt-1 text-xs text-muted tabular-nums">{formatShortTime(item.takenAt)}{item.size ? ` · ${formatSize(item.size)}` : ""}</p>
-      </div>
+      <p className="truncate px-0.5 pt-0.5 pb-1 text-[11px] leading-tight text-muted">{stripExt(item.name)}</p>
     </button>
   );
 }
@@ -614,14 +625,17 @@ function OptionsSheet({
                   ))}
                 </ToggleButtonGroup>
               </Field>
-              {opts.mode !== 0 && (
-                <Slider minValue={2} maxValue={6} step={1} value={opts.columns} onChange={(v) => change({ columns: Number(v) })}>
-                  <div className="flex items-center justify-between"><Label>每行列数</Label><Slider.Output /></div>
-                  <Slider.Track>
-                    <Slider.Fill />
-                    <Slider.Thumb />
-                  </Slider.Track>
-                </Slider>
+              {/* 每行数量:以前是滑块,面板本身能下拉关闭,拖滑块常被面板的手势抢走 → 改成直接点的分段按钮 */}
+              {opts.mode === 1 && (
+                <Field label="每行数量">
+                  <ToggleButtonGroup fullWidth selectionMode="single" disallowEmptySelection
+                    selectedKeys={new Set([String(opts.columns)])}
+                    onSelectionChange={(k) => { haptic("Tick"); change({ columns: Number(single(k)) }); }}>
+                    {[2, 3, 4, 5, 6].map((n, i) => (
+                      <ToggleButton key={n} id={String(n)}>{i > 0 && <ToggleButtonGroup.Separator />}{n}</ToggleButton>
+                    ))}
+                  </ToggleButtonGroup>
+                </Field>
               )}
               <div className="grid grid-cols-3 gap-2">
                 <Button variant="secondary" className="h-auto flex-col gap-1 py-3" onPress={onDate}><CalendarIcon className="size-5" />跳到日期</Button>

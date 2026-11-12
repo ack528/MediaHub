@@ -22,43 +22,18 @@ data class HwReport(
     val lines: List<HwLine>,
     /** 实测耗时(毫秒):键 = 项目名 */
     val bench: Map<String, Double> = emptyMap(),
-    val recUpscale: String = "off",
+    val recUpscale: String = "off", // 超分已在 5.1.1 删除,保留字段只为读出旧的检测报告
     val recFrc: String = "off",
     val note: String = "",
     val lsfgReady: Boolean = false,
 )
 
 /**
- * 补帧 / 超分的硬件支持检测:
- *  1. 静态能力:OpenGL ES 3、浮点渲染目标(RGBA16F)、Vulkan 版本、显示器刷新率 / HDR、CPU 核数 / ABI、LSFG 的前提条件;
- *  2. 实测:在离屏 GL 上下文里用和播放时一模一样的着色器跑一遍 FSR / Anime4K 超分(540p→1080p),量出每帧耗时,
- *     再和 30fps 的帧间隔(33ms)比,给出"良好 / 勉强 / 不支持"和推荐设置。补帧只有 LSFG,按前提条件和 GPU 型号给建议。
- * 必须在后台线程调用(会创建并占用自己的 EGL 上下文,约 3 ~ 15 秒)。
+ * 补帧 / SDR→HDR 的硬件支持检测:OpenGL ES 3、浮点渲染目标(RGBA16F)、Vulkan 版本、显示器刷新率 / HDR、CPU 核数 / ABI、
+ * LSFG 的前提条件,按 GPU 型号给补帧建议。(实时超分和它的实测在 5.1.1 删除。)
+ * 必须在后台线程调用(会创建并占用自己的 EGL 上下文,约 1 秒)。
  */
 object HardwareProbe {
-    private const val FILL = "#version 300 es\nprecision highp float;\nin vec2 vPos;\nout vec4 outColor;\nuniform float uShift;\n" +
-        "void main() { vec2 p = vPos * vec2(37.0, 21.0) + vec2(uShift, 0.0); " +
-        "float v = 0.5 + 0.25 * sin(p.x) + 0.25 * sin(p.y * 1.7 + p.x * 0.3); outColor = vec4(v, v * 0.9, v * 0.8, 1.0); }\n"
-
-    private val CHAINS = mapOf(
-        "fsr" to listOf("FSR.glsl"),
-        "anime4k_s" to listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_S.glsl", "Anime4K_Upscale_CNN_x2_S.glsl", "Anime4K_AutoDownscalePre_x2.glsl"),
-        "anime4k_m" to listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_M.glsl", "Anime4K_Upscale_CNN_x2_M.glsl", "Anime4K_AutoDownscalePre_x2.glsl", "Anime4K_Upscale_CNN_x2_S.glsl"),
-        "fsrcnnx_s" to listOf("FSRCNNX_x2_8-0-4-1.glsl"),
-        "fsrcnnx_m" to listOf("FSRCNNX_x2_16-0-4-1.glsl"),
-    )
-
-    /** 每帧耗时占 30fps 帧间隔(33.3ms)的比例 → 等级。 */
-    private fun level(ms: Double?, budgetMs: Double = 33.3): Int = when {
-        ms == null -> 0
-        ms <= budgetMs * 0.35 -> 2
-        ms <= budgetMs * 0.75 -> 1
-        else -> 0
-    }
-
-    private fun costText(ms: Double?): String =
-        if (ms == null) "无法运行" else "%.1f ms/帧(占 30fps 帧间隔 %d%%,60fps %d%%)".format(ms, (ms / 33.3 * 100).toInt(), (ms / 16.7 * 100).toInt())
-
     fun run(ctx: Context, progress: (String) -> Unit = {}): HwReport {
         val lines = ArrayList<HwLine>()
         val bench = LinkedHashMap<String, Double>()
@@ -127,16 +102,15 @@ object HardwareProbe {
 
             if (glMajor >= 3 && halfOk) {
                 lines += HwLine("实时增强所需的 GPU 能力", 2, "OpenGL ES 3.x + 浮点渲染目标:满足")
-                benchGl(lines, bench, progress)
             } else {
                 lines += HwLine(
                     "实时增强所需的 GPU 能力", 0,
-                    (if (glMajor < 3) "OpenGL ES 版本低于 3.0;" else "") + (if (!halfOk) "不支持浮点渲染目标(EXT_color_buffer_float);" else "") + "超分 / 补帧 / SDR→HDR 都无法使用",
+                    (if (glMajor < 3) "OpenGL ES 版本低于 3.0;" else "") + (if (!halfOk) "不支持浮点渲染目标(EXT_color_buffer_float);" else "") + "补帧 / SDR→HDR 都无法使用",
                 )
             }
         } catch (e: Throwable) {
             AppLog.w("enhance", "硬件检测 GL 部分失败:${e.message}", e)
-            lines += HwLine("OpenGL ES", 0, "检测失败:${e.message}。超分 / 补帧 / SDR→HDR 无法使用")
+            lines += HwLine("OpenGL ES", 0, "检测失败:${e.message}。补帧 / SDR→HDR 无法使用")
         } finally {
             if (dpy != EGL14.EGL_NO_DISPLAY) {
                 EGL14.eglMakeCurrent(dpy, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
@@ -176,87 +150,22 @@ object HardwareProbe {
         lines += HwLine("厂商系统级补帧(MEMC / 插帧)", 3, "高通 Adreno Frame Motion Engine、联发科 MEMC 等没有给第三方应用的公开接口,本应用无法调用;如果手机系统自带“视频插帧”,可以在系统设置里为本应用单独打开")
 
         // ---------------- 推荐
-        val upLvl = mapOf("fsr" to level(bench["upscale:fsr"]), "anime4k_s" to level(bench["upscale:anime4k_s"]), "anime4k_m" to level(bench["upscale:anime4k_m"]), "fsrcnnx_s" to level(bench["upscale:fsrcnnx_s"]), "fsrcnnx_m" to level(bench["upscale:fsrcnnx_m"]))
-        val recUp = if ((upLvl["fsr"] ?: 0) >= 1) "fsr" else "off"
         val recFrc = when {
             !glOk || glMajor < 3 || !halfOk || lsfgLevel == 0 -> "off"
             lsfgLevel == 2 && maxHz >= 90f -> "lsfg"
             else -> "lsfg_low"
         }
         val note = buildString {
-            append("推荐:超分 ")
-            append(if (recUp == "off") "不建议开启" else "FSR(通用,较省)")
-            if ((upLvl["anime4k_s"] ?: 0) >= 1) append(";动画可用 Anime4K 小模型") else append(";Anime4K 在这台设备上不建议")
-            if ((upLvl["anime4k_m"] ?: 0) >= 1) append(",中模型也可以")
-            if ((upLvl["fsrcnnx_s"] ?: 0) >= 1) append(";真人 / 影视可用 FSRCNNX 小模型(比 FSR 清楚得多)")
-            append("。补帧 ")
+            append("推荐:补帧 ")
             append(
                 when (recFrc) {
                     "lsfg" -> "LSFG 标准(补到屏幕最高刷新率)"; "lsfg_low" -> "LSFG 低功耗(目标 60fps,光流精度最低,省电发热小)"; else -> "不支持(LSFG 前提条件不满足)"
                 },
             )
-            append("。以上按 30fps 视频的帧预算估计,60fps 视频的预算只有一半,建议再降一档。")
+            append("。60fps 视频的帧预算只有 30fps 的一半,跟不上时会自动降低光流精度。")
         }
-        AppLog.i("enhance", "硬件检测完成:GPU=$gpuName 推荐 超分=$recUp 补帧=$recFrc bench=$bench")
-        return HwReport(System.currentTimeMillis(), gpuName, lines, bench, recUp, recFrc, note, lsfgLevel == 2)
+        AppLog.i("enhance", "硬件检测完成:GPU=$gpuName 推荐 补帧=$recFrc")
+        return HwReport(System.currentTimeMillis(), gpuName, lines, bench, "off", recFrc, note, lsfgLevel == 2)
     }
 
-    /** 离屏上下文里的实测(必须已有当前的 GL 上下文)。 */
-    private fun benchGl(lines: MutableList<HwLine>, bench: MutableMap<String, Double>, progress: (String) -> Unit) {
-        val pool = Gl.Pool(true)
-        var pLuma = 0; var pMerge = 0; var pFill = 0
-        try {
-            pLuma = Gl.program(ChainShaders.LUMA)
-            pMerge = Gl.program(ChainShaders.MERGE)
-            pFill = Gl.program(FILL)
-            fun fill(t: Gl.Tex, shift: Float) {
-                Gl.target(t); Gl.use(pFill)
-                android.opengl.GLES20.glUniform1f(Gl.loc(pFill, "uShift"), shift)
-                Gl.draw()
-            }
-            fun timeMs(runs: Int, f: () -> Unit): Double {
-                f(); GLES30.glFinish()
-                val t0 = System.nanoTime()
-                repeat(runs) { f() }
-                GLES30.glFinish()
-                return (System.nanoTime() - t0) / 1e6 / runs
-            }
-
-            // ---- 超分:540p → 1080p(补帧只有 LSFG,在上面按前提条件判断)
-            val src = pool.acquire(960, 540)
-            fill(src, 0f)
-            var slow = false
-            for ((name, label) in listOf("fsr" to "FSR 1.0", "fsrcnnx_s" to "FSRCNNX 小模型(真人)", "anime4k_s" to "Anime4K 小模型", "fsrcnnx_m" to "FSRCNNX 中模型(真人)", "anime4k_m" to "Anime4K 中模型")) {
-                if (slow && (name == "anime4k_m" || name == "fsrcnnx_m")) {
-                    lines += HwLine("超分:$label", 0, "小模型已经很慢,中模型跳过检测(不建议开启)")
-                    continue
-                }
-                progress("测试超分:$label…")
-                val ms = try {
-                    val passes = CHAINS.getValue(name).flatMap { f -> MpvShaderParser.parse(Assets.read("shaders/$f")) }
-                    val chain = ShaderChain(name, passes, pool, pLuma, pMerge)
-                    var first = 0.0
-                    val t0 = System.nanoTime()
-                    chain.run(src, 1920, 1080)?.let { pool.release(it) }
-                    GLES30.glFinish()
-                    first = (System.nanoTime() - t0) / 1e6
-                    // 第一次包含着色器编译,不准;再测 3 次(很慢的只测 1 次)
-                    timeMs(if (first > 400) 1 else 3) { chain.run(src, 1920, 1080)?.let { pool.release(it) } }
-                } catch (e: Throwable) {
-                    AppLog.w("enhance", "超分检测 $name 失败:${e.message}"); null
-                }
-                if (ms != null) { bench["upscale:$name"] = ms; if (ms > 250) slow = true }
-                lines += HwLine("超分:$label", level(ms), "960×540 → 1920×1080:${costText(ms)}")
-            }
-            pool.release(src)
-        } catch (e: Throwable) {
-            AppLog.w("enhance", "GL 实测失败:${e.message}", e)
-            lines += HwLine("GL 实测", 0, "失败:${e.message}")
-        } finally {
-            runCatching { pool.clear() }
-            if (pLuma != 0) GLES30.glDeleteProgram(pLuma)
-            if (pMerge != 0) GLES30.glDeleteProgram(pMerge)
-            if (pFill != 0) GLES30.glDeleteProgram(pFill)
-        }
-    }
 }

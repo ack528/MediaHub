@@ -20,15 +20,7 @@ import java.io.File
  *    带版本号(v=)的地址内容不会变,强制按长期缓存存进磁盘,再看不用重新下载。
  */
 class WebMedia(private val ctx: Context, private val c: AppContainer) {
-    private val client: OkHttpClient = c.http.newBuilder()
-        .cache(Cache(dir(ctx), c.settings.value.imageDiskCacheMb.toLong() * 1024 * 1024))
-        .addNetworkInterceptor { chain ->
-            val resp = chain.proceed(chain.request())
-            if (resp.isSuccessful && chain.request().url.queryParameter("v") != null)
-                resp.newBuilder().header("Cache-Control", "public, max-age=31536000, immutable").removeHeader("Pragma").removeHeader("Expires").build()
-            else resp
-        }
-        .build()
+    private val client: OkHttpClient get() = shared(ctx, c)
 
     fun handle(req: WebResourceRequest): WebResourceResponse? {
         val u = req.url
@@ -100,8 +92,29 @@ class WebMedia(private val ctx: Context, private val c: AppContainer) {
         const val ORIGIN = "https://$HOST/"
 
         private fun dir(ctx: Context) = File(ctx.cacheDir, "web-media")
+
+        /**
+         * 全应用共用一个客户端和磁盘缓存(以前每个页面各建一个,同一个目录上同时开着好几个 OkHttp 缓存,可能把缓存弄坏)。
+         * 缓存上限 = 智能分配给"缩略图"的额度;走到网络的请求(缓存没命中)记作缩略图的需求。
+         */
+        @Volatile private var client: OkHttpClient? = null
+        @Synchronized
+        fun shared(ctx: Context, c: AppContainer): OkHttpClient = client ?: c.http.newBuilder()
+            .cache(Cache(dir(ctx.applicationContext), com.localtg.data.CacheBudget.current[com.localtg.data.CacheBudget.Kind.Thumb]))
+            .addNetworkInterceptor { chain ->
+                val resp = chain.proceed(chain.request())
+                com.localtg.data.CacheBudget.record(com.localtg.data.CacheBudget.Kind.Thumb, resp.body.contentLength())
+                if (resp.isSuccessful && chain.request().url.queryParameter("v") != null)
+                    resp.newBuilder().header("Cache-Control", "public, max-age=31536000, immutable").removeHeader("Pragma").removeHeader("Expires").build()
+                else resp
+            }
+            .build().also { client = it }
         fun cacheSize(ctx: Context): Long = dir(ctx).walkTopDown().filter { it.isFile }.sumOf { it.length() }
-        fun clear(ctx: Context) { dir(ctx).listFiles()?.forEach { it.deleteRecursively() } }
+        fun clear(ctx: Context) {
+            // 缓存开着时要走它自己的 evictAll(直接删文件会让它的日志和磁盘对不上)
+            val cache = client?.cache
+            if (cache != null) runCatching { cache.evictAll() } else dir(ctx).listFiles()?.forEach { it.deleteRecursively() }
+        }
 
         fun mime(name: String): String = when (name.substringAfterLast('.').lowercase()) {
             "html" -> "text/html"
