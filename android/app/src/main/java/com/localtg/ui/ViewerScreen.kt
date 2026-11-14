@@ -206,6 +206,8 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
         val page = pager.settledPage
         for (d in intArrayOf(1, -1)) {
             val n = items.getOrNull(page + d) ?: continue
+            // 20 秒以内的短视频:整个文件预加载(按「短视频预加载」设置,移动网络也可以),切过去直接播
+            if (cfg.shortVideoPreload != "off" && VideoCache.isShort(n)) { VideoCache.preloadShort(prefetchCtx, c, n); continue }
             if (!n.isVideo || n.brokenLabel() != null || rememberedTranscode(c, n) != null) continue
             VideoCache.prefetch(prefetchCtx, c, c.api.fileUrl(n))
         }
@@ -217,7 +219,7 @@ fun ViewerScreen(c: AppContainer, startIndex: Int, onBack: () -> Unit, onCurrent
         for (d in intArrayOf(1, -1)) {
             val n = items.getOrNull(page + d) ?: continue
             val br = rememberedTranscode(c, n) ?: continue
-            if (!n.isVideo) continue
+            if (!n.isVideo || (cfg.shortVideoPreload != "off" && VideoCache.isShort(n))) continue // 短视频整个预加载、直接播,不用服务端预转码
             c.api.hlsPrepare(n, br, c.hlsSid(n.id), com.localtg.data.DeviceCodecs.resolveCodec(cfg.playerCodec, c.api.caps.codecs))
         }
     }

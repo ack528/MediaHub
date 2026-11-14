@@ -31,7 +31,10 @@ import okio.Path.Companion.toOkioPath
 /** 手写的依赖容器(个人自用,不引入 Hilt)。 */
 class AppContainer(app: Application) {
     /** 应用级协程域:界面销毁后仍要完成的保存(例如退出群组时保存浏览位置)用它。 */
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+        // 后台任务里漏掉的异常:记日志,不让整个应用崩掉(取消不算错误)
+        if (e !is kotlinx.coroutines.CancellationException) AppLog.e("app", "后台任务出错", e)
+    })
     val session = SessionStore(app)
     val viewState = com.localtg.data.ViewStateStore(app) { session.ns() }
     val settings = com.localtg.data.SettingsStore(app, scope)
@@ -48,7 +51,7 @@ class AppContainer(app: Application) {
     val http: OkHttpClient = clients.media
     /** 浏览接口用的客户端:独立的连接池和调度器,不会被缩略图 / 视频流量拖住。 */
     val apiHttp: OkHttpClient = clients.api
-    val api = Api(apiHttp, session).also { it.serverRenderHeic = settings.value.heicMode == "server" }
+    val api = Api(apiHttp, session).also { it.serverRenderHeic = settings.value.heicMode == "server"; it.transcodeMaxHeight = settings.value.transcodeMaxHeight }
     init {
         scope.launch(Dispatchers.IO) {
             val installed = app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
@@ -57,7 +60,7 @@ class AppContainer(app: Application) {
         }
         // 设置改变后立即生效的项
         scope.launch { settings.state.map { it.lanFirst }.distinctUntilChanged().drop(1).collect { runCatching { probeRoute() } } } // 开关变了马上生效
-        scope.launch { settings.state.collect { api.serverRenderHeic = it.heicMode == "server"; com.localtg.data.AppUpdater.preferred = it.updateSource } }
+        scope.launch { settings.state.collect { api.serverRenderHeic = it.heicMode == "server"; api.transcodeMaxHeight = it.transcodeMaxHeight; com.localtg.data.NetTimeouts.connectSec = it.connectTimeoutSec; com.localtg.data.NetTimeouts.readSec = it.readTimeoutSec; com.localtg.data.AppUpdater.preferred = it.updateSource } }
         // 登录 / 切换服务器后:取服务端能力、预热连接、同步播放器偏好
         scope.launch {
             session.loaded.first { it }

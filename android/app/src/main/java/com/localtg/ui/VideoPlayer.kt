@@ -604,6 +604,17 @@ fun VideoPage(
         }
     }
 
+    // 播放中每 10 秒把进度存到本机:应用被系统杀掉 / 崩溃 / 没电时,至少能接上 10 秒前的位置(服务器同步仍在退出时做)
+    LaunchedEffect(player, firstFrame) {
+        val pl = player ?: return@LaunchedEffect
+        if (!firstFrame || !c.settings.value.resume || ui.slideshowMode) return@LaunchedEffect
+        while (true) {
+            delay(10_000)
+            val pos = pl.currentPosition; val dur = pl.duration
+            if (pl.isPlaying && pos > 5000 && (dur <= 0 || pos < dur - 5000)) runCatching { c.playback.set(item.id, pos, ns, System.currentTimeMillis()) }
+        }
+    }
+
     // 睡眠定时 / A-B 循环 / 技术信息
     LaunchedEffect(player, ui.sleepAt, ui.slideshowMode) {
         if (ui.slideshowMode) return@LaunchedEffect
@@ -1643,6 +1654,8 @@ internal fun sizeLabel(item: Item, bps: Int?, playerDurMs: Long, short: Boolean 
  * 用户明确选过原画(记住的是 0)时尊重他的选择,只靠播放中的卡顿检测兜底。
  */
 internal fun initialTranscode(c: com.localtg.AppContainer, item: Item): Int? {
+    // 已经完整预加载到手机上的短视频:直接读本地缓存播放(点开就出画面),不转码
+    com.localtg.render.Assets.app?.let { ctx -> if (VideoCache.isShort(item) && VideoCache.isFullyCached(ctx, c, item)) return null }
     rememberedTranscode(c, item)?.let { return it }
     val s = c.settings.value
     if (!s.autoQuality || c.isLocal || !c.api.transcodeOk || item.brokenLabel() != null) return null

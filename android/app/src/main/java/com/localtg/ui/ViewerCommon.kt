@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.webkit.MimeTypeMap
 import android.widget.Toast
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -23,6 +24,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Request
 import java.io.File
 
@@ -48,6 +51,27 @@ internal fun CommonFileRows(c: AppContainer, item: Item, onClose: () -> Unit, on
         Toast.makeText(ctx, "已复制文件名", Toast.LENGTH_SHORT).show()
     }
     MenuRow("信息") { onInfo() }
+    // 管理员账号:删除 = 服务端移进回收区(可在电脑上的管理程序里还原)
+    var confirmDelete by remember { mutableStateOf(false) }
+    if (!c.isLocal && c.api.caps.phoneDelete) MenuRow("删除", arrow = false) { confirmDelete = true }
+    if (confirmDelete) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { confirmDelete = false },
+        title = { Text("删除这个文件?") },
+        text = { Text("「${item.name}」会被移到服务器所在盘的回收区,之后可以在电脑上的管理程序里还原。") },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = {
+                confirmDelete = false; onClose()
+                scope.launch {
+                    val ok = runCatching { c.api.deleteMedia(listOf(item.id)) }
+                    ok.onSuccess { r ->
+                        com.localtg.web.WebBridge.notifyDeleted(r["ids"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList())
+                        Toast.makeText(ctx, "已移到回收区", Toast.LENGTH_SHORT).show(); onBack()
+                    }.onFailure { Toast.makeText(ctx, "删除失败:" + com.localtg.data.friendlyError(it), Toast.LENGTH_LONG).show() }
+                }
+            }) { Text("删除") }
+        },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
+    )
 }
 
 /** 「信息」开头的通用几行:名称、所在文件夹、大小、时间。之后各自接图片 / 视频特有的内容。 */

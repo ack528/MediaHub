@@ -175,6 +175,8 @@ func (s *Server) compressHousekeeping() {
 	if now.Sub(c.lastPurge) > time.Hour {
 		c.lastPurge = now
 		s.purgeOldCompressTrash()
+		// 文件已经不在索引里、且 60 天没动过的播放进度(文件被删 / 换了 id)
+		_, _ = s.DB.Exec(`DELETE FROM user_playback WHERE saved_at<? AND media_id NOT IN (SELECT id FROM media)`, now.AddDate(0, 0, -60).UnixMilli())
 	}
 }
 
@@ -1428,6 +1430,7 @@ func (s *Server) applyJobs(ids []int64, purge bool) applyResult {
 			res.Failed = append(res.Failed, m.Name+":替换失败,已还原原文件:"+err.Error())
 			continue
 		}
+		s.carryPlayback(m, finalName)
 		s.forgetMedia(m.ID)
 		s.jobSet(id, map[string]any{"state": "applied", "trash_path": batch, "err": "", "display_name": finalName, "display_dir": m.DirRel, "display_root": m.RootName, "display_root_path": m.RootPath})
 		res.Applied++

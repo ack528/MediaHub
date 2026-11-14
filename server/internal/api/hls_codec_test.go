@@ -166,7 +166,7 @@ func TestHLSHwDecodeArgs(t *testing.T) {
 	h := &HLS{}
 	mk := func(w, hh int, vc string) *hlsSess {
 		s := &hlsSess{h: h, p: hlsParams{Bitrate: 3_000_000, Codec: "h264"}, path: "in.mkv", segs: 10}
-		s.props = hlsProps{w, hh, vc}
+		s.props = hlsProps{w: w, h: hh, vcodec: vc}
 		return s
 	}
 	join := func(a []string) string { return strings.Join(a, " ") }

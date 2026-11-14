@@ -23,6 +23,7 @@ data class ServerCaps(
     val thumbWebp: Boolean = false,
     val optimize: Boolean = false,
     val compat: Boolean = false,                  // 服务端 3.2.0 起:兼容版本(只转音频 / 换容器)
+    val phoneDelete: Boolean = false,             // 管理员账号可以在手机上删除文件(移进服务端回收区)
 )
 
 /** 播放器记住的转码偏好(服务端按用户保存)。bitrate = 0 或 direct = true 表示原画直接播放。 */

@@ -1,7 +1,8 @@
 import { SearchField, Spinner, Tabs, toast } from "@heroui/react";
 import { Magnifier } from "@gravity-ui/icons";
 import { useCallback, useEffect, useRef, useState, type Key } from "react";
-import { api, call, errorText, query } from "../lib/bridge";
+import { api, call, errorText, on, query } from "../lib/bridge";
+import { useShortVideoPreload } from "../lib/preload";
 import { useApp } from "../lib/app";
 import { useNav } from "../lib/nav";
 import type { HistoryResp, Item } from "../lib/types";
@@ -56,6 +57,7 @@ export function SearchScreen({ dialogId, dialogTitle }: { dialogId?: string; dia
 
   const bottom = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  useShortVideoPreload(scroller, items); // 屏幕附近 20 秒以内的短视频预加载,点开直接播
   useEffect(() => {
     if (!next || !bottom.current) return;
     const io = new IntersectionObserver(([e]) => { if (e.isIntersecting && !loading) run(searched, next); }, { root: scroller.current, rootMargin: "1200px 0px" });
@@ -63,7 +65,11 @@ export function SearchScreen({ dialogId, dialogTitle }: { dialogId?: string; dia
     return () => io.disconnect();
   }, [next, loading, run, searched]);
 
+  const st = useRef({ items, searched, next });
+  st.current = { items, searched, next };
+  useEffect(() => on("mediaDeleted", (ids: string[]) => { const gone = new Set(ids); setItems((cur) => cur.filter((x) => !gone.has(x.id))); }), []);
   const open = (it: Item) => {
+    const { items, searched, next } = st.current; // 读最新值:列表里的格子不随每次渲染重建(见 MediaTile 的 memo)
     call("viewer.open", {
       items, index: Math.max(0, items.findIndex((x) => x.id === it.id)), ...heroArgs(it.id),
       source: { kind: "search", q: searched, types, dialog: dialogId ?? null, cursor: next },

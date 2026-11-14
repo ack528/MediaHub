@@ -364,6 +364,27 @@ func (s *Server) random(w http.ResponseWriter, r *http.Request) {
 			roots = append(roots, id)
 		}
 	}
+	if vis, restricted := s.visibleRoots(userID(r)); restricted { // 受限账号:只在分配给它的盘符里随机
+		if len(roots) == 0 {
+			roots = vis
+		} else {
+			allowed := map[int64]bool{}
+			for _, id := range vis {
+				allowed[id] = true
+			}
+			kept := roots[:0:0]
+			for _, id := range roots {
+				if allowed[id] {
+					kept = append(kept, id)
+				}
+			}
+			if len(kept) == 0 {
+				writeJSON(w, 200, map[string]any{"items": []Item{}})
+				return
+			}
+			roots = kept
+		}
+	}
 	limit := limitParam(r, 60, 120)
 	var ids []int64
 	var err error

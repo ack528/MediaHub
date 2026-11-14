@@ -17,6 +17,8 @@ import com.localtg.AppContainer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -85,8 +87,19 @@ object VideoCache {
         val cache = get(ctx) ?: return upstream
         // 走缓存的那一路:上游下载的字节(缓存没命中的部分)记作视频需求
         val cachedUpstream = OkHttpDataSource.Factory(c.http).apply { setTransferListener(Meter(meter)) }
-        val cached = CacheDataSource.Factory().setCache(cache).setUpstreamDataSourceFactory(cachedUpstream).setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        val cached = CacheDataSource.Factory().setCache(cache).setUpstreamDataSourceFactory(cachedUpstream).setCacheKeyFactory(KeyNoSid).setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         return DataSource.Factory { Router(cached.createDataSource(), upstream.createDataSource()) }
+    }
+
+    /** 缓存键:去掉转码会话标识 sid(每次播放都不同,带着它同一视频同一画质的分段重新打开就全部失效)。 */
+    private val KeyNoSid = androidx.media3.datasource.cache.CacheKeyFactory { spec ->
+        val u = spec.uri
+        if (u.getQueryParameter("sid") == null) spec.key ?: u.toString()
+        else {
+            val b = u.buildUpon().clearQuery()
+            for (n in u.queryParameterNames) if (n != "sid") for (v in u.getQueryParameters(n)) b.appendQueryParameter(n, v)
+            b.build().toString()
+        }
     }
 
     private class Router(private val cached: DataSource, private val plain: DataSource) : DataSource {
@@ -103,14 +116,55 @@ object VideoCache {
         override fun close() { cur.close() }
     }
 
-    /** 提前缓存 url 开头 bytes 字节。只在有缓存、网络不计流量(Wi-Fi / 内网直连)时做;协程取消就停。 */
-    suspend fun prefetch(ctx: Context, c: AppContainer, url: String, bytes: Long = 3L shl 20) = withContext(Dispatchers.IO) {
+    /**
+     * 提前缓存 url 开头 bytes 字节(bytes = C.LENGTH_UNSET 表示整个文件)。默认只在网络不计流量(Wi-Fi / 内网直连)时做,
+     * metered = true 时移动网络也做;协程取消就停。已经缓存过的部分不会重复下载。
+     */
+    suspend fun prefetch(ctx: Context, c: AppContainer, url: String, bytes: Long = 3L shl 20, metered: Boolean = false) = withContext(Dispatchers.IO) {
         val cache = get(ctx) ?: return@withContext
-        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        if (cm?.isActiveNetworkMetered != false) return@withContext
-        val ds = CacheDataSource.Factory().setCache(cache).setUpstreamDataSourceFactory(OkHttpDataSource.Factory(c.http)).createDataSource()
+        if (!metered && isMetered(ctx)) return@withContext
+        val up = OkHttpDataSource.Factory(c.http).apply { setTransferListener(Meter(null)) }
+        val ds = CacheDataSource.Factory().setCache(cache).setUpstreamDataSourceFactory(up).createDataSource()
         val writer = CacheWriter(ds, DataSpec.Builder().setUri(url).setPosition(0).setLength(bytes).build(), null, null)
         currentCoroutineContext().job.invokeOnCompletion { writer.cancel() }
         runCatching { writer.cache() }
+    }
+
+    private fun isMetered(ctx: Context): Boolean =
+        (ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.isActiveNetworkMetered != false
+
+    // ---------------------------------------------------------------- 短视频预加载
+
+    /** 20 秒以内的短视频:整个文件不大,看到就预加载,点开直接从本地播放。 */
+    const val SHORT_MS = 20_000L
+    private const val SHORT_MAX_BYTES = 60L shl 20
+
+    fun isShort(item: com.localtg.data.Item): Boolean =
+        item.isVideo && (item.durationMs ?: 0L) in 1..SHORT_MS && item.size in 1..SHORT_MAX_BYTES && item.brokenLabel() == null
+
+    /** 这个视频的原文件是否已经完整在缓存里(是的话播放器直接读本地,不转码)。 */
+    fun isFullyCached(ctx: Context, c: AppContainer, item: com.localtg.data.Item): Boolean =
+        item.size > 0 && runCatching { get(ctx)?.isCached(c.api.fileUrl(item), 0, item.size) == true }.getOrDefault(false)
+
+    private val preloading = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val preloadGate = kotlinx.coroutines.sync.Semaphore(2)
+
+    /**
+     * 预加载短视频的整个文件(设置 → 视频播放 → 短视频预加载:always 总是 / wifi 仅 Wi-Fi / off 关闭)。
+     * 列表里滑到屏幕附近的、查看器里相邻的短视频都会调用;同时最多下 2 个,同一个视频只下一次,已经完整缓存的直接跳过。
+     */
+    fun preloadShort(ctx: Context, c: AppContainer, item: com.localtg.data.Item) {
+        val mode = c.settings.value.shortVideoPreload
+        if (mode == "off" || c.isLocal || !isShort(item)) return
+        if (mode == "wifi" && isMetered(ctx)) return
+        if (isFullyCached(ctx, c, item) || !preloading.add(item.id)) return
+        val app = ctx.applicationContext
+        c.scope.launch(Dispatchers.IO) {
+            try {
+                preloadGate.withPermit { prefetch(app, c, c.api.fileUrl(item), androidx.media3.common.C.LENGTH_UNSET.toLong(), metered = true) }
+            } catch (e: Exception) {
+                com.localtg.AppLog.w("video", "短视频预加载失败 ${item.name}: ${e.message}")
+            } finally { preloading.remove(item.id) }
+        }
     }
 }

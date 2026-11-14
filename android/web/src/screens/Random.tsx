@@ -2,6 +2,7 @@ import { Button, Spinner, Tabs, toast } from "@heroui/react";
 import { Shuffle } from "@gravity-ui/icons";
 import { useCallback, useEffect, useRef, useState, type Key } from "react";
 import { api, BridgeError, call, errorText, haptic, on, query } from "../lib/bridge";
+import { useShortVideoPreload } from "../lib/preload";
 import { useApp } from "../lib/app";
 import { useNav } from "../lib/nav";
 import type { HistoryResp, Item } from "../lib/types";
@@ -38,10 +39,12 @@ export function RandomScreen({ label, roots, asTab }: { label: string | null; ro
   const gen = useRef(0);
   const busy = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
+  useShortVideoPreload(scroller, items); // 屏幕附近 20 秒以内的短视频预加载,点开直接播
   const bottom = useRef<HTMLDivElement>(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
+  useEffect(() => on("mediaDeleted", (ids: string[]) => { const gone = new Set(ids); setItems((cur) => cur.filter((x) => !gone.has(x.id))); }), []);
   useEffect(() => { if (!seed) update({ randomSeed: newSeed(0) }); }, [seed, update]);
 
   const more = useCallback(async (replace: boolean) => {
@@ -89,9 +92,11 @@ export function RandomScreen({ label, roots, asTab }: { label: string | null; ro
   const cols = adaptiveColumns(3, useViewportWidth());
   const chunks = useChunks(items, gridChunk(cols));
 
+  const srcRef = useRef({ types, roots, seed });
+  srcRef.current = { types, roots, seed };
   const open = (it: Item) => call("viewer.open", {
-    items, index: Math.max(0, items.findIndex((x) => x.id === it.id)), ...heroArgs(it.id),
-    source: { kind: "random", types, roots, seed, batch: batch.current },
+    items: itemsRef.current, index: Math.max(0, itemsRef.current.findIndex((x) => x.id === it.id)), ...heroArgs(it.id),
+    source: { kind: "random", ...srcRef.current, batch: batch.current },
   }).catch((e) => toast.danger(errorText(e)));
 
   return (

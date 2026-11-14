@@ -104,6 +104,12 @@ fun buildHttpClients(store: SessionStore, local: LocalMedia, connectSec: Int, re
     return HttpClients(media, api)
 }
 
+/** 连接 / 读取超时(设置里改了立即生效:拦截器里按这里的值逐个请求设置,不用重启应用)。 */
+object NetTimeouts {
+    @Volatile var connectSec = 5
+    @Volatile var readSec = 30
+}
+
 private fun buildHttpClient(store: SessionStore, local: LocalMedia, connectSec: Int, readSec: Int, onUnauthorized: (Session) -> Unit): OkHttpClient {
     val (sslCtx, trust) = Tls.pinnedContext { store.trustedPins() }
     return OkHttpClient.Builder()
@@ -114,6 +120,9 @@ private fun buildHttpClient(store: SessionStore, local: LocalMedia, connectSec: 
         .hostnameVerifier { _, _ -> true }
         .connectTimeout(connectSec.toLong(), TimeUnit.SECONDS)
         .readTimeout(readSec.toLong(), TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            chain.withConnectTimeout(NetTimeouts.connectSec, TimeUnit.SECONDS).withReadTimeout(NetTimeouts.readSec, TimeUnit.SECONDS).proceed(chain.request())
+        }
         .addInterceptor(LocalInterceptor(local)) // 本地媒体模式:发往 local.mediahub 的请求在进程内应答,不走网络
         .addInterceptor(AuthInterceptor({ store.session.value }, onUnauthorized))
         .addInterceptor(RouteInterceptor { store.session.value?.baseUrl }) // 在 Auth 之后:令牌按"原地址"判断是否附加,再把主机换成内网直连的
@@ -179,6 +188,8 @@ class AppUpdateInfo(
 class CompatStatus(val ready: Boolean, val state: String = "none", val progress: Double = 0.0, val err: String = "", val why: String = "")
 
 class Api(private val http: OkHttpClient, private val store: SessionStore) {
+    /** 转码输出高度上限(设置 → 视频播放),0 = 保持原分辨率。 */
+    @Volatile var transcodeMaxHeight: Int = 0
     private val json = "application/json; charset=utf-8".toMediaType()
 
     private val base: String get() = store.session.value?.baseUrl ?: error("未登录")
@@ -191,6 +202,13 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
             put("changes", kotlinx.serialization.json.JsonObject(changes))
         }
         send(Request.Builder().url("$base/api/v1/manage/config").put(payload.toString().toRequestBody(json)).build())
+    }
+    /** 手机端删除(服务端移进回收区,仅管理员账号)。返回已经从服务端索引里去掉的媒体 id。 */
+    suspend fun deleteMedia(ids: List<String>): kotlinx.serialization.json.JsonObject {
+        val payload = kotlinx.serialization.json.buildJsonObject {
+            put("ids", kotlinx.serialization.json.JsonArray(ids.map { kotlinx.serialization.json.JsonPrimitive(it.toLongOrNull() ?: 0L) }))
+        }
+        return call(Request.Builder().url("$base/api/v1/media/delete").post(payload.toString().toRequestBody(json)).build())
     }
     suspend fun restartServer() = send(Request.Builder().url("$base/api/v1/manage/restart").post("{}".toRequestBody(json)).build())
     suspend fun rescanServer() = send(Request.Builder().url("$base/api/v1/manage/rescan").post("{}".toRequestBody(json)).build())
@@ -330,7 +348,7 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
 
     /** 服务端转码(内置 ffmpeg 或 Jellyfin 的 HLS)的播放地址:maxBitrate 视频码率(bps,最高 6 Mbps),sid 本次播放的会话标识,codec 输出编码(h264 / h265)。 */
     fun hlsUrl(item: Item, maxBitrate: Int, sid: String, audioIndex: Int? = null, codec: String? = null): String =
-        "$base/api/v1/media/${item.id}/hls/master.m3u8?maxBitrate=$maxBitrate&sid=$sid" + (audioIndex?.let { "&audio=$it" } ?: "") + (codec?.let { "&codec=$it" } ?: "")
+        "$base/api/v1/media/${item.id}/hls/master.m3u8?maxBitrate=$maxBitrate&sid=$sid" + (audioIndex?.let { "&audio=$it" } ?: "") + (codec?.let { "&codec=$it" } ?: "") + (if (transcodeMaxHeight > 0) "&maxHeight=$transcodeMaxHeight" else "")
 
     // ---- 兼容版本(服务端 3.2.0 起):视频流原样复制、只把音频转成 AAC 装进 MP4,缓存在服务端;之后直放,不用整条转码 ----
     fun compatUrl(item: Item): String = "$base/api/v1/media/${item.id}/compat?v=${item.v}"
@@ -415,7 +433,7 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
     suspend fun hlsPrepare(item: Item, maxBitrate: Int, sid: String, codec: String?) {
         runCatching {
             withContext(Dispatchers.IO) {
-                val url = "$base/api/v1/media/${item.id}/hls/prepare?maxBitrate=$maxBitrate&sid=$sid" + (codec?.let { "&codec=$it" } ?: "")
+                val url = "$base/api/v1/media/${item.id}/hls/prepare?maxBitrate=$maxBitrate&sid=$sid" + (codec?.let { "&codec=$it" } ?: "") + (if (transcodeMaxHeight > 0) "&maxHeight=$transcodeMaxHeight" else "")
                 http.newCall(Request.Builder().url(url).post("".toRequestBody()).build()).await().close()
             }
         }

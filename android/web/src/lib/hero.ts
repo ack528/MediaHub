@@ -44,6 +44,7 @@ function infoOf(tile: HTMLElement): (HeroInfo & { shown: number }) | null {
 
 /** 打开查看器时一起传给原生:缩略图位置和网页里显示的那张缩略图地址(原生先拿它垫底)。 */
 export function heroArgs(id: string): { hero: HeroInfo | null; thumb: string | null } {
+  openedId = id;
   const tile = tileOf(id);
   if (!tile) return { hero: null, thumb: null };
   const img = heroEl(tile).querySelector("img");
@@ -55,6 +56,15 @@ export function heroArgs(id: string): { hero: HeroInfo | null; thumb: string | n
 let style: HTMLStyleElement | null = null;
 let timer = 0;
 let current = "";
+/** 这次点开的那一项:它是用户刚点的、本来就在看得见的地方,不为它滚动列表(见 [track])。 */
+let openedId = "";
+
+function report(id: string, tile: HTMLElement) {
+  const info = infoOf(tile);
+  // 顺带把这一格的缩略图地址给原生:翻到的每一张都有正确的宽高比和垫底图(只有点开的那张预先准备过)
+  const thumb = heroEl(tile).querySelector("img")?.currentSrc || null;
+  if (info) call("viewer.bounds", { id, hero: { full: info.full, visible: info.visible, r: info.r }, thumb }).catch(() => {});
+}
 
 /**
  * 跟住正在看的那一项:露出来不到 60% 就滚到屏幕中间(看不见的列表,用户察觉不到),再把位置报给原生。
@@ -69,14 +79,14 @@ function track(id: string, tries = 0) {
     return;
   }
   const now = infoOf(tile);
-  if (!now || shownFrac(now) < 0.6) tile.scrollIntoView({ block: "center" });
-  timer = window.setTimeout(() => {
-    if (id !== current) return;
-    const info = infoOf(tile);
-    // 顺带把这一格的缩略图地址给原生:翻到的每一张都有正确的宽高比和垫底图(只有点开的那张预先准备过)
-    const thumb = heroEl(tile).querySelector("img")?.currentSrc || null;
-    if (info) call("viewer.bounds", { id, hero: { full: info.full, visible: info.visible, r: info.r }, thumb }).catch(() => {});
-  }, 32);
+  // 刚点开的那一项不滚列表:以前它只露出不到 60%(被顶栏挡住一半)时会马上滚到居中,而返回动画的落点还是点开时量的旧位置,
+  // 打开后立刻返回 → 动画落到滚动前的位置(那里已经是别的图片了),看起来像跳到了别处。翻到别的项时才需要滚过去。
+  const scrolled = id !== openedId && (!now || shownFrac(now) < 0.6);
+  if (scrolled) {
+    tile.scrollIntoView({ block: "center" });
+    report(id, tile); // 滚动是同步的:马上报告新位置,返回动画不会落到旧位置
+  }
+  timer = window.setTimeout(() => { if (id === current) report(id, tile); }, 32);
 }
 
 on("viewerCurrent", (id: string) => {

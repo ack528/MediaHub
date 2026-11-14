@@ -38,6 +38,10 @@ func (s *Server) shuffle(w http.ResponseWriter, r *http.Request) {
 	}
 	cond := "m.type IN " + inList(types) + " AND m.state<>2 AND m.size>0 AND m.root_id IN (SELECT id FROM roots WHERE enabled=1)"
 	args := []any{}
+	if c, a := s.rootCond(userID(r), "m.root_id"); c != "" {
+		cond += c
+		args = append(args, a...)
+	}
 	if v := q.Get("dialog"); v != "" {
 		id, e := strconv.ParseInt(v, 10, 64)
 		if e != nil || id <= 0 {

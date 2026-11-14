@@ -156,6 +156,10 @@ func (s *Server) listDialogs(w http.ResponseWriter, r *http.Request) {
 	}
 	where := []string{hasMedia}
 	args := []any{uid}
+	if c, a := s.rootCond(uid, "d.root_id"); c != "" { // 受限账号只看到分配给它的盘符
+		where = append(where, strings.TrimPrefix(c, " AND "))
+		args = append(args, a...)
+	}
 	switch g := q.Get("group"); {
 	case g == "" || g == "all":
 		where = append(where, "COALESCE(ud.archived,0)=0")

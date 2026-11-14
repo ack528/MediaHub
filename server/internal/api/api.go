@@ -158,6 +158,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/admin/clients", s.adminOnly(s.adminClients))
 	mux.Handle("POST /api/v1/admin/clients/kick", s.adminOnly(s.adminClientKick))
 	mux.HandleFunc("POST /api/v1/admin/local-shutdown", s.localShutdown)
+	mux.Handle("GET /api/v1/admin/user-roots", s.adminOnly(s.adminUserRoots))
+	mux.Handle("POST /api/v1/admin/user-roots", s.adminOnly(s.adminUserRoots))
 	mux.Handle("POST /api/v1/admin/config/reload", s.adminOnly(s.adminConfigReload))
 	mux.Handle("GET /api/v1/admin/tunnel", s.adminOnly(s.adminTunnelStatus))
 	mux.Handle("POST /api/v1/admin/tunnel/{action}", s.adminOnly(s.adminTunnelAction))
@@ -170,6 +172,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/media/{id}/hls/prepare", authd(s.mediaHLSPrepare))
 	mux.Handle("GET /api/v1/media/{id}/compat", authd(s.mediaCompat))
 	mux.Handle("POST /api/v1/media/{id}/compat/prepare", authd(s.mediaCompatPrepare))
+	mux.Handle("POST /api/v1/media/delete", authd(s.remoteAdmin(s.mediaDelete)))
 	mux.Handle("GET /api/v1/media/{id}/file", authd(s.mediaFile))
 	mux.Handle("HEAD /api/v1/media/{id}/file", authd(s.mediaFile))
 	mux.Handle("GET /api/v1/media/{id}/poster", authd(s.mediaPoster))
@@ -322,6 +325,10 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 		if !ok {
 			writeErr(w, 401, "auth.expired", "令牌无效或已过期")
+			return
+		}
+		if s.pathDenied(r, uid) {
+			writeErr(w, 404, "notfound", "不存在")
 			return
 		}
 		s.Gov.ClientActivity()
@@ -486,6 +493,6 @@ func (s *Server) capabilities() map[string]any {
 		"serverManagement": true, "shuffleQueue": true,
 		"codecs": codecs, "qsvH264": qsv264, "qsvH265": qsv265, "maxTranscodeBitrate": max,
 		"probing": probing, "speedtest": true, "playerPrefs": true, "hlsPrepare": true, "compat": s.Cfg.Tools.FFmpeg != "", "gzip": true, "optimize": true, "thumbWebp": s.Render != nil && s.Cfg.Images.FallbackConvert,
-		"transport": s.transportCaps(), "linkLatency": true, "hotReload": s.Reload != nil,
+		"phoneDelete": true, "userRoots": true, "transport": s.transportCaps(), "linkLatency": true, "hotReload": s.Reload != nil,
 	}
 }

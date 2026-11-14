@@ -110,6 +110,8 @@ class VideoRenderer(
 
     private class Slot(val ts: Long, val img: Gl.Tex, val pyr: LumaPyramid?, val id: Long) {
         val gen = ArrayList<Gl.Tex>() // LSFG:前一帧 → 这一帧 之间生成的中间帧
+        /** LSFG 输入分辨率版本的这一帧(生成帧是在缩小后的分辨率上做的;补帧时真实帧也显示这个,清晰度和生成帧一致) */
+        var low: Gl.Tex? = null
         val arrivalNs = System.nanoTime() // 这一帧到达渲染器的时刻(统计生成延迟用)
     }
     private val ring = ArrayList<Slot>()
@@ -536,6 +538,8 @@ class VideoRenderer(
         luma?.release(s.pyr)
         s.gen.forEach { pool8.release(it) }
         s.gen.clear()
+        s.low?.let { pool8.release(it) }
+        s.low = null
     }
 
     private fun hdrActive(c: EnhanceConfig) = hdrSurface && c.hdr != "off"
@@ -602,7 +606,9 @@ class VideoRenderer(
             val refreshHz = 1e9 / period
             val srcHz = 1e9 / dt
             if (dt in 4_000_000L..120_000_000L && refreshHz > srcHz * 1.3) {
-                if (b.gen.isNotEmpty()) {
+                // 正在补帧(这个区间有生成帧,或者前面一直在生成、只是这个区间没赶上):都按相位累加器走
+                val n0 = if (b.gen.isNotEmpty()) b.gen.size + 1 else if (!lsfgPf.isNaN() && lsfgActive) lsfgPfN else 0
+                if (n0 > 1) {
                     // LSFG:每个真实帧之间有 k 张生成帧,共 n = k + 1 个"相位"(第 0 个是真实帧本身)。
                     // 不能直接用 floor(t * n) 按时间取相位:源帧率 × n 正好等于屏幕刷新率时(24fps × 5 = 120Hz),
                     // 每个 vsync 的采样点落在相位边界附近,时钟的微小漂移 / 抖动会让相位时而重复、时而跳过,
@@ -610,7 +616,7 @@ class VideoRenderer(
                     // 再慢慢向真实时间靠拢(±0.3 个相位的死区内不修正),整数倍时每个 vsync 恰好前进一个相位,节奏均匀。
                     generating = true
                     val t = ((nowNs - a.ts).toDouble() / dt).coerceIn(0.0, 1.0)
-                    val n = b.gen.size + 1
+                    val n = n0
                     val step = n * srcHz * dtV / 1e9 // 这个 vsync 实际过去了 dtV,相位前进 n × 源帧率 × dtV
                     val ptrue = a.id.toDouble() * n + t * n
                     if (lsfgPf.isNaN() || lsfgPfN != n || abs(ptrue - lsfgPf) > 2.5) { lsfgPf = ptrue; lsfgPfN = n }
@@ -625,12 +631,15 @@ class VideoRenderer(
                     val tex = phaseTex(ph, n)
                     if (tex != null) {
                         showTex = tex
-                    } else { // 相位对应的帧 / 生成帧不全:退回按时间取
+                    } else {
+                        // 这一相位的生成帧没有(没赶上 / 被跳过):显示它所在区间起点的真实帧,停一下就接着走。
+                        // 以前改按时间另取一张,和累加器选的可能不一致,会出现"往回退一张"的抖动;以前缺一个区间还会把累加器清零,下一个区间重新对齐时再跳一下。
                         if (trace.enabled) trace.phMissing++
-                        val ix = min((t * n + 1e-3).toInt(), n - 1)
-                        showTex = if (ix == 0) a.img.id else b.gen[ix - 1].id
+                        val fa = Math.floorDiv(ph, n.toLong())
+                        val sa = ring.firstOrNull { it.id == fa } ?: a
+                        showTex = (sa.low ?: sa.img).id
                     }
-                } else if (lsfgActive && trace.enabled) trace.noGen++ // 这个区间没有生成帧,保持显示 A
+                } else if (lsfgActive && trace.enabled) trace.noGen++ // 还没开始生成:保持显示 A
             }
         }
         if (!generating) { lsfgPf = Double.NaN; trace.phaseReset() }
@@ -823,15 +832,29 @@ class VideoRenderer(
     }
 
     /** 补帧时画面整体晚多少上屏(ns);源帧率已经够高(不需要补帧)时不延迟。 */
-    private fun frcDelayFor(cfg: EnhanceConfig): Long =
-        if (!lsfgWanted(cfg) || !frcNeeded(cfg)) 0L else min((if (interval > 0) interval else 41_000_000L) * 3 / 2, 80_000_000L)
+    /**
+     * 补帧时画面整体晚多久上屏。以前固定 1.5 个源帧间隔(最多 80ms):生成耗时偏长的设备上生成帧经常来晚,
+     * 区间的前半段只能停在真实帧上,后半段才动,"时卡时顺"。现在 = max(1.5 个间隔, 1 个间隔 + 实测生成耗时 + 12ms 余量),
+     * 最多 110ms(声画不同步的容限是视频晚 125ms 以内,人感觉不到)。每 250ms 最多变 2ms,慢慢挪,不会因为延迟变化本身引起跳动。
+     */
+    private var frcDelayNs = 0L
+    private var frcDelayAt = 0L
+    private fun frcDelayFor(cfg: EnhanceConfig): Long {
+        if (!lsfgWanted(cfg) || !frcNeeded(cfg)) { frcDelayNs = 0L; return 0L }
+        val iv = if (interval > 0) interval else 41_000_000L
+        val target = min(max(iv * 3 / 2, iv + (presentEma * 1e6).toLong() + 12_000_000L), 110_000_000L)
+        val now = SystemClock.elapsedRealtime()
+        if (frcDelayNs == 0L) { frcDelayNs = target; frcDelayAt = now }
+        else if (now - frcDelayAt >= 250) { frcDelayAt = now; frcDelayNs += (target - frcDelayNs).coerceIn(-2_000_000L, 2_000_000L) } // 每秒最多挪 8ms
+        return frcDelayNs
+    }
 
     /** 绝对相位 ph(= 真实帧 id × n + 第几张)对应的纹理:第 0 张是真实帧,其余是下一帧上挂着的生成帧;帧或生成帧不全返回 null。 */
     private fun phaseTex(ph: Long, n: Int): Int? {
         val fa = Math.floorDiv(ph, n.toLong())
         val idx = (ph - fa * n).toInt()
         val sa = ring.firstOrNull { it.id == fa } ?: return null
-        if (idx == 0) return sa.img.id
+        if (idx == 0) return (sa.low ?: sa.img).id
         val sb = ring.firstOrNull { it.id == fa + 1 } ?: return null
         if (sb.gen.size != n - 1) return null
         return sb.gen[idx - 1].id
@@ -961,6 +984,15 @@ class VideoRenderer(
             return
         }
         val tw0 = System.nanoTime()
+        // 输入分辨率比原帧小(大分辨率 / 高帧率片源):另存一份同样尺寸的真实帧,补帧上屏时真实帧和生成帧清晰度一致
+        // (以前真实帧是原分辨率、生成帧是缩小后放大的,一清一糊交替出现,看起来在闪、在抖)
+        if (slot.low == null && (sw < slot.img.w || sh < slot.img.h)) {
+            val low = pool8.acquire(sw, sh)
+            Gl.target(low); Gl.use(pBlit); Gl.bindTex(0, slot.img.id)
+            GLES20.glUniform1i(Gl.loc(pBlit, "uTex"), 0)
+            Gl.draw()
+            slot.low = low
+        }
         s.writeInput(pBlit, slot.img.id) // 含 glFinish:GL 写完,Vulkan 才能安全地读
         if (trace.enabled) trace.writeIn.add((System.nanoTime() - tw0) / 1e6)
         lsfgBusy = true
@@ -1037,7 +1069,7 @@ class VideoRenderer(
             // 这一帧的区间(前一帧 → 这一帧)什么时候开始上屏:前一帧的时间戳 + 延迟;生成帧在那之后才就绪就是"晚了"
             val prevSlot = ring.firstOrNull { it.id == id - 1 }
             if (prevSlot != null && consecutive) {
-                val late = (nowN - (prevSlot.ts + frcDelayFor(config))) / 1e6
+                val late = (nowN - (prevSlot.ts + frcDelayNs)) / 1e6
                 if (late > 0) { trace.genLateN++; trace.genLate.add(late) }
             }
         }

@@ -27,6 +27,9 @@ type optState struct {
 	dd       dedupeState
 	cp       compressState
 	rescanAt map[int64]time.Time // rescanSoon 用,受 cp.mu 保护
+	carryMu   sync.Mutex
+	carry     []carryRow // 压缩替换后等新文件入库、再把旧文件的播放进度接过去
+	carryOnce sync.Once
 }
 
 // mediaInfo 一个媒体文件的路径与基本属性。

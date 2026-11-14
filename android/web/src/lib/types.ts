@@ -60,6 +60,7 @@ export interface ServerCaps {
   thumbWebp?: boolean;
   optimize?: boolean;
   compat?: boolean;
+  phoneDelete?: boolean;
 }
 
 export interface ServerEntry {

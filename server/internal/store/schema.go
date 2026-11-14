@@ -124,6 +124,8 @@ UPDATE users SET is_admin=1 WHERE id=(SELECT MIN(id) FROM users);`,
 	// v13: selectable per-user browsing checkpoints.
 	`CREATE TABLE user_browse_history(user_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, saved_at INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY(user_id,dialog_id,saved_at));
 CREATE INDEX ix_browse_history_age ON user_browse_history(saved_at);`,
+	// v14: per-user visible roots (no rows = everything visible).
+	`CREATE TABLE user_roots(user_id INTEGER NOT NULL, root_id INTEGER NOT NULL, PRIMARY KEY(user_id, root_id));`,
 }
 
 // Migrate 把数据库升级到最新模式。

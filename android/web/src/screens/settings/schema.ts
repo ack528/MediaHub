@@ -970,6 +970,38 @@ export const SETTING_PAGES: Record<string, SettingRow[]> = {
     },
     {
       "type": "choice",
+      "key": "shortVideoPreload",
+      "title": "短视频预加载",
+      "options": [
+        [
+          "always",
+          "总是(默认)"
+        ],
+        [
+          "wifi",
+          "仅 Wi-Fi"
+        ],
+        [
+          "off",
+          "关闭"
+        ]
+      ],
+      "desc": "20 秒以内的短视频(60MB 以内),在列表里滑到屏幕附近、或在查看器里翻到相邻位置时,整个文件提前下载到手机缓存;点开直接从本地播放,不用等加载,也不走服务端转码。同时最多下载 2 个"
+    },
+    {
+      "type": "choice",
+      "key": "transcodeMaxHeight",
+      "title": "转码分辨率上限",
+      "options": [
+        [0, "保持原分辨率(默认)"],
+        [1080, "最高 1080p"],
+        [720, "最高 720p"],
+        [480, "最高 480p"]
+      ],
+      "desc": "服务端转码时输出画面的最大高度,只缩小不放大。码率很低时降低分辨率画质更好,也更省服务器资源"
+    },
+    {
+      "type": "choice",
       "key": "gestureSense",
       "title": "亮度 / 音量滑动灵敏度",
       "options": [

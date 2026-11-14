@@ -55,6 +55,7 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -199,6 +200,12 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
         "caps" -> { if (!c.isLocal) runCatching { c.api.refreshCaps() }; AppJson.encodeToJsonElement(c.api.caps) }
 
         "viewer.open" -> { openViewer(a); JsonNull }
+        // 列表里滑到屏幕附近的 20 秒以内短视频:整个文件预加载进视频缓存,点开直接播(VideoCache.preloadShort 里去重、限并发、看设置)
+        "video.preload" -> {
+            val list = runCatching { AppJson.decodeFromJsonElement<List<Item>>(a["items"]!!) }.getOrDefault(emptyList())
+            list.forEach { com.localtg.ui.VideoCache.preloadShort(app, c, it) }
+            JsonNull
+        }
         "viewer.bounds" -> {
             val id = a.s("id")
             heroSrc(a)?.let { onHeroBounds(id, it) }
@@ -208,6 +215,12 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
             val thumb = a.sOrNull("thumb")
             if (item != null && thumb != null) scope.launch { runCatching { media.warmThumb(item, thumb) } }
             JsonNull
+        }
+        "media.delete" -> {
+            val ids = a["ids"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
+            val r = c.api.deleteMedia(ids)
+            notifyDeleted(r["ids"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList())
+            r
         }
         "viewer.revealed" -> { revealed?.complete(Unit); JsonNull }
 
@@ -692,6 +705,13 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
     }
 
     companion object {
+        /** 文件被删除(手机端):所有打开着的列表把它们去掉。 */
+        fun notifyDeleted(ids: List<String>) {
+            if (ids.isEmpty()) return
+            val v = JsonArray(ids.map { JsonPrimitive(it) })
+            android.os.Handler(android.os.Looper.getMainLooper()).post { live.toList().forEach { it.emit("mediaDeleted", v) } }
+        }
+
         /** 所有打开着的页面(每个二级页面一个 WebView),广播用。只在主线程读写。 */
         private val live = mutableSetOf<WebBridge>()
     }

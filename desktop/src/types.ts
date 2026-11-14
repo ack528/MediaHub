@@ -135,5 +135,5 @@ export interface UpdateStatus {
   app?: { latest?: string; ready?: boolean; state?: string; progress?: number; message?: string; size?: number };
 }
 
-export interface UserInfo { name: string; created: number }
+export interface UserInfo { name: string; created: number; isAdmin?: boolean }
 export interface LocalIp { name: string; ip: string; private: boolean }

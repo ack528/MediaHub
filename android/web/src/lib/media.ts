@@ -41,7 +41,7 @@ export function imageUrl(item: Item, w: number): string {
   if (env.local) return item.ext === "gif" || w > 2000 ? fileUrl(item) : `${SRV}${item.id}/render?w=${Math.min(w, 4096)}&v=${v}`;
   if (needsServerRender(item.ext)) return `${SRV}${item.id}/render?w=${w}&v=${v}`;
   const eligible = !!env.caps.thumbWebp && item.type === "photo" && THUMB_EXT.has(item.ext.toLowerCase()) && w >= 1 && w <= 1440 &&
-    (item.size ?? 0) > 120_000 && (item.w ?? 0) > w;
+    (item.size ?? 0) > 120_000 && (item.w == null || item.w > w); // 刚扫描完还没读出宽高的,也走缩略图,不退回整张原图
   return eligible ? `${SRV}${item.id}/render?w=${w}&fmt=webp&v=${v}` : fileUrl(item);
 }
 

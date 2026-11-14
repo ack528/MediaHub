@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"mediahub/internal/classify"
@@ -184,8 +185,8 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 	limit := limitParam(r, 60, 200)
 	after, before, atOrAfter := ops(desc)
 
-	var total int
-	if err := s.DB.QueryRow("SELECT count(*) FROM media m WHERE m.dialog_id=? AND m.type IN "+inList(types), did).Scan(&total); err != nil {
+	total, err := s.countCached(did, types)
+	if err != nil {
 		writeErr(w, 500, "internal", err.Error())
 		return
 	}
@@ -434,6 +435,10 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	args := []any{}
 	cond := "m.type IN " + inList(types) + " AND m.root_id IN (SELECT id FROM roots WHERE enabled=1)"
+	if c, a := s.rootCond(userID(r), "m.root_id"); c != "" {
+		cond += c
+		args = append(args, a...)
+	}
 	if keyed {
 		cond += " AND (m.taken_eff, m.id) < (?, ?)"
 		args = append(args, keyT, keyID)
@@ -491,4 +496,27 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	resp["items"] = items
 	writeJSONETag(w, r, resp)
+}
+
+// 文件夹里某组类型的总数:每翻一页都 count(*) 一次,大文件夹翻到深处越来越慢。短时间内沿用上一次的结果(扫描 / 替换文件后最多 15 秒内不准)。
+type totalEntry struct {
+	n  int
+	at time.Time
+}
+
+var totalCache sync.Map // "dialog|types" -> totalEntry
+
+func (s *Server) countCached(did int64, types []int) (int, error) {
+	key := strconv.FormatInt(did, 10) + "|" + inList(types)
+	if v, ok := totalCache.Load(key); ok {
+		if e := v.(totalEntry); time.Since(e.at) < 15*time.Second {
+			return e.n, nil
+		}
+	}
+	var n int
+	if err := s.DB.QueryRow("SELECT count(*) FROM media m WHERE m.dialog_id=? AND m.type IN "+inList(types), did).Scan(&n); err != nil {
+		return 0, err
+	}
+	totalCache.Store(key, totalEntry{n, time.Now()})
+	return n, nil
 }

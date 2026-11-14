@@ -2,6 +2,7 @@ import { Button, Calendar, Chip, Modal, Sheet, Spinner, ToggleButton, ToggleButt
 import { ArrowUpArrowDown, Bookmark, Calendar as CalendarIcon, ClockArrowRotateLeft, LayoutCellsLarge, LayoutColumns, LayoutList, Magnifier, Sliders } from "@gravity-ui/icons";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Key } from "react";
 import { api, BridgeError, call, errorText, haptic, on, query } from "../lib/bridge";
+import { useShortVideoPreload } from "../lib/preload";
 import { useApp } from "../lib/app";
 import { aspectOf, dayKey, dayLabel, formatDuration, formatShortTime, stripExt } from "../lib/media";
 import { heroArgs } from "../lib/hero";
@@ -15,6 +16,7 @@ import { DateScrubber, DayPill, createStore } from "../components/DateScrubber";
 import { GridSkeleton, MasonrySkeleton, TimelineSkeleton } from "../components/Skeleton";
 import { dialogCache } from "./Folders";
 import { HistorySheet } from "./ChatHistory";
+import { SelectMark, SelectionContext } from "../lib/select";
 
 /** 0 时间线 / 1 网格 / 2 瀑布流 */
 type Mode = 0 | 1 | 2;
@@ -36,7 +38,7 @@ function historyPath(id: string, o: Pick<Opts, "sort" | "asc" | "types">, extra:
 
 /** 一个文件夹里的图片和视频:三种视图共用同一个排序方向,打开时回到上次的位置(和服务器同步)。 */
 export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: string; focus?: string }) {
-  const { settings: s, session, boot } = useApp();
+  const { settings: s, session, boot, caps } = useApp();
   const nav = useNav();
   const [dialog, setDialog] = useState<Dialog | null>(() => dialogCache.get(id) ?? null);
   useEffect(() => { if (!dialog) api<Dialog>(`/api/v1/dialogs/${id}`).then(setDialog).catch(() => {}); }, [id, dialog]);
@@ -70,7 +72,38 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
+  // ---- 多选删除(管理员账号):选中的文件由服务端移进回收区
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const selectingRef = useRef(false);
+  selectingRef.current = selecting;
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const selection = useMemo(() => ({ on: selecting, ids: picked }), [selecting, picked]);
+  const toggle = useCallback((itemId: string) => {
+    haptic("Tick");
+    setPicked((cur) => { const n = new Set(cur); if (n.has(itemId)) n.delete(itemId); else n.add(itemId); return n; });
+  }, []);
+  const stopSelecting = () => { setSelecting(false); setPicked(new Set()); };
+  useBackHandler(selecting, stopSelecting);
+  const doDelete = async () => {
+    setDeleting(true);
+    try {
+      const r = await call<{ deleted: number; failed: string[] }>("media.delete", { ids: [...picked] });
+      toast(r.failed.length ? `已删除 ${r.deleted} 个,${r.failed.length} 个失败:${r.failed[0]}` : `已移到回收区(${r.deleted} 个)`);
+      stopSelecting();
+    } catch (e) { toast.danger(errorText(e)); }
+    finally { setDeleting(false); setConfirmDel(false); }
+  };
+  // 文件被删除(这里选择删除 / 查看器里删除):从列表里去掉
+  useEffect(() => on("mediaDeleted", (ids: string[]) => {
+    const gone = new Set(ids);
+    setItems((cur) => cur.filter((x) => !gone.has(x.id)));
+    setTotal((t) => Math.max(0, t - ids.length));
+  }), []);
+
   const scroller = useRef<HTMLDivElement>(null);
+  useShortVideoPreload(scroller, items); // 屏幕附近 20 秒以内的短视频预加载,点开直接播
   const header = useRef<HTMLDivElement>(null);
   const headerBottom = () => header.current?.getBoundingClientRect().bottom ?? 0;
 
@@ -293,8 +326,13 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
 
   // ---- 打开查看器 / 从查看器返回后定位到最后看的那一项
   const openViewer = (item: Item) => {
-    const list = itemsRef.current;
+    if (selectingRef.current) { toggle(item.id); return; }
+    const all = itemsRef.current;
     const o = optsRef.current;
+    // 只把点开的这一项前后 300 项交给查看器(几千项整个序列化传过去,点开会卡一下);后面的由查看器按游标继续加载
+    const at = Math.max(0, all.findIndex((x) => x.id === item.id));
+    const from = Math.max(0, at - 300);
+    const list = all.length > 600 ? all.slice(from, at + 301) : all;
     call("viewer.open", {
       items: list, index: Math.max(0, list.findIndex((x) => x.id === item.id)), ...heroArgs(item.id),
       source: { kind: "dialog", dialogId: id, sort: o.sort, dir: o.asc ? "asc" : "desc", types: o.types.join(",") },
@@ -341,13 +379,19 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
   }, [width, scrollToItem]);
 
   return (
+    <SelectionContext.Provider value={selection}>
     <div ref={scroller} className="page" style={{ overflowAnchor: "none" }} onScroll={handleScroll}>
       <div ref={header} className="sticky top-0 z-20">
         <PageHeader
-          title={dialog?.title ?? titleHint ?? "文件夹"}
-          subtitle={subtitle}
-          onBack={nav.pop}
-          actions={
+          title={selecting ? `已选 ${picked.size} 项` : dialog?.title ?? titleHint ?? "文件夹"}
+          subtitle={selecting ? "点缩略图选择,再点一次取消" : subtitle}
+          onBack={selecting ? stopSelecting : nav.pop}
+          actions={selecting ? (
+            <>
+              <Button variant="ghost" onPress={() => setPicked(new Set(items.map((x) => x.id)))}>全选已加载</Button>
+              <Button variant="ghost" onPress={stopSelecting}>取消</Button>
+            </>
+          ) : (
             <>
               <Button isIconOnly variant="ghost" aria-label="在文件夹中搜索" onPress={() => nav.push({ name: "search", params: { dialogId: id, title: dialog?.title ?? titleHint } })}>
                 <Magnifier className="size-5" />
@@ -359,7 +403,7 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
                 <Sliders className="size-5" />
               </Button>
             </>
-          }
+          )}
         />
       </div>
 
@@ -398,7 +442,27 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
         </div>
       )}
 
+      {selecting && (
+        <div className="fixed inset-x-0 bottom-0 z-30 flex justify-center bg-background/90 px-4 pt-2 pb-safe backdrop-blur">
+          <Button variant="danger" className="mb-2 w-full max-w-md" isDisabled={picked.size === 0} onPress={() => setConfirmDel(true)}>
+            删除{picked.size ? `(${picked.size})` : ""}
+          </Button>
+        </div>
+      )}
+      <Modal.Backdrop isOpen={confirmDel} onOpenChange={(v) => { if (!deleting) setConfirmDel(v); }}>
+        <Modal.Container placement="center">
+          <Modal.Dialog className="w-80">
+            <Modal.Header><Modal.Heading>删除 {picked.size} 个文件?</Modal.Heading></Modal.Header>
+            <Modal.Body className="text-sm text-muted">文件会被移到服务器所在盘的回收区,之后可以在电脑上的管理程序里还原。</Modal.Body>
+            <Modal.Footer>
+              <Button variant="tertiary" slot="close" isDisabled={deleting}>取消</Button>
+              <Button variant="danger" isPending={deleting} onPress={doDelete}>删除</Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
       <OptionsSheet
+        onSelect={caps.phoneDelete && !session.local ? () => { setSheet(false); setSelecting(true); } : undefined}
         open={sheet} onOpenChange={setSheet} opts={opts} change={change}
         onDate={() => { setSheet(false); setDateOpen(true); }}
         onHistory={() => { setSheet(false); setHistoryOpen(true); }}
@@ -414,6 +478,7 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
         }}
       />
     </div>
+    </SelectionContext.Provider>
   );
 }
 
@@ -503,6 +568,7 @@ function FeedCard({ item, width, onOpen }: { item: Item; width: number; onOpen: 
     <button type="button" data-item={item.id} onClick={onOpen} className="block w-full text-left transition-transform active:scale-[0.98]">
       <div data-hero className="relative overflow-hidden rounded-xl bg-surface-tertiary" style={{ aspectRatio: String(ratio) }}>
         <Thumb item={item} width={width} className="absolute inset-0" />
+        <SelectMark id={item.id} />
         <span className="pointer-events-none absolute right-1 bottom-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[10px] leading-none text-white tabular-nums">
           {item.type === "video" ? formatDuration(item.durationMs) || "视频" : formatShortTime(item.takenAt)}
         </span>
@@ -554,6 +620,7 @@ function TimelineBubble({ item, width, widthPct, onOpen }: { item: Item; width: 
     <div data-item={item.id} style={{ width: `${widthPct}%` }}>
       <button type="button" data-hero className="relative block w-full overflow-hidden rounded-2xl bg-surface-tertiary active:opacity-90" style={{ aspectRatio: String(ratio) }} {...press}>
         <Thumb item={item} width={width} className="absolute inset-0" />
+        <SelectMark id={item.id} />
         {item.type === "video" && (
           <>
             <span className="absolute inset-0 grid place-items-center">
@@ -575,8 +642,9 @@ function TimelineBubble({ item, width, widthPct, onOpen }: { item: Item; width: 
 // ---------------------------------------------------------------- 视图与排序
 
 function OptionsSheet({
-  open, onOpenChange, opts, change, onDate, onHistory, onTop,
+  open, onOpenChange, opts, change, onDate, onHistory, onTop, onSelect,
 }: {
+  onSelect?: () => void;
   open: boolean; onOpenChange: (v: boolean) => void; opts: Opts; change: (p: Partial<Opts>) => void;
   onDate: () => void; onHistory: () => void; onTop: () => void;
 }) {
@@ -637,7 +705,8 @@ function OptionsSheet({
                   </ToggleButtonGroup>
                 </Field>
               )}
-              <div className="grid grid-cols-3 gap-2">
+              <div className={`grid gap-2 ${onSelect ? "grid-cols-4" : "grid-cols-3"}`}>
+                {onSelect && <Button variant="secondary" className="h-auto flex-col gap-1 py-3" onPress={onSelect}><Bookmark className="size-5" />选择</Button>}
                 <Button variant="secondary" className="h-auto flex-col gap-1 py-3" onPress={onDate}><CalendarIcon className="size-5" />跳到日期</Button>
                 <Button variant="secondary" className="h-auto flex-col gap-1 py-3" onPress={onHistory}><ClockArrowRotateLeft className="size-5" />浏览历史</Button>
                 <Button variant="secondary" className="h-auto flex-col gap-1 py-3" onPress={onTop}><Bookmark className="size-5" />回到开头</Button>

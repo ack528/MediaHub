@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Play } from "@gravity-ui/icons";
 import { fileUrl, formatDuration, stripExt, thumbUrl } from "../lib/media";
 import { thumbHashUrl } from "../lib/thumbhash";
 import type { Item } from "../lib/types";
+import { SelectMark } from "../lib/select";
 
 /** 缩略图:ThumbHash 模糊底图先显示,图片到了淡入;WebP 缩略图失败时退回原图。 */
 export function Thumb({ item, width, className = "", fit = "cover" }: { item: Item; width: number; className?: string; fit?: "cover" | "contain" }) {
@@ -36,7 +37,15 @@ export function Thumb({ item, width, className = "", fit = "cover" }: { item: It
 }
 
 /** 网格里的一格:缩略图 + 视频时长 / 动图标记 + 文件名。 */
-export function MediaTile({
+/**
+ * 注意:列表每次加载下一页,所有格子都会重新渲染,几千格很吃力,所以格子用 memo,**比较时不看 onOpen / onLongPress**
+ * (它们每次渲染都是新函数)。因此传进来的回调必须读"最新值"(用 ref),不能捕获会变的 state。
+ */
+export const MediaTile = memo(MediaTileInner, (a, b) =>
+  a.item === b.item && a.width === b.width && a.showName === b.showName && a.showDuration === b.showDuration &&
+  a.className === b.className && a.style === b.style);
+
+function MediaTileInner({
   item, width, showName, showDuration, onOpen, onLongPress, className = "", style,
 }: {
   item: Item;
@@ -70,6 +79,7 @@ export function MediaTile({
           ) : "GIF"}
         </span>
       )}
+      <SelectMark id={item.id} />
       {showName && (
         <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/70 to-transparent px-1.5 pt-4 pb-1 text-[11px] text-white">
           {stripExt(item.name)}

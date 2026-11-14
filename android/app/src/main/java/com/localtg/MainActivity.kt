@@ -16,13 +16,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
-import com.localtg.ui.AppRoot
-import com.localtg.ui.RandomScreen
-import com.localtg.ui.SearchScreen
-import com.localtg.ui.SettingsScreen
-import com.localtg.ui.ChatPager
-import com.localtg.ui.ChatScreen
-import com.localtg.ui.ViewerNavHost
 import com.localtg.ui.tg.LocalSettings
 import com.localtg.ui.tg.TgTheme
 
@@ -215,93 +208,5 @@ class WebPageActivity : TgActivity() {
 
         fun start(ctx: Context, page: kotlinx.serialization.json.JsonElement) =
             ctx.startActivity(Intent(ctx, WebPageActivity::class.java).putExtra(EXTRA_PAGE, page.toString()))
-    }
-}
-
-/** 聊天页(一个文件夹):返回 = finish(),动画由系统负责;里面的"缩略图 ↔ 查看器"用共享元素。 */
-class ChatActivity : TgActivity() {
-    /** 消息页的底是聊天背景(渐变 / 纯色),窗口底色跟它一样:进入的系统转场里不先闪一下白。 */
-    override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable {
-        val top = if (night) 0xFF0E1621.toInt() else 0xFFFFFFFF.toInt()
-        val bottom = if (night) 0xFF0B121A.toInt() else 0xFFFFFFFF.toInt()
-        return if (container.settings.value.chatBackground == "plain") ColorDrawable(top)
-        else android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(top, bottom))
-    }
-
-    @Composable
-    override fun Content() {
-        FinishWhenLoggedOut()
-        val id = intent.getStringExtra(EXTRA_ID)
-        if (id == null) { LaunchedEffect(Unit) { finish() }; return }
-        ViewerNavHost(container) { openViewer ->
-            ChatPager(container, id, intent.getStringExtra(EXTRA_TITLE), onBack = { finish() }, onOpenViewer = openViewer)
-        }
-    }
-
-    companion object {
-        private const val EXTRA_ID = "id"
-        private const val EXTRA_TITLE = "title"
-        fun start(ctx: Context, dialogId: String, title: String? = null) =
-            ctx.startActivity(Intent(ctx, ChatActivity::class.java).putExtra(EXTRA_ID, dialogId).putExtra(EXTRA_TITLE, title))
-    }
-}
-
-/** 搜索页。 */
-class SearchActivity : TgActivity() {
-    @Composable
-    override fun Content() {
-        FinishWhenLoggedOut()
-        ViewerNavHost(container) { openViewer ->
-            SearchScreen(container, onBack = { finish() }, onOpenViewer = openViewer)
-        }
-    }
-
-    companion object {
-        fun start(ctx: Context) = ctx.startActivity(Intent(ctx, SearchActivity::class.java))
-    }
-}
-
-/** 随机浏览页(特殊群组)。 */
-class RandomActivity : TgActivity() {
-    @Composable
-    override fun Content() {
-        FinishWhenLoggedOut()
-        ViewerNavHost(container) { openViewer ->
-            RandomScreen(container, intent.getStringExtra(EXTRA_LABEL), intent.getStringExtra(EXTRA_ROOTS), onBack = { finish() }, onOpenViewer = openViewer)
-        }
-    }
-
-    companion object {
-        private const val EXTRA_LABEL = "label"
-        private const val EXTRA_ROOTS = "roots"
-
-        /** label / roots 都为 null = 随机所有盘符;否则只随机这个盘符(roots 是该盘符下根目录的 id,逗号分隔)。 */
-        fun start(ctx: Context, label: String? = null, roots: String? = null) =
-            ctx.startActivity(Intent(ctx, RandomActivity::class.java).putExtra(EXTRA_LABEL, label).putExtra(EXTRA_ROOTS, roots))
-    }
-}
-
-/** 设置:根列表和每个分类页都是各自的 Activity(和 Clash Meta / Shizuku 一样),进入 / 返回都是系统转场。 */
-class SettingsActivity : TgActivity() {
-    /** 设置页的底是灰色(Telegram 设置页的 windowBackgroundGray),窗口底色一样,进入的系统转场开头不闪白。 */
-    override fun windowBackground(night: Boolean): android.graphics.drawable.Drawable =
-        ColorDrawable(if (night) 0xFF151E27.toInt() else 0xFFEFEFF4.toInt())
-
-    @Composable
-    override fun Content() {
-        FinishWhenLoggedOut()
-        SettingsScreen(
-            container, section = intent.getStringExtra(EXTRA_SECTION),
-            onBack = { finish() }, onOpen = { start(this, it) },
-        )
-    }
-
-    companion object {
-        private const val EXTRA_SECTION = "section"
-        fun start(ctx: Context, section: String?) {
-            val i = Intent(ctx, SettingsActivity::class.java)
-            if (section != null) i.putExtra(EXTRA_SECTION, section)
-            ctx.startActivity(i)
-        }
     }
 }

@@ -49,10 +49,11 @@ type hlsParams struct {
 	Bitrate int    // 视频码率 bps,0 = 默认;转码只调码率,始终保持原分辨率
 	Audio   int    // 音频流在源文件里的序号,0 = 第一条音轨
 	Codec   string // 输出编码:h264 | h265("" = 取用户记住的偏好,没有就 h264)
+	MaxH    int    // 输出高度上限(像素),0 = 保持原分辨率;只缩小不放大
 }
 
 func (p hlsParams) key() string {
-	return fmt.Sprintf("%d|%s|%d|%d|%s", p.MediaID, p.SID, p.Bitrate, p.Audio, p.Codec)
+	return fmt.Sprintf("%d|%s|%d|%d|%s|%d", p.MediaID, p.SID, p.Bitrate, p.Audio, p.Codec, p.MaxH)
 }
 
 func parseHLSParams(id int64, r *http.Request) hlsParams {
@@ -63,6 +64,10 @@ func parseHLSParams(id int64, r *http.Request) hlsParams {
 	}
 	p.Bitrate, _ = strconv.Atoi(q.Get("maxBitrate"))
 	p.Audio, _ = strconv.Atoi(q.Get("audio"))
+	p.MaxH, _ = strconv.Atoi(q.Get("maxHeight"))
+	if p.MaxH < 240 || p.MaxH > 4320 {
+		p.MaxH = 0
+	}
 	switch strings.ToLower(q.Get("codec")) {
 	case "h265", "hevc":
 		p.Codec = "h265"
@@ -112,6 +117,8 @@ type hlsSess struct {
 	runStart int
 	runAt    time.Time // 这一轮 ffmpeg 的启动时间(估算产出速度用)
 	lastErr  string
+	nxFrom   int // next() 的缓存(调用时都持有 mu)
+	nxVal    int
 	props    hlsProps    // 源视频的宽高 / 编码(决定能不能用核显硬件解码)
 	propsSet atomic.Bool // props 是否已经从库里读过
 	noHwdec  bool        // 这个文件硬件解码失败过:这个会话改用软件解码(编码仍可硬件)
@@ -297,6 +304,10 @@ func fileExists(p string) bool {
 // produced 从起点 from 开始连续已转好的段之后的下一段号。
 func (s *hlsSess) next(from int) int {
 	i := from
+	if s.nxFrom == from && s.nxVal > from { // 接着上次查到的位置往后数:长片有上千段,以前每次都从头逐段 stat
+		i = s.nxVal
+	}
+	defer func() { s.nxFrom, s.nxVal = from, i }()
 	for i < s.segs && fileExists(s.segFile(i)) {
 		i++
 	}
@@ -346,6 +357,7 @@ func (h *HLS) janitor() {
 type hlsProps struct {
 	w, h   int
 	vcodec string
+	hdr    string // hdr10 | hlg | dv | ""
 }
 
 // useHwdec 这次启动要不要用核显硬件解码(QSV):在用硬件编码、宽高是偶数、QSV 能解这种编码、之前没失败过才用。
@@ -353,7 +365,42 @@ type hlsProps struct {
 // 软解要好几秒甚至十几秒;核显解码快得多,拖动后等待明显缩短,CPU 也基本不占。失败会自动退回软件解码。
 func (s *hlsSess) useHwdec(hw bool) bool {
 	p := s.props
+	if s.needTonemap() {
+		return false // HDR 色调映射在软件滤镜里做(解码也走软件)
+	}
 	return hw && !s.noHwdec && p.w > 0 && p.h > 0 && p.w%2 == 0 && p.h%2 == 0 && qsvDecodable[strings.ToLower(p.vcodec)]
+}
+
+// needTonemap 源是 HDR(HDR10 / HLG / 杜比视界)且 ffmpeg 带 zscale:转成 SDR(BT.709)输出,否则 HDR 片源转码后颜色发灰。
+func (s *hlsSess) needTonemap() bool {
+	return s.props.hdr != "" && s.h.hasZscale()
+}
+
+var (
+	zscaleOnce sync.Once
+	zscaleOK   bool
+)
+
+func (h *HLS) hasZscale() bool {
+	zscaleOnce.Do(func() {
+		out, err := proc.Hide(exec.Command(h.cfg.Tools.FFmpeg, "-hide_banner", "-filters")).Output()
+		zscaleOK = err == nil && bytes.Contains(out, []byte(" zscale "))
+	})
+	return zscaleOK
+}
+
+// targetSize 受 MaxH 限制后的输出宽高(偶数);不需要缩小时返回 0,0。
+func (s *hlsSess) targetSize() (int, int) {
+	p := s.props
+	if s.p.MaxH <= 0 || p.h <= s.p.MaxH || p.w <= 0 || p.h <= 0 {
+		return 0, 0
+	}
+	h := s.p.MaxH &^ 1
+	w := int(float64(p.w)*float64(h)/float64(p.h)+0.5) &^ 1
+	if w < 2 {
+		w = 2
+	}
+	return w, h
 }
 
 // loadHLSProps 第一次用到这个会话时,从索引库读源视频的宽高 / 编码。
@@ -362,7 +409,7 @@ func (s *Server) loadHLSProps(sess *hlsSess, id int64) {
 		return
 	}
 	var pr hlsProps
-	_ = s.DB.QueryRow(`SELECT COALESCE(w,0), COALESCE(h,0), COALESCE(vcodec,'') FROM media WHERE id=?`, id).Scan(&pr.w, &pr.h, &pr.vcodec)
+	_ = s.DB.QueryRow(`SELECT COALESCE(w,0), COALESCE(h,0), COALESCE(vcodec,''), COALESCE(hdr,'') FROM media WHERE id=?`, id).Scan(&pr.w, &pr.h, &pr.vcodec, &pr.hdr)
 	sess.mu.Lock()
 	sess.props = pr
 	sess.mu.Unlock()
@@ -397,9 +444,21 @@ func (s *hlsSess) args(idx int, hw bool) []string {
 		pix = "nv12"
 	}
 	// 分辨率保持原样,只做三件小事:隔行扫描的帧反交错(逐行的帧原样通过)、宽高取偶数(奇数宽高编码器会报错)、转成编码器要的像素格式
-	vf := "yadif=mode=0:parity=-1:deint=1,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=" + pix
+	scale := "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+	tw, th := s.targetSize()
+	if th > 0 {
+		scale = fmt.Sprintf("scale=%d:%d", tw, th)
+	}
+	tone := ""
+	if s.needTonemap() { // HDR → SDR:线性光 → 色调映射(hable)→ BT.709
+		tone = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,"
+	}
+	vf := "yadif=mode=0:parity=-1:deint=1," + tone + scale + ",format=" + pix
 	if hwdec { // 帧在显存里:用 vpp_qsv 转成 8 位 nv12(宽高已确认是偶数;隔行视频这条路不做反交错,极少见)
 		vf = "vpp_qsv=format=nv12"
+		if th > 0 {
+			vf = fmt.Sprintf("vpp_qsv=format=nv12:w=%d:h=%d", tw, th)
+		}
 	}
 	br := s.p.Bitrate
 	if br <= 0 {
