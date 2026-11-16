@@ -96,6 +96,14 @@ function track(id: string, tries = 0) {
   timer = window.setTimeout(() => { if (id === current) report(id, tile); }, 32);
 }
 
+// 查看器正在收回时用户点了别的地方(原生不拦着、也不按过时的位置猜):这里找到手指下的那一格,按正常流程点开它
+on("tapThrough", (p: { x: number; y: number }) => {
+  const el = document.elementFromPoint(p.x, p.y)?.closest<HTMLElement>("[data-item]");
+  if (!el) return;
+  console.info("关闭途中点击,打开手指下的", el.dataset.item);
+  (el.matches("button") ? el : el.querySelector<HTMLElement>("button") ?? el).click();
+});
+
 on("viewerCurrent", (id: string) => {
   style ??= document.head.appendChild(document.createElement("style"));
   const sel = id ? `[data-item="${CSS.escape(id)}"]` : "";

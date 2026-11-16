@@ -579,6 +579,12 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
         if (revealed === d) revealed = null
     }
 
+    /** 查看器正在收回时用户点了别处:把点击位置(像素)交给网页,由它点开手指下的那一格。 */
+    fun tapThrough(xPx: Float, yPx: Float) {
+        val d = web.resources.displayMetrics.density
+        emit("tapThrough", buildJsonObject { put("x", xPx / d); put("y", yPx / d) })
+    }
+
     /** 查看器关掉了:告诉网页最后看的是哪一项(列表定位过去;随机浏览并入查看器里多取的几批)。 */
     fun viewerClosed(last: Item?) {
         val f = feed ?: return

@@ -180,7 +180,7 @@ fun WebAppHost(c: AppContainer, page: JsonElement = JsonNull, onReady: () -> Uni
 
     val st = c.settings.state.collectAsState().value
     val night = when (st.theme) { "dark" -> true; "light" -> false; else -> androidx.compose.foundation.isSystemInDarkTheme() }
-    ViewerNavHost(c, onClosed = { bridge.viewerClosed(it) }, beforeFinish = { bridge.revealTile() }) { open ->
+    ViewerNavHost(c, onClosed = { bridge.viewerClosed(it) }, beforeFinish = { bridge.revealTile() }, onTapWhileClosing = { bridge.tapThrough(it.x, it.y) }) { open ->
         bridge.openViewerAt = open
         val hero = LocalHero.current
         bridge.onHeroBounds = { id, src -> hero?.bounds?.set(id, src) }

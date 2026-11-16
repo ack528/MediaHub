@@ -269,7 +269,7 @@ private fun lerp(a: Rect, b: Rect, t: Float) = Rect(lerp(a.left, b.left, t), ler
  * 等它把藏起来的那一格重新显示出来,否则中间有一帧那一格是空的(闪一下)。
  */
 @Composable
-fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish: suspend () -> Unit = {}, root: @Composable (openViewer: (Int) -> Unit) -> Unit) {
+fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish: suspend () -> Unit = {}, onTapWhileClosing: (Offset) -> Unit = {}, root: @Composable (openViewer: (Int) -> Unit) -> Unit) {
     val hero = remember { HeroState() }
     var index by remember { mutableIntStateOf(-1) } // -1 = 查看器没开(旋转屏幕不重建 Activity,不用存)
     var current by remember { mutableStateOf<Item?>(null) }
@@ -475,10 +475,18 @@ fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish:
                                     }
                                     if (!moved) {
                                         val s = 1f - BG_SCALE * bgFactor(hero, full.height)
-                                        val hit = hero.bounds.entries.firstOrNull { (_, b) -> b.visible.scaleAbout(s, full.center.x, full.center.y).contains(down.position) }?.key
-                                        AppLog.i("anim", "关闭途中点击 ${down.position} → ${hit ?: "没点中缩略图"}")
-                                        val idx = hit?.let { id -> c.viewerFeed.items.indexOfFirst { it.id == id } } ?: -1
-                                        if (idx >= 0) openRef(idx)
+                                        // 只信正在关闭的这一项的位置(其它项的位置是以前某次打开时记的,列表早就滚动过,按它们判断会点错、动画也会从错的位置开始);
+                                        // 点在别的地方:把点击位置(换算回列表没缩小时的坐标)交给网页,由它找到手指下的缩略图,走正常的打开流程
+                                        val curItem = current
+                                        val onCur = curItem != null && hero.bounds[curItem.id]?.visible?.scaleAbout(s, full.center.x, full.center.y)?.contains(down.position) == true
+                                        AppLog.i("anim", "关闭途中点击 ${down.position} → ${if (onCur) "正在关闭的这一张" else "交给网页"}")
+                                        if (onCur) {
+                                            val idx = c.viewerFeed.items.indexOfFirst { it.id == curItem!!.id }
+                                            if (idx >= 0) openRef(idx)
+                                        } else {
+                                            val cx = full.center.x; val cy = full.center.y
+                                            onTapWhileClosing(Offset(cx + (down.position.x - cx) / s, cy + (down.position.y - cy) / s))
+                                        }
                                     }
                                     return@awaitEachGesture
                                 }
