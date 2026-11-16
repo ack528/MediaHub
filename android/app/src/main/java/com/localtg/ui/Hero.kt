@@ -296,6 +296,8 @@ fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish:
 
         var openSeq by remember { mutableIntStateOf(0) } // 每次打开 +1:查看器重新创建(翻到的页从这次点的那一项开始)
         lateinit var openRef: (Int) -> Unit
+        var fastClosing by remember { mutableStateOf(false) }
+        var pendingOpen by remember { mutableIntStateOf(-1) }
         val open: (Int) -> Unit = open@{ i ->
             val item = c.viewerFeed.items.getOrNull(i) ?: return@open
             if (hero.phase == HeroState.Phase.Closing) {
@@ -303,6 +305,7 @@ fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish:
                     // 关闭途中点回同一张:从当前位置原路展开回去(Animatable 接着当前值走,关闭协程被取消)
                     AppLog.i("nav", "关闭途中重新打开 index=$i")
                     AppLog.i("anim", "关闭途中重新打开 ${item.name} p=${"%.3f".format(hero.p.value)}")
+                    pendingOpen = -1
                     hero.closeFrom = null; hero.bgMul = 1f; hero.backMul = 1f; hero.exiting = false; hero.exitReady = false
                     hero.phase = HeroState.Phase.Opening
                     scope.launch {
@@ -311,9 +314,23 @@ fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish:
                     }
                     return@open
                 }
-                // 点了别的:当前这个直接收尾,马上打开新的
-                scope.launch { hero.p.snapTo(0f) }
-                finishClose()
+                // 点了别的:把当前这个快速收完(约 110ms,从当前位置继续收,不是瞬间消失),再打开新的;
+                // 收的这段时间里又点了别的:只记住最后一个
+                pendingOpen = i
+                if (fastClosing) return@open
+                fastClosing = true
+                AppLog.i("anim", "关闭途中打开别的:快速收完 p=${"%.3f".format(hero.p.value)} → index=$i")
+                scope.launch {
+                    try {
+                        hero.p.animateTo(0f, tween(durationMillis = 110, easing = androidx.compose.animation.core.FastOutLinearInEasing))
+                        beforeFinish()
+                        if (hero.phase == HeroState.Phase.Closing) finishClose()
+                    } finally { fastClosing = false }
+                    val next = pendingOpen
+                    pendingOpen = -1
+                    if (next >= 0) openRef(next)
+                }
+                return@open
             }
             if (hero.phase != HeroState.Phase.Idle) return@open
             AppLog.i("nav", "进入查看器 index=$i")
@@ -409,7 +426,7 @@ fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish:
                 val box = containerState(hero, cur, aspect, full, p, CORNER_DP * density)?.first
                 val img = imageState(hero, cur, aspect, full, p)
                 val src = cur?.let { hero.bounds[it.id] }
-                AppLog.i("anim", "%s %4.0fms 帧%5.1fms p=%.3f 背景=%.2f 拖=%s 容器=%s 图片=%s 格子=%s".format(
+                if (n == 0 || n % 6 == 0 || dt > 20) AppLog.i("anim", "%s %4.0fms 帧%5.1fms p=%.3f 背景=%.2f 拖=%s 容器=%s 图片=%s 格子=%s".format(
                     ph.name, (now - t0) / 1e6, dt, p, bgFactor(hero, full.height), hero.dragOffset.let { "%.0f,%.0f".format(it.x, it.y) },
                     box?.s(), img?.s(), src?.full?.s()))
                 if (dt > 34) AppLog.i("anim", "卡顿 %.0fms".format(dt))
@@ -486,6 +503,21 @@ fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish:
                                         } else {
                                             val cx = full.center.x; val cy = full.center.y
                                             onTapWhileClosing(Offset(cx + (down.position.x - cx) / s, cy + (down.position.y - cy) / s))
+                                        }
+                                    }
+                                    return@awaitEachGesture
+                                }
+                                if (hero.phase == HeroState.Phase.Opening && current?.isVideo == false) {
+                                    // 展开还没结束就抓住图片上下拖:放弃展开,从当前位置收回去(想反悔的自然动作)
+                                    var moved = Offset.Zero
+                                    while (true) {
+                                        val ev = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                                        val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                        if (!ch.pressed) break
+                                        moved += ch.positionChange()
+                                        if (moved.getDistance() > slop) {
+                                            if (kotlin.math.abs(moved.y) > kotlin.math.abs(moved.x)) { ch.consume(); close() }
+                                            break
                                         }
                                     }
                                     return@awaitEachGesture
