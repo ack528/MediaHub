@@ -20,7 +20,7 @@ export function PageHeader({
 }) {
   return (
     <header className="sticky top-0 z-20 bg-background pt-safe">
-      <div className={`flex items-center gap-1 px-2 ${large ? "h-16" : "h-14"}`}>
+      <div className={`hdr flex items-center gap-1 px-2 ${large ? "hdr-lg" : ""}`}>
         {onBack && (
           <Button isIconOnly variant="ghost" aria-label="返回" onPress={onBack}>
             <ArrowLeft className="size-5" />
@@ -28,7 +28,7 @@ export function PageHeader({
         )}
         {leading}
         <div className={`min-w-0 flex-1 ${onBack || leading ? "px-1" : "px-3"}`}>
-          <h1 className={`truncate font-semibold text-foreground ${large ? "text-2xl" : "text-base leading-tight"}`}>{title}</h1>
+          <h1 className={`truncate font-semibold text-foreground ${large ? "hdr-title-lg text-2xl" : "text-base leading-tight"}`}>{title}</h1>
           {subtitle && <p className="truncate text-xs text-muted">{subtitle}</p>}
         </div>
         {actions && <div className="flex shrink-0 items-center gap-0.5">{actions}</div>}

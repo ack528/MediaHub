@@ -204,7 +204,7 @@ export function TabBar({ items, value, onChange, glass = "on" }: { items: TabBar
   );
 
   return (
-    <nav className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-center" style={{ paddingBottom: "calc(var(--sab) + 12px)" }}>
+    <nav className="tabbar-nav pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-center" style={{ paddingBottom: "calc(var(--sab) + 12px)" }}>
       {/* 液态玻璃:背后的内容先按位移图在边缘折射(像透镜一样往里弯),再轻微模糊、提高饱和度 */}
       {level === 2 && <svg width="0" height="0" className="absolute" aria-hidden>
         {([["bar", W, H, BAR_REFRACT, false], ["lens", lw0, lh0, LENS_REFRACT, true]] as const).map(([k, w, h, scale, disperse]) => (

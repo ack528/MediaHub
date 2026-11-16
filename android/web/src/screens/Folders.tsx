@@ -1,6 +1,7 @@
 import { Avatar, Button, Chip, Tabs } from "@heroui/react";
 import { ArrowsRotateRight, Magnifier, Shuffle } from "@gravity-ui/icons";
 import { useCallback, useEffect, useMemo, useRef, useState, type Key } from "react";
+import { flushSync } from "react-dom";
 import { api, call, errorText, haptic, peek, query } from "../lib/bridge";
 import { useApp } from "../lib/app";
 import { dialogCover, formatShortTime, mediaCount, rootLabel } from "../lib/media";
@@ -77,7 +78,8 @@ export function FoldersScreen() {
   const chunks = useChunks(shown, 40);
   const roots = label === "all" ? null : [...new Set(all.filter((d) => rootLabel(d) === label).map((d) => d.rootId))].join(",");
 
-  // 列表上左右滑动切换盘符(左滑下一个、右滑上一个);明显是横向的滑动才算,不影响上下滚动
+  // 左右滑动切换盘符(左滑下一个、右滑上一个):整页都能滑(顶部的标签条除外),明显是横向的滑动才算,不影响上下滚动
+  const pageRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const order = useMemo(() => ["all", ...labels], [labels]);
   const orderRef = useRef(order);
@@ -85,26 +87,43 @@ export function FoldersScreen() {
   const labelRef = useRef(label);
   labelRef.current = label;
   /*
-   * 以前只在抬手时判断一次(横向 ≥ 60px、横向 ≥ 纵向 1.6 倍、800ms 内),滑动过程中列表不动,稍微斜一点就被当成上下滚动 → 不灵敏。
-   * 现在:
-   *  - 列表声明 touch-action: pan-y,浏览器只接管上下滚动,横向的手指移动完整交给这里;
-   *  - 移动 10px 内判定方向:横向只要比纵向大 10%(以前要 1.6 倍);判成横向后列表跟手移动(带阻尼),判成纵向就不再管;
-   *  - 抬手:横向超过 48px,或者轻快一甩(超过 20px 且速度 > 0.25 px/ms)就切换;不够就弹回原位;
+   * 手势:
+   *  - 页面声明 touch-action: pan-y,浏览器只接管上下滚动,横向的手指移动完整交给这里;
+   *  - 移动 8px 内判定方向:横向比纵向大 10% 就是横滑;判成横向后列表跟手移动(带阻尼,只改 transform,不改透明度、不重绘整页),判成纵向就不再管;
+   *  - 抬手:横向超过 max(40px, 屏宽 10%),或者轻快一甩(超过 16px 且速度 > 0.25 px/ms)就切换;不够就弹回;
+   *  - 切换是两段连续的动画:旧列表顺着手指的方向从手指位置滑出并淡出(110ms),换成新盘符的列表后,新列表从另一侧滑入(230ms),
+   *    换内容那一下发生在完全透明的时候,看不到卡顿;
    *  - 已经是第一个 / 最后一个盘符:跟手的阻尼更大,抬手弹回并轻震提示。
    */
   useEffect(() => {
-    const el = listRef.current;
-    if (!el) return;
-    let x0 = 0, y0 = 0, axis: "" | "x" | "y" = "", track = false, dx = 0;
+    const page = pageRef.current, el = listRef.current;
+    if (!page || !el) return;
+    let x0 = 0, y0 = 0, axis: "" | "x" | "y" = "", track = false, dx = 0, busy = false;
     let samples: { x: number; t: number }[] = [];
     const ease = "cubic-bezier(0.05, 0.7, 0.1, 1)";
     const target = (d: number) => { const o = orderRef.current, j = o.indexOf(labelRef.current) + (d < 0 ? 1 : -1); return o.length >= 2 && j >= 0 && j < o.length ? o[j] : null; };
     const settle = (from: number) => {
-      el.style.transform = ""; el.style.opacity = "";
+      el.style.transform = ""; el.style.willChange = "";
       if (from) el.animate([{ transform: `translateX(${from}px)` }, { transform: "none" }], { duration: 260, easing: ease });
     };
+    const commit = (next: string, from: number, dir: number) => {
+      busy = true;
+      const W = el.clientWidth || 360;
+      el.style.transform = "";
+      const out = el.animate([{ transform: `translateX(${from}px)`, opacity: 1 }, { transform: `translateX(${dir * W * 0.28}px)`, opacity: 0 }],
+        { duration: 110, easing: "cubic-bezier(0.4, 0, 1, 1)", fill: "forwards" });
+      out.finished.then(() => {
+        flushSync(() => setLabel(next));
+        page.scrollTo({ top: 0 });
+        out.cancel();
+        el.style.willChange = "";
+        el.animate([{ transform: `translateX(${-dir * W * 0.2}px)`, opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 230, easing: ease });
+        busy = false;
+      }).catch(() => { out.cancel(); busy = false; });
+    };
     const start = (e: TouchEvent) => {
-      track = e.touches.length === 1;
+      const tgt = e.target as Element | null;
+      track = e.touches.length === 1 && !busy && !tgt?.closest(".no-scrollbar, [data-no-swipe], input");
       if (!track) return;
       const t = e.touches[0];
       x0 = t.clientX; y0 = t.clientY; axis = ""; dx = 0;
@@ -117,51 +136,46 @@ export function FoldersScreen() {
       dx = t.clientX - x0;
       const dy = t.clientY - y0;
       if (!axis) {
-        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
         axis = Math.abs(dx) > Math.abs(dy) * 1.1 ? "x" : "y";
+        if (axis === "x") el.style.willChange = "transform";
       }
       if (axis !== "x") return;
       samples.push({ x: t.clientX, t: e.timeStamp });
       if (samples.length > 6) samples.shift();
-      // 跟手:有下一个盘符时阻尼 0.5,到头了阻尼更大
-      const k = target(dx) ? 0.5 : 0.18;
-      el.style.transform = `translateX(${dx * k}px)`;
-      el.style.opacity = String(1 - Math.min(0.35, Math.abs(dx) / 900));
+      el.style.transform = `translate3d(${dx * (target(dx) ? 0.5 : 0.18)}px,0,0)`; // 跟手:有下一个盘符时阻尼 0.5,到头了阻尼更大
     };
-    const end = (e: TouchEvent) => {
+    const end = () => {
       if (!track) return;
       track = false;
       if (axis !== "x") return;
       const last = samples[samples.length - 1], first = samples[0];
       const v = last && first && last.t > first.t ? (last.x - first.x) / (last.t - first.t) : 0; // px/ms
-      const shown = dx * (target(dx) ? 0.5 : 0.18);
       const next = target(dx);
-      const go = Math.abs(dx) > 48 || (Math.abs(dx) > 20 && Math.abs(v) > 0.25 && Math.sign(v) === Math.sign(dx));
+      const shown = dx * (next ? 0.5 : 0.18);
+      const far = Math.abs(dx) > Math.max(40, (el.clientWidth || 360) * 0.1);
+      const go = far || (Math.abs(dx) > 16 && Math.abs(v) > 0.25 && Math.sign(v) === Math.sign(dx));
       if (!go || !next) {
         if (go && !next) haptic("Reject"); // 已经是第一个 / 最后一个
         settle(shown);
         return;
       }
       haptic("Tick");
-      setLabel(next);
-      // 新盘符的列表从手指离开的位置继续滑入
-      el.style.transform = ""; el.style.opacity = "";
-      el.animate([{ transform: `translateX(${dx < 0 ? 40 : -40}px)`, opacity: 0.35 }, { transform: "none", opacity: 1 }], { duration: 240, easing: ease });
-      void e;
+      commit(next, shown, dx < 0 ? -1 : 1);
     };
     const cancel = () => { if (track && axis === "x") settle(dx * 0.5); track = false; };
-    el.addEventListener("touchstart", start, { passive: true });
-    el.addEventListener("touchmove", move, { passive: true });
-    el.addEventListener("touchend", end, { passive: true });
-    el.addEventListener("touchcancel", cancel, { passive: true });
+    page.addEventListener("touchstart", start, { passive: true });
+    page.addEventListener("touchmove", move, { passive: true });
+    page.addEventListener("touchend", end, { passive: true });
+    page.addEventListener("touchcancel", cancel, { passive: true });
     return () => {
-      el.removeEventListener("touchstart", start); el.removeEventListener("touchmove", move);
-      el.removeEventListener("touchend", end); el.removeEventListener("touchcancel", cancel);
+      page.removeEventListener("touchstart", start); page.removeEventListener("touchmove", move);
+      page.removeEventListener("touchend", end); page.removeEventListener("touchcancel", cancel);
     };
   }, []);
 
   return (
-    <div className="page" style={{ paddingBottom: TAB_BAR_SPACE }}>
+    <div ref={pageRef} className="page" style={{ paddingBottom: TAB_BAR_SPACE, touchAction: "pan-y" }}>
       <PageHeader
         large
         title="本地浏览"
@@ -197,7 +211,7 @@ export function FoldersScreen() {
 
       {/* 文件夹直接排在页面上(不包在卡片里),行之间是从文字开始的细分隔线 */}
       {/* 宽屏(横屏 / 平板)居中,行分两栏 */}
-      <div ref={listRef} className="mx-auto flex min-h-[60vh] w-full max-w-5xl flex-col pt-1" style={{ touchAction: "pan-y" }}>
+      <div ref={listRef} className="mx-auto flex min-h-[60vh] w-full max-w-5xl flex-col pt-1">
         {shown.length === 0 ? (
           loading && !error ? <RowsSkeleton /> : <StateView error={error} empty="没有可显示的文件夹" onRetry={load} />
         ) : (
@@ -214,7 +228,7 @@ export function FoldersScreen() {
             {chunks.map((c) => {
               const part = shown.slice(c.start, c.end);
               return (
-                <Chunk key={c.key} ids={part.map((d) => d.id)} className="grid md:grid-cols-2 md:gap-x-4">
+                <Chunk key={c.key} ids={part.map((d) => d.id)} className="grid grid-cols-[minmax(0,1fr)] md:grid-cols-[repeat(2,minmax(0,1fr))] md:gap-x-4">
                   {part.map((d) => (
                     <DialogRow key={d.id} d={d} first={false} recent={recent[d.id]} onOpen={() => nav.push({ name: "chat", params: { id: d.id, title: d.title } })} />
                   ))}
@@ -274,7 +288,7 @@ function DialogRow({ d, recent, first, onOpen }: { d: Dialog; recent?: string; f
   const sub = settings.dialogSubtitle === "path" ? d.pathDisplay : settings.dialogSubtitle === "none" ? null : recent ?? "暂无浏览记录";
   return (
     <button type="button" onClick={onOpen}
-      className="flex w-full items-center gap-3 px-4 text-left transition-colors active:bg-default">
+      className="flex w-full min-w-0 items-center gap-3 px-4 text-left transition-colors active:bg-default">
       <Avatar className="size-12 shrink-0 rounded-xl">
         {cover && <Avatar.Image src={cover} alt="" loading="lazy" className="object-cover" />}
         <Avatar.Fallback className={`rounded-xl font-semibold text-white ${gradientFor(d.title)}`}>{d.title.slice(0, 1)}</Avatar.Fallback>

@@ -95,4 +95,4 @@ export function Home() {
 }
 
 /** 首页各标签页底部要留出的空间(悬浮标签栏 + 导航栏)。 */
-export const TAB_BAR_SPACE = "calc(var(--sab) + 88px)";
+export const TAB_BAR_SPACE = "calc(var(--sab) + var(--tabbar-space))";

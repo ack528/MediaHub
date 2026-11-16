@@ -21,7 +21,7 @@ export function SettingsPage({ section }: { section: string }) {
   return (
     <div className="page">
       <PageHeader title={title} onBack={nav.pop} />
-      <div className="flex flex-col gap-5 pt-2 pb-[calc(var(--sab)+24px)]">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 pt-2 pb-[calc(var(--sab)+24px)]">
         <Body section={section} open={open} />
       </div>
     </div>

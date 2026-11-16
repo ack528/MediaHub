@@ -59,7 +59,9 @@ input, textarea, .selectable { -webkit-user-select: text; user-select: text; }
 img { -webkit-user-drag: none; }
 
 /* 每一页是自己的滚动容器:被盖住时保留滚动位置 */
-.page { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.page { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  /* 横屏时刘海 / 圆角 / 侧边导航栏的位置(原生推来的 --sal / --sar),内容不被它们遮住 */
+  padding-left: var(--sal); padding-right: var(--sar); }
 .no-scrollbar { scrollbar-width: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 
@@ -138,3 +140,15 @@ img { -webkit-user-drag: none; }
 .dark .tabbar-solid { background: rgb(52 52 57 / 0.96); box-shadow: 0 8px 24px rgb(0 0 0 / 0.45), inset 0 0 0 0.5px rgb(255 255 255 / 0.08); }
 .dark .tabbar-lens-fill { background: rgb(255 255 255 / 0.12); box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.12); }
 .dark .tabbar-lens-rim { background: radial-gradient(120% 90% at 30% 15%, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0.02) 55%, rgb(255 255 255 / 0.06) 100%); }
+
+/* ---- 横屏(矮屏):顶栏、底部导航都收紧,留出更多内容空间 ---- */
+:root { --tabbar-space: 88px; }
+.hdr { height: 3.5rem; }
+.hdr-lg { height: 4rem; }
+@media (orientation: landscape) and (max-height: 520px) {
+  :root { --tabbar-space: 64px; }
+  .hdr, .hdr-lg { height: 2.75rem; }
+  .hdr-title-lg { font-size: 1.25rem; line-height: 1.5rem; }
+  .tabbar-nav { padding-bottom: calc(var(--sab) + 6px) !important; }
+  .tabbar-nav > div { transform: scale(0.85); transform-origin: bottom center; }
+}

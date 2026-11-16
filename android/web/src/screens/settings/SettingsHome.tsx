@@ -41,7 +41,7 @@ export function SettingsHome() {
   return (
     <div className="page" style={{ paddingBottom: TAB_BAR_SPACE }}>
       <PageHeader large title="设置" />
-      <div className="flex flex-col gap-5 pt-2">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 pt-2">
         <div className="px-4">
           <Card className="rounded-3xl">
             <button type="button" className="flex w-full min-w-0 flex-col gap-3 text-left" onClick={() => nav.push({ name: "settings", params: { section: "account" } })}>

@@ -90,7 +90,7 @@ export function DateScrubber({ scroller, top, range, onJump }: {
 
   const visible = scrolling || dragging;
   return (
-    <div ref={track} aria-hidden className="pointer-events-none fixed right-0 z-30 w-14 transition-opacity duration-200"
+    <div ref={track} aria-hidden className="pointer-events-none fixed right-[var(--sar)] z-30 w-14 transition-opacity duration-200"
       style={{ top: "calc(var(--sat) + 72px)", bottom: "calc(var(--sab) + 20px)", opacity: visible ? 1 : 0 }}>
       <div
         className={`absolute right-1 grid w-9 place-items-center rounded-full bg-surface text-muted shadow-overlay touch-none ${visible ? "pointer-events-auto" : ""}`}
