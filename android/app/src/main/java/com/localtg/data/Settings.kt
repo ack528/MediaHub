@@ -109,7 +109,8 @@ data class AppSettings(
     val volumeNormalize: Boolean = true,       // 自动音量均衡:不同视频的响度拉到差不多(应用内部乘系数,不改系统音量)
     val seekBarSensitivity: Int = 3,           // 拖动进度条的灵敏度:滑动距离 / 进度条宽度 × 这个数 = 进度变化的比例(相对拖动,不管按在进度条哪里)
     val shortVideoPreload: String = "always",  // 20 秒以内的短视频预加载整个文件:always 总是 / wifi 仅 Wi-Fi / off 关闭
-    val transcodeMaxHeight: Int = 0,           // 服务端转码输出高度上限(0 = 保持原分辨率,只缩小不放大)
+    val shortVideoSeconds: Int = 20,           // 预加载的短视频时长上限(秒)
+    val transcodeMaxHeight: Int = 0,          // 服务端转码输出高度上限(0 = 保持原分辨率,只缩小不放大)
     val autoLandscape: Boolean = false,        // 横向视频自动转横屏
     val volumeBoostMb: Int = 0,                // 音量增益(毫贝,1000 = +10 dB),0 = 关闭
     val subtitleScale: Float = 1f,
@@ -160,6 +161,8 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
     /** 启动时同步读一次(文件很小),这样图片加载器和 HTTP 客户端创建时就能用上用户的设置。 */
     val state = MutableStateFlow(loadBlocking())
 
+    init { com.localtg.ui.VideoCache.shortMs = state.value.shortVideoSeconds.coerceIn(1, 3600) * 1000L }
+
     private fun loadBlocking(): AppSettings = runCatching {
         runBlocking { ctx.settingsDataStore.data.first()[key]?.let { AppJson.decodeFromString<AppSettings>(it) } }
     }.getOrNull()?.let { s ->
@@ -186,6 +189,7 @@ class SettingsStore(private val ctx: Context, private val scope: CoroutineScope)
         val old = state.value
         val n = old.block()
         state.value = n
+        com.localtg.ui.VideoCache.shortMs = n.shortVideoSeconds.coerceIn(1, 3600) * 1000L
         com.localtg.AppLog.setLevel(n.logLevel)
         runCatching {
             val a = old.toString().substringAfter('(').dropLast(1).split(", ")

@@ -1,7 +1,7 @@
 import { Button, Calendar, Chip, Modal, Sheet, Spinner, ToggleButton, ToggleButtonGroup, toast } from "@heroui/react";
 import { ArrowUpArrowDown, Bookmark, Calendar as CalendarIcon, ClockArrowRotateLeft, LayoutCellsLarge, LayoutColumns, LayoutList, Magnifier, Sliders } from "@gravity-ui/icons";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Key } from "react";
-import { api, BridgeError, call, errorText, haptic, on, query } from "../lib/bridge";
+import { api, BridgeError, call, errorText, haptic, on, peek, query } from "../lib/bridge";
 import { useShortVideoPreload } from "../lib/preload";
 import { useApp } from "../lib/app";
 import { aspectOf, dayKey, dayLabel, formatDuration, formatShortTime, stripExt } from "../lib/media";
@@ -21,6 +21,8 @@ import { SelectMark, SelectionContext } from "../lib/select";
 /** 0 时间线 / 1 网格 / 2 瀑布流 */
 type Mode = 0 | 1 | 2;
 interface Opts { sort: string; asc: boolean; mode: Mode; types: string[]; columns: number }
+/** 刚离开的群组的内容(内存里,最多 8 个群组):很快再进同一个群组时不用重新加载。 */
+const snapshots = new Map<string, { at: number; key: string; items: Item[]; prev: string | null; next: string | null; total: number }>();
 
 const SORTS = [["taken", "时间"], ["name", "名称"], ["size", "大小"], ["type", "类型"]] as const;
 const TYPES = [["photo", "照片"], ["video", "视频"], ["gif", "动图"]] as const;
@@ -71,6 +73,14 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
   const pendingScroll = useRef<{ id: string; offset: number; frac?: number } | null>(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  // 离开时把内容留在内存里(下次很快再进同一个群组时直接显示)
+  const snapRef = useRef({ prev, next, total, opts });
+  snapRef.current = { prev, next, total, opts };
+  useEffect(() => () => {
+    if (itemsRef.current.length) snapshots.set(id, { at: Date.now(), key: JSON.stringify(snapRef.current.opts), items: itemsRef.current, prev: snapRef.current.prev, next: snapRef.current.next, total: snapRef.current.total });
+    if (snapshots.size > 8) snapshots.delete(snapshots.keys().next().value!);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   // ---- 多选删除(管理员账号):选中的文件由服务端移进回收区
   const [selecting, setSelecting] = useState(false);
@@ -113,9 +123,39 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
     setStatus("loading"); setError(null);
     try {
       let r: HistoryResp;
+      // 磁盘缓存里有上次的内容:先显示出来(不用等网络),网络回来后只在内容变了时才更新
+      let shown: string | null = null;
+      const path = historyPath(id, o, { around: anchor });
+      // 刚离开不久的同一个群组、同样的视图设置:直接用离开时内存里的内容(上次位置一定在里面,不用任何网络)
+      const snap = snapshots.get(id);
+      if (snap && Date.now() - snap.at < 5 * 60_000 && snap.key === JSON.stringify(o) && (!anchor || snap.items.some((x) => x.id === anchor))) {
+        pendingScroll.current = anchor ? { id: anchor, offset } : null;
+        setItems(snap.items); setPrev(snap.prev); setNext(snap.next); setTotal(snap.total);
+        setStatus("ready");
+        if (!pendingScroll.current) { scroller.current?.scrollTo({ top: 0 }); restored.current = true; }
+        return;
+      }
+      const hit = await peek<HistoryResp>(path).catch(() => null);
+      if (my !== gen.current) return;
+      if (hit?.items?.length) {
+        shown = JSON.stringify(hit);
+        pendingScroll.current = anchor && hit.items.some((x) => x.id === anchor) ? { id: anchor, offset } : null;
+        setItems(hit.items); setPrev(hit.prevCursor ?? null); setNext(hit.nextCursor ?? null); setTotal(hit.total ?? hit.items.length);
+        setStatus("ready");
+        if (!pendingScroll.current) { scroller.current?.scrollTo({ top: 0 }); restored.current = true; }
+      }
       try {
-        r = await api<HistoryResp>(historyPath(id, o, { around: anchor }), { cache: true });
+        r = await api<HistoryResp>(path, { cache: true });
+        if (shown !== null && JSON.stringify(r) === shown) return; // 没变:已经显示的就是最新的
+        if (shown !== null) {
+          // 变了(有新文件 / 被删除):替换内容,位置交给浏览器的滚动锚定
+          if (my !== gen.current) return;
+          pendingScroll.current = null;
+          setItems(r.items); setPrev(r.prevCursor ?? null); setNext(r.nextCursor ?? null); setTotal(r.total ?? r.items.length);
+          return;
+        }
       } catch (e) {
+        if (shown !== null) return; // 网络失败但已经有缓存内容在显示
         // 上次停留的条目已不存在(被删除 / 移走):从头开始
         if (anchor && e instanceof BridgeError && e.http === 404) r = await api<HistoryResp>(historyPath(id, o, {}), { cache: true });
         else throw e;

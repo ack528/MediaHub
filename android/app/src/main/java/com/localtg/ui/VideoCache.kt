@@ -136,11 +136,11 @@ object VideoCache {
     // ---------------------------------------------------------------- 短视频预加载
 
     /** 20 秒以内的短视频:整个文件不大,看到就预加载,点开直接从本地播放。 */
-    const val SHORT_MS = 20_000L
+    @Volatile var shortMs = 20_000L // 设置 → 视频播放 → 预加载的视频时长(SettingsStore 里同步)
     private const val SHORT_MAX_BYTES = 60L shl 20
 
     fun isShort(item: com.localtg.data.Item): Boolean =
-        item.isVideo && (item.durationMs ?: 0L) in 1..SHORT_MS && item.size in 1..SHORT_MAX_BYTES && item.brokenLabel() == null
+        item.isVideo && (item.durationMs ?: 0L) in 1..shortMs && item.size in 1..SHORT_MAX_BYTES && item.brokenLabel() == null
 
     /** 这个视频的原文件是否已经完整在缓存里(是的话播放器直接读本地,不转码)。 */
     fun isFullyCached(ctx: Context, c: AppContainer, item: com.localtg.data.Item): Boolean =

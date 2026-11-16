@@ -123,6 +123,8 @@ export type Settings = Record<string, unknown> & {
   chatImageWidth: number;
   defaultColumns: number;
   rememberPosition: boolean;
+  /** 短视频预加载的时长上限(秒) */
+  shortVideoSeconds?: number;
   showDatePills: boolean;
   /** 本地缓存总上限(MB,最大 3072),各类缓存按使用情况自动分配 */
   cacheLimitMb?: number;
