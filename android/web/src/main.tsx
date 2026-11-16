@@ -6,6 +6,12 @@ import { call, errorText, inApp } from "./lib/bridge";
 import type { BootInfo } from "./lib/types";
 import { App } from "./App";
 
+// 设备分档(Telegram 的做法:低端机不是一起卡,而是少做点):核数少 / 内存小的设备关掉装饰性动画
+{
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  if ((nav.hardwareConcurrency && nav.hardwareConcurrency <= 4) || (nav.deviceMemory && nav.deviceMemory <= 3)) document.documentElement.classList.add("perf-low");
+}
+
 /** 启动:先显示加载圈,取到原生的启动信息再进入界面;超时 / 出错时显示原因和重试,不会停在白屏。 */
 function Boot() {
   const [boot, setBoot] = useState<BootInfo | null>(null);

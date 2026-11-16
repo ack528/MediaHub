@@ -43,6 +43,17 @@ function infoOf(tile: HTMLElement): (HeroInfo & { shown: number }) | null {
   return { full: box(r), visible: seen > 0 ? box(vis) : box(r), r: parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0, shown: seen / r.height };
 }
 
+/**
+ * 转场期间"让路"(Telegram:动画开始时锁住通知中心,别的界面更新延后到动画结束):
+ * 点开 / 收回查看器的动画进行时,不是用户触发的列表更新(缓存之后的网络刷新、预加载等)先等一等,动画结束后再做。
+ */
+let calmAt = 0;
+export function runWhenCalm(fn: () => void) {
+  const wait = calmAt - performance.now();
+  if (wait <= 0) fn();
+  else window.setTimeout(() => runWhenCalm(fn), wait + 20);
+}
+
 const warmed = new Set<string>();
 /**
  * 手指按下缩略图时:把这一格显示着的缩略图交给原生放进内存缓存(原生查看器第一帧要拿它垫底)。
@@ -58,6 +69,7 @@ export function prewarmThumb(item: Item, root: HTMLElement) {
 
 /** 打开查看器时一起传给原生:缩略图位置和网页里显示的那张缩略图地址(原生先拿它垫底)。 */
 export function heroArgs(id: string): { hero: HeroInfo | null; thumb: string | null } {
+  calmAt = performance.now() + 500; // 展开动画
   openedId = id;
   anchor = null;
   const tile = tileOf(id);
@@ -150,6 +162,7 @@ function restoreAnchor() {
 function stopRestore() { restoreTimers.forEach(clearTimeout); restoreTimers = []; window.removeEventListener("touchstart", stopRestore, true); }
 
 on("viewerReveal", () => {
+  calmAt = performance.now() + 200; // 收回动画刚结束:再让一下,给"紧接着点开别的"让出主线程
   if (style) style.textContent = "";
   stopRestore();
   restoreAnchor();

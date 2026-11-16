@@ -3,6 +3,7 @@
 import { useEffect, type RefObject } from "react";
 import { call, inApp } from "./bridge";
 import { useApp } from "./app";
+import { runWhenCalm } from "./hero";
 import type { Item } from "./types";
 
 const MAX_BYTES = 60 * 1024 * 1024;
@@ -33,7 +34,7 @@ export function useShortVideoPreload(scroller: RefObject<HTMLElement | null>, it
         const b = el.getBoundingClientRect();
         if (b.bottom > top && b.top < bottom) { pick.push(it); sent.add(it.id); }
       }
-      if (pick.length) call("video.preload", { items: pick }).catch(() => { pick.forEach((it) => sent.delete(it.id)); });
+      if (pick.length) runWhenCalm(() => call("video.preload", { items: pick }).catch(() => { pick.forEach((it) => sent.delete(it.id)); }));
     };
     let t = window.setTimeout(check, 600);
     const onScroll = () => { clearTimeout(t); t = window.setTimeout(check, 400); };

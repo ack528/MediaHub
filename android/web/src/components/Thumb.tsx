@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useRef, useState } from "react";
 import { Play } from "@gravity-ui/icons";
 import { fileUrl, formatDuration, stripExt, thumbUrl } from "../lib/media";
 import { thumbHashUrl } from "../lib/thumbhash";
@@ -11,6 +11,9 @@ export function Thumb({ item, width, className = "", fit = "cover" }: { item: It
   const [src, setSrc] = useState(() => thumbUrl(item, width));
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
+  // 图片很快就到了(缓存命中)就不做淡入:已经缓存的图滑过时不再"闪一下"(Telegram:内存缓存同步命中不渐变)
+  const t0 = useRef(performance.now());
+  const [instant, setInstant] = useState(false);
   const ph = thumbHashUrl(item.thumbhash);
   return (
     <div
@@ -24,8 +27,8 @@ export function Thumb({ item, width, className = "", fit = "cover" }: { item: It
           loading="lazy"
           decoding="async"
           draggable={false}
-          className={`absolute inset-0 size-full ${fit === "cover" ? "object-cover" : "object-contain"} ${loaded ? "img-fade" : "opacity-0"}`}
-          onLoad={() => setLoaded(true)}
+          className={`absolute inset-0 size-full ${fit === "cover" ? "object-cover" : "object-contain"} ${loaded ? (instant ? "" : "img-fade") : "opacity-0"}`}
+          onLoad={() => { setInstant(performance.now() - t0.current < 60); setLoaded(true); }}
           onError={() => {
             if (src.includes("fmt=webp")) setSrc(fileUrl(item));
             else setFailed(true);

@@ -102,16 +102,19 @@ export function FoldersScreen() {
     let samples: { x: number; t: number }[] = [];
     const ease = "cubic-bezier(0.05, 0.7, 0.1, 1)";
     const target = (d: number) => { const o = orderRef.current, j = o.indexOf(labelRef.current) + (d < 0 ? 1 : -1); return o.length >= 2 && j >= 0 && j < o.length ? o[j] : null; };
+    // 收尾动画的时长跟着手势走(Telegram 的做法:动画是手势的延续):离终点越近、甩得越快就越短
     const settle = (from: number) => {
       el.style.transform = ""; el.style.willChange = "";
-      if (from) el.animate([{ transform: `translateX(${from}px)` }, { transform: "none" }], { duration: 260, easing: ease });
+      if (from) el.animate([{ transform: `translateX(${from}px)` }, { transform: "none" }], { duration: Math.round(Math.min(320, Math.max(150, 120 + Math.abs(from) * 1.2))), easing: ease });
     };
-    const commit = (next: string, from: number, dir: number) => {
+    const commit = (next: string, from: number, dir: number, speed = 0) => {
       busy = true;
       const W = el.clientWidth || 360;
       el.style.transform = "";
+      const dist = Math.abs(dir * W * 0.28 - from);
+      const outMs = Math.round(Math.min(130, Math.max(60, speed > 0.05 ? dist / speed : 110)));
       const out = el.animate([{ transform: `translateX(${from}px)`, opacity: 1 }, { transform: `translateX(${dir * W * 0.28}px)`, opacity: 0 }],
-        { duration: 110, easing: "cubic-bezier(0.4, 0, 1, 1)", fill: "forwards" });
+        { duration: outMs, easing: "cubic-bezier(0.4, 0, 1, 1)", fill: "forwards" });
       out.finished.then(() => {
         flushSync(() => setLabel(next));
         page.scrollTo({ top: 0 });
@@ -161,7 +164,7 @@ export function FoldersScreen() {
         return;
       }
       haptic("Tick");
-      commit(next, shown, dx < 0 ? -1 : 1);
+      commit(next, shown, dx < 0 ? -1 : 1, Math.abs(v));
     };
     const cancel = () => { if (track && axis === "x") settle(dx * 0.5); track = false; };
     page.addEventListener("touchstart", start, { passive: true });

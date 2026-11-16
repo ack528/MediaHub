@@ -5,7 +5,7 @@ import { api, BridgeError, call, errorText, haptic, on, peek, query } from "../l
 import { useShortVideoPreload } from "../lib/preload";
 import { useApp } from "../lib/app";
 import { aspectOf, dayKey, dayLabel, formatDuration, formatShortTime, stripExt } from "../lib/media";
-import { heroArgs, prewarmThumb } from "../lib/hero";
+import { heroArgs, prewarmThumb, runWhenCalm } from "../lib/hero";
 import { useBackHandler, useNav } from "../lib/nav";
 import type { Dialog, DialogView, HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
@@ -148,10 +148,13 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
         r = await api<HistoryResp>(path, { cache: true });
         if (shown !== null && JSON.stringify(r) === shown) return; // 没变:已经显示的就是最新的
         if (shown !== null) {
-          // 变了(有新文件 / 被删除):替换内容,位置交给浏览器的滚动锚定
-          if (my !== gen.current) return;
-          pendingScroll.current = null;
-          setItems(r.items); setPrev(r.prevCursor ?? null); setNext(r.nextCursor ?? null); setTotal(r.total ?? r.items.length);
+          // 变了(有新文件 / 被删除):替换内容,位置交给浏览器的滚动锚定;正在转场(点开 / 收回查看器)时等转场结束再换
+          const fresh = r;
+          runWhenCalm(() => {
+            if (my !== gen.current) return;
+            pendingScroll.current = null;
+            setItems(fresh.items); setPrev(fresh.prevCursor ?? null); setNext(fresh.nextCursor ?? null); setTotal(fresh.total ?? fresh.items.length);
+          });
           return;
         }
       } catch (e) {
@@ -353,8 +356,22 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
     const keep = topItem();
     optsRef.current = o;
     setOpts(o);
-    if (refetch) reload(null, 0, o);
-    else if (keep) {
+    if (refetch) {
+      // 排序 / 方向 / 类型变了要重新取,但不回到开头:围绕当前看着的这一项取(只看视频时,这一项不是视频就取离它最近的视频)
+      let anchor: string | null = null;
+      if (keep) {
+        const list = itemsRef.current;
+        const at = list.findIndex((x) => x.id === keep.id);
+        const ok = (x: Item) => o.types.includes(x.type);
+        if (at >= 0) {
+          for (let d = 0; d < list.length && !anchor; d++) {
+            if (list[at + d] && ok(list[at + d])) anchor = list[at + d].id;
+            else if (d > 0 && list[at - d] && ok(list[at - d])) anchor = list[at - d].id;
+          }
+        }
+      }
+      reload(anchor, 0, o);
+    } else if (keep) {
       // 换视图 / 列数:一格的高度变了(时间线的大图 → 网格的小格),按被遮住的比例换算,不能沿用像素偏移(会多跳好几行)
       const el = scroller.current?.querySelector<HTMLElement>(`[data-item="${CSS.escape(keep.id)}"]`);
       const h = el?.getBoundingClientRect().height ?? 0;

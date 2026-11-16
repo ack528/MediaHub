@@ -75,6 +75,8 @@ img { -webkit-user-drag: none; }
 @media (prefers-reduced-motion: reduce) {
   .fade-through, .img-fade { animation: none; }
 }
+/* 低端设备(main.tsx 按核数 / 内存判定):去掉装饰性的淡入,少做点 */
+.perf-low .img-fade, .perf-low .fade-through { animation: none; }
 
 /* 登录页 ↔ 首页:fade through(以前版本:淡入 210ms 延迟 90ms + 从 0.92 放大 300ms) */
 .fade-through { animation: fade-through-in 300ms cubic-bezier(0.2, 0, 0, 1) both; }
