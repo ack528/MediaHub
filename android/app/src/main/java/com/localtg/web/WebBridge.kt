@@ -123,7 +123,8 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
     @JavascriptInterface
     fun call(id: String, method: String, args: String) {
         scope.launch {
-            val a = runCatching { AppJson.parseToJsonElement(args.ifEmpty { "{}" }).jsonObject }.getOrDefault(JsonObject(emptyMap()))
+            // 参数(点开查看器时是几百项的列表)在后台线程解析:以前在主线程解析,点开的瞬间界面会卡一下,触控延迟明显
+            val a = withContext(Dispatchers.Default) { runCatching { AppJson.parseToJsonElement(args.ifEmpty { "{}" }).jsonObject }.getOrDefault(JsonObject(emptyMap())) }
             try {
                 reply(id, true, dispatch(method, a))
             } catch (e: CancellationException) {
@@ -221,6 +222,12 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
             val r = c.api.deleteMedia(ids)
             notifyDeleted(r["ids"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList())
             r
+        }
+        // 手指按下缩略图时就把它的缩略图放进内存缓存(点开时第一帧就有垫底图,不用在点开时等)
+        "viewer.warm" -> {
+            val item = AppJson.decodeFromJsonElement<Item>(a["item"]!!)
+            a.sOrNull("thumb")?.let { t -> scope.launch { runCatching { media.warmThumb(item, t) } } }
+            JsonNull
         }
         "viewer.revealed" -> { revealed?.complete(Unit); JsonNull }
 
@@ -520,7 +527,7 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
      * source.kind:dialog(群里的历史)/ search(搜索结果)/ random(随机浏览)。
      */
     private suspend fun openViewer(a: JsonObject) {
-        val items = AppJson.decodeFromJsonElement<List<Item>>(a["items"]!!)
+        val items = withContext(Dispatchers.Default) { AppJson.decodeFromJsonElement<List<Item>>(a["items"]!!) }
         val index = a.i("index") ?: 0
         val src = a["source"]?.takeIf { it is JsonObject }?.jsonObject
         val types = src?.sOrNull("types") ?: "photo,video,gif"
@@ -560,7 +567,7 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
         val first = items.getOrNull(index)
         if (first != null) {
             heroSrc(a)?.let { onHeroBounds(first.id, it) }
-            a.sOrNull("thumb")?.let { withTimeoutOrNull(250) { media.warmThumb(first, it) } }
+            a.sOrNull("thumb")?.let { withTimeoutOrNull(80) { media.warmThumb(first, it) } }
         }
         openViewerAt(index)
     }
@@ -571,6 +578,9 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
      * 返回动画已经落到缩略图上:让网页把藏起来的那一格显示出来,等它画好(最多 [timeoutMs])再移走查看器 ——
      * 否则查看器先消失、网页晚一两帧才显示,中间那一格是空的,看起来闪一下。
      */
+    /** 不等网页确认:收回途中要马上打开别的时用(只管通知网页把藏起来的那一格显示出来)。 */
+    fun revealNow() = emit("viewerReveal")
+
     suspend fun revealTile(timeoutMs: Long = 150) {
         val d = kotlinx.coroutines.CompletableDeferred<Unit>()
         revealed = d

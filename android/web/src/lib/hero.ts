@@ -1,7 +1,8 @@
 // 缩略图 ↔ 原生查看器的展开 / 收回动画(以前版本的 Hero.kt,原生画):网页只报告缩略图在屏幕上的位置。
 // 列表里的一格用 data-item="条目 id" 标记,里面真正显示图片的那块用 data-hero 标记(没有就用整格)。
-import { call, emitLocal, on } from "./bridge";
+import { call, emitLocal, inApp, on } from "./bridge";
 import { revealItem } from "../components/Windowed";
+import type { Item } from "./types";
 
 export interface HeroRect { x: number; y: number; w: number; h: number }
 /** full = 完整的图片框,visible = 没被顶栏 / 列表边缘挡住的部分,r = 圆角(都是 CSS 像素)。 */
@@ -40,6 +41,19 @@ function infoOf(tile: HTMLElement): (HeroInfo & { shown: number }) | null {
   const vis = { left: r.left, right: r.right, top: Math.max(r.top, top), bottom: Math.min(r.bottom, bottom) };
   const seen = Math.max(0, vis.bottom - vis.top);
   return { full: box(r), visible: seen > 0 ? box(vis) : box(r), r: parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0, shown: seen / r.height };
+}
+
+const warmed = new Set<string>();
+/**
+ * 手指按下缩略图时:把这一格显示着的缩略图交给原生放进内存缓存(原生查看器第一帧要拿它垫底)。
+ * 按下到抬起至少几十毫秒,这段时间里原生已经解码好了,点开时就不用再等(以前点开时最多等 250ms)。
+ */
+export function prewarmThumb(item: Item, root: HTMLElement) {
+  if (!inApp || warmed.has(item.id)) return;
+  const src = root.querySelector("img")?.currentSrc;
+  if (!src) return;
+  warmed.add(item.id);
+  call("viewer.warm", { item, thumb: src }).catch(() => warmed.delete(item.id));
 }
 
 /** 打开查看器时一起传给原生:缩略图位置和网页里显示的那张缩略图地址(原生先拿它垫底)。 */

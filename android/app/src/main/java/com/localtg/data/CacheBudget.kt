@@ -86,7 +86,7 @@ object CacheBudget {
 
     // ---------------------------------------------------------------- 分配
 
-    fun dir(ctx: Context, k: Kind): File = File(ctx.cacheDir, when (k) { Kind.Thumb -> "web-media"; Kind.Image -> "img"; Kind.Video -> "video"; Kind.Api -> "api" })
+    fun dir(ctx: Context, k: Kind): File = File(ctx.cacheDir, when (k) { Kind.Thumb -> "web-thumbs"; Kind.Image -> "img"; Kind.Video -> "video"; Kind.Api -> "api" })
 
     fun usage(ctx: Context, k: Kind): Long = dir(ctx, k).walkTopDown().filter { it.isFile }.sumOf { it.length() }
 

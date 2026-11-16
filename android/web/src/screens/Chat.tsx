@@ -5,7 +5,7 @@ import { api, BridgeError, call, errorText, haptic, on, query } from "../lib/bri
 import { useShortVideoPreload } from "../lib/preload";
 import { useApp } from "../lib/app";
 import { aspectOf, dayKey, dayLabel, formatDuration, formatShortTime, stripExt } from "../lib/media";
-import { heroArgs } from "../lib/hero";
+import { heroArgs, prewarmThumb } from "../lib/hero";
 import { useBackHandler, useNav } from "../lib/nav";
 import type { Dialog, DialogView, HistoryResp, Item } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
@@ -331,8 +331,8 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
     const o = optsRef.current;
     // 只把点开的这一项前后 300 项交给查看器(几千项整个序列化传过去,点开会卡一下);后面的由查看器按游标继续加载
     const at = Math.max(0, all.findIndex((x) => x.id === item.id));
-    const from = Math.max(0, at - 300);
-    const list = all.length > 600 ? all.slice(from, at + 301) : all;
+    const from = Math.max(0, at - 100);
+    const list = all.length > 200 ? all.slice(from, at + 101) : all;
     call("viewer.open", {
       items: list, index: Math.max(0, list.findIndex((x) => x.id === item.id)), ...heroArgs(item.id),
       source: { kind: "dialog", dialogId: id, sort: o.sort, dir: o.asc ? "asc" : "desc", types: o.types.join(",") },
@@ -565,7 +565,7 @@ function MasonryColumn({ items, width, onOpen }: { items: Item[]; width: number;
 function FeedCard({ item, width, onOpen }: { item: Item; width: number; onOpen: () => void }) {
   const ratio = Math.min(2, Math.max(0.5, aspectOf(item)));
   return (
-    <button type="button" data-item={item.id} onClick={onOpen} className="block w-full text-left transition-transform active:scale-[0.98]">
+    <button type="button" data-item={item.id} onClick={onOpen} onPointerDown={(e) => prewarmThumb(item, e.currentTarget)} className="block w-full text-left transition-transform active:scale-[0.98]">
       <div data-hero className="relative overflow-hidden rounded-xl bg-surface-tertiary" style={{ aspectRatio: String(ratio) }}>
         <Thumb item={item} width={width} className="absolute inset-0" />
         <SelectMark id={item.id} />
@@ -618,7 +618,8 @@ function TimelineBubble({ item, width, widthPct, onOpen }: { item: Item; width: 
   const press = useLongPress(onOpen);
   return (
     <div data-item={item.id} style={{ width: `${widthPct}%` }}>
-      <button type="button" data-hero className="relative block w-full overflow-hidden rounded-2xl bg-surface-tertiary active:opacity-90" style={{ aspectRatio: String(ratio) }} {...press}>
+      <button type="button" data-hero className="relative block w-full overflow-hidden rounded-2xl bg-surface-tertiary active:opacity-90" style={{ aspectRatio: String(ratio) }} {...press}
+        onPointerDown={(e) => { press.onPointerDown(e); prewarmThumb(item, e.currentTarget); }}>
         <Thumb item={item} width={width} className="absolute inset-0" />
         <SelectMark id={item.id} />
         {item.type === "video" && (

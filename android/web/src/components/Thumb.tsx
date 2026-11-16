@@ -4,6 +4,7 @@ import { fileUrl, formatDuration, stripExt, thumbUrl } from "../lib/media";
 import { thumbHashUrl } from "../lib/thumbhash";
 import type { Item } from "../lib/types";
 import { SelectMark } from "../lib/select";
+import { prewarmThumb } from "../lib/hero";
 
 /** 缩略图:ThumbHash 模糊底图先显示,图片到了淡入;WebP 缩略图失败时退回原图。 */
 export function Thumb({ item, width, className = "", fit = "cover" }: { item: Item; width: number; className?: string; fit?: "cover" | "contain" }) {
@@ -67,6 +68,7 @@ function MediaTileInner({
       className={`group relative block w-full overflow-hidden text-left outline-none focus-visible:ring-2 focus-visible:ring-accent ${className}`}
       style={style}
       {...press}
+      onPointerDown={(e) => { press.onPointerDown(e); prewarmThumb(item, e.currentTarget); }}
     >
       <Thumb item={item} width={width} className="size-full transition-transform duration-150 group-active:scale-[0.97]" />
       {(isVideo || item.type === "gif") && (

@@ -269,7 +269,7 @@ private fun lerp(a: Rect, b: Rect, t: Float) = Rect(lerp(a.left, b.left, t), ler
  * 等它把藏起来的那一格重新显示出来,否则中间有一帧那一格是空的(闪一下)。
  */
 @Composable
-fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish: suspend () -> Unit = {}, onTapWhileClosing: (Offset) -> Unit = {}, root: @Composable (openViewer: (Int) -> Unit) -> Unit) {
+fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish: suspend () -> Unit = {}, onTapWhileClosing: (Offset) -> Unit = {}, revealNow: () -> Unit = {}, root: @Composable (openViewer: (Int) -> Unit) -> Unit) {
     val hero = remember { HeroState() }
     var index by remember { mutableIntStateOf(-1) } // -1 = 查看器没开(旋转屏幕不重建 Activity,不用存)
     var current by remember { mutableStateOf<Item?>(null) }
@@ -322,8 +322,8 @@ fun ViewerNavHost(c: AppContainer, onClosed: (Item?) -> Unit = {}, beforeFinish:
                 AppLog.i("anim", "关闭途中打开别的:快速收完 p=${"%.3f".format(hero.p.value)} → index=$i")
                 scope.launch {
                     try {
-                        hero.p.animateTo(0f, tween(durationMillis = 110, easing = androidx.compose.animation.core.FastOutLinearInEasing))
-                        beforeFinish()
+                        hero.p.animateTo(0f, tween(durationMillis = 80, easing = androidx.compose.animation.core.FastOutLinearInEasing))
+                        revealNow() // 不等网页确认(以前最多等 150ms):马上要打开新的了,收尾越快越好
                         if (hero.phase == HeroState.Phase.Closing) finishClose()
                     } finally { fastClosing = false }
                     val next = pendingOpen
