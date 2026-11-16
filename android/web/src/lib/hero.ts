@@ -45,8 +45,11 @@ function infoOf(tile: HTMLElement): (HeroInfo & { shown: number }) | null {
 /** 打开查看器时一起传给原生:缩略图位置和网页里显示的那张缩略图地址(原生先拿它垫底)。 */
 export function heroArgs(id: string): { hero: HeroInfo | null; thumb: string | null } {
   openedId = id;
+  anchor = null;
   const tile = tileOf(id);
   if (!tile) return { hero: null, thumb: null };
+  // 记下点开时这一格在屏幕上的位置:没翻到别的项就关闭时,关闭后它必须还在这个位置(见 restoreAnchor)
+  anchor = { id, top: heroEl(tile).getBoundingClientRect().top };
   const img = heroEl(tile).querySelector("img");
   return { hero: infoOf(tile), thumb: img?.currentSrc || null };
 }
@@ -56,6 +59,9 @@ export function heroArgs(id: string): { hero: HeroInfo | null; thumb: string | n
 let style: HTMLStyleElement | null = null;
 let timer = 0;
 let current = "";
+/** 点开时记下的位置;翻到别的项(列表为了让它露出来滚动过)后作废。 */
+let anchor: { id: string; top: number } | null = null;
+
 /** 这次点开的那一项:它是用户刚点的、本来就在看得见的地方,不为它滚动列表(见 [track])。 */
 let openedId = "";
 
@@ -81,6 +87,7 @@ function track(id: string, tries = 0) {
   const now = infoOf(tile);
   // 刚点开的那一项不滚列表:以前它只露出不到 60%(被顶栏挡住一半)时会马上滚到居中,而返回动画的落点还是点开时量的旧位置,
   // 打开后立刻返回 → 动画落到滚动前的位置(那里已经是别的图片了),看起来像跳到了别处。翻到别的项时才需要滚过去。
+  if (id !== openedId) anchor = null; // 翻到了别的项:列表会跟着滚,不再按点开时的位置还原
   const scrolled = id !== openedId && (!now || shownFrac(now) < 0.6);
   if (scrolled) {
     tile.scrollIntoView({ block: "center" });
@@ -99,7 +106,32 @@ on("viewerCurrent", (id: string) => {
 });
 
 // 返回动画已经落到缩略图上:先把这一格显示出来,画好之后(两帧)告诉原生再移走查看器,中间不会有一帧是空的
+/**
+ * 关闭查看器后,让点开的那一格回到点开前在屏幕上的位置。没翻页的话列表本来不该动,但状态栏 / 导航栏在查看器里显示、隐藏会改变页面的安全区,
+ * 分块渲染的块高度变化等也会让内容挪动,结果就是关闭后图片的位置和点开前不一样。这里直接按"点开时的位置"校正(只在差 1px 以上时滚,
+ * 关闭后的 0.8 秒内重复检查几次;用户一碰屏幕就停止)。
+ */
+let restoreTimers: number[] = [];
+function restoreAnchor() {
+  const a = anchor;
+  if (!a) return;
+  const tile = tileOf(a.id);
+  if (!tile) return;
+  const el = heroEl(tile);
+  const delta = el.getBoundingClientRect().top - a.top;
+  if (Math.abs(delta) < 1) return;
+  const page = el.closest<HTMLElement>(".page");
+  if (!page) return;
+  console.warn(`关闭查看器后列表位置偏了 ${delta.toFixed(1)}px,已校正(sat=${getComputedStyle(document.documentElement).getPropertyValue("--sat")})`);
+  page.scrollBy({ top: delta, behavior: "instant" });
+}
+function stopRestore() { restoreTimers.forEach(clearTimeout); restoreTimers = []; window.removeEventListener("touchstart", stopRestore, true); }
+
 on("viewerReveal", () => {
   if (style) style.textContent = "";
+  stopRestore();
+  restoreAnchor();
+  window.addEventListener("touchstart", stopRestore, true);
+  restoreTimers = [60, 160, 320, 560, 800].map((ms) => window.setTimeout(() => { restoreAnchor(); if (ms === 800) stopRestore(); }, ms));
   requestAnimationFrame(() => requestAnimationFrame(() => { call("viewer.revealed").catch(() => {}); }));
 });

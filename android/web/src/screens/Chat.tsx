@@ -344,7 +344,7 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
     if (!itemsRef.current.some((x) => x.id === d.itemId)) reload(d.itemId); // 分块渲染:列表里有但所在块是占位的也算"有"
   }), [id, reload]);
   // 查看器翻到了列表还没加载的部分:趁查看器还盖着,围绕那一项重新加载(返回时列表已经在那里,动画落在它上面)
-  useEffect(() => on("viewerMissing", (itemId: string) => { if (itemId) reload(itemId); }), [reload]);
+  useEffect(() => on("viewerMissing", (itemId: string) => { if (itemId && !itemsRef.current.some((x) => x.id === itemId)) reload(itemId); }), [reload]);
   // 文件夹内搜索选中了一条:围绕它重新加载
   useEffect(() => on("jumpTo", (d: { dialogId: string; itemId: string }) => { if (d.dialogId === id) reload(d.itemId); }), [id, reload]);
 
