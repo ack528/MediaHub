@@ -7,7 +7,7 @@
 # 桌面端(Rust)、Android、Go 三条编译互不依赖,会同时跑;Android 的第二套(带 DLL)只重新打包,不重新编译 Kotlin。
 # 前提:已运行过 tools\setup.ps1(便携工具链),signing\ 下有 Android 发布密钥(没有则用调试签名)。
 param(
-  [string]$Version = '5.2.7',          # 手机端(APK)版本号
+  [string]$Version = '5.2.8',          # 手机端(APK)版本号
   [string]$ServerVersion = '',        # 服务端 / 管理程序版本号;留空 = 取 desktop\package.json 里的 version
   [switch]$SkipAndroid,
   [switch]$SkipDesktop,
@@ -75,7 +75,7 @@ if (-not $SkipDesktop) {
     Set-Location $dir
     # 中断的安装可能已创建 node_modules,但还没有 Tauri 可执行文件。
     if (-not (Test-Path 'node_modules\.bin\tauri.cmd')) {
-      & npm ci --no-audit --no-fund
+      & npm ci --prefer-offline --no-audit --no-fund
       if ($LASTEXITCODE -ne 0) { "EXIT=$LASTEXITCODE"; return }
     }
     & npx tauri build --no-bundle 2>&1
@@ -97,8 +97,8 @@ if (-not $SkipAndroid) {
 # ---------------------------------------------------------------- 服务端 + 工具(暂存)
 if (-not $SkipDesktop) {
   Step '编译服务端 mediahub.exe'
-  # 内置 frpc(内网穿透用):tools\frp\frpc.exe 压成 gzip 放进 embed 目录,编译进 mediahub.exe(frp 是 Apache-2.0,许可证随包附带)
-  $frpc = Join-Path $Root 'tools\frp\frpc.exe'
+  # 内置 frpc(内网穿透用):压成 gzip 放进 embed 目录,编译进 mediahub.exe。
+  $frpc = Join-Path $MediaTools 'frp\frpc.exe'
   $frpGz = Join-Path $Root 'server\internal\tunnel\embed\frpc.exe.gz'
   if (Test-Path -LiteralPath $frpc) {
     Step '内置 frpc(压缩后编译进服务端)'
@@ -108,7 +108,7 @@ if (-not $SkipDesktop) {
     Write-Host ("  frpc.exe {0:N1} MB -> {1:N1} MB" -f ((Get-Item $frpc).Length / 1MB), ((Get-Item $frpGz).Length / 1MB))
   } else {
     Remove-Item -LiteralPath $frpGz -Force -ErrorAction SilentlyContinue
-    Write-Host '  没有 tools\frp\frpc.exe:本次服务端不内置 frpc(先运行 tools\setup.ps1 -Only frp)' -ForegroundColor Yellow
+    Write-Host "  缺少 $frpc，本次服务端不内置 frpc" -ForegroundColor Yellow
   }
   Push-Location (Join-Path $Root 'server')
   if (-not $SkipTests) {
@@ -126,8 +126,8 @@ if (-not $SkipDesktop) {
   Step '暂存随包工具 (ffmpeg / ffprobe / ExifTool)'
   $tf = Join-Path $Stage 'tools\ffmpeg'
   New-Item -ItemType Directory -Force $tf | Out-Null
-  Copy-Item (Join-Path $Root 'tools\ffmpeg\ffmpeg.exe'), (Join-Path $Root 'tools\ffmpeg\ffprobe.exe') $tf
-  Copy-Tree (Join-Path $Root 'tools\exiftool') (Join-Path $Stage 'tools\exiftool')
+  Copy-Item (Join-Path $MediaTools 'ffmpeg\ffmpeg.exe'), (Join-Path $MediaTools 'ffmpeg\ffprobe.exe') $tf
+  Copy-Tree (Join-Path $MediaTools 'exiftool') (Join-Path $Stage 'tools\exiftool')
   @'
 MediaHub 便携包里随附的第三方程序:
 
@@ -137,7 +137,7 @@ MediaHub 便携包里随附的第三方程序:
 - 其余部分(MediaHub 服务端 / 管理程序)的源码见 https://github.com/ack528/MediaHub 。
 '@ | Set-Content -LiteralPath (Join-Path $Stage 'tools\THIRD_PARTY_NOTICES.txt') -Encoding UTF8
   Remove-Item (Join-Path $Stage 'tools\exiftool\.installed') -ErrorAction SilentlyContinue
-  if (Test-Path (Join-Path $Root 'tools\frp\LICENSE')) { Copy-Item (Join-Path $Root 'tools\frp\LICENSE') (Join-Path $Stage 'tools\LICENSE-frp.txt') }
+  if (Test-Path (Join-Path $MediaTools 'frp\LICENSE')) { Copy-Item (Join-Path $MediaTools 'frp\LICENSE') (Join-Path $Stage 'tools\LICENSE-frp.txt') }
 }
 
 # ---------------------------------------------------------------- 桌面端
@@ -145,7 +145,7 @@ if (-not $SkipDesktop) {
   Step '等待桌面管理程序编译完成'
   Show-Job 'tauri' $jobTauri
 
-  $rel = Join-Path $env:CARGO_TARGET_DIR 'release'
+  $rel = Join-Path $CargoOutput 'release'
 
   Step '生成便携版 zip'
   $pt = Join-Path $Dist "MediaHub-$ServerVersion-portable"

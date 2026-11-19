@@ -16,7 +16,7 @@ const TYPE_TABS = [["all", "全部", "photo,video,gif"], ["photo", "照片", "ph
 
 /**
  * 按文件名搜索。dialogId 不为空 = 只在这个文件夹里搜:点结果回到文件夹并定位到那一条(长按直接打开);
- * 全局搜索点结果直接打开查看器。
+ * 全局搜索点结果打开查看器，长按在所属文件夹中定位。
  */
 export function SearchScreen({ dialogId, dialogTitle }: { dialogId?: string; dialogTitle?: string }) {
   const { settings: s } = useApp();
@@ -83,6 +83,11 @@ export function SearchScreen({ dialogId, dialogTitle }: { dialogId?: string; dia
     nav.pop();
   };
 
+  const longPress = (it: Item) => {
+    if (dialogId) return open(it);
+    nav.push({ name: "chat", params: { id: it.dialogId, focus: it.id } });
+  };
+
   return (
     <div ref={scroller} className="page">
       <PageHeader title={dialogId ? `在「${dialogTitle ?? "文件夹"}」中搜索` : "搜索"} onBack={nav.pop}>
@@ -122,7 +127,7 @@ export function SearchScreen({ dialogId, dialogTitle }: { dialogId?: string; dia
           <div className="grid" style={{ gap: s.gridSpacing, gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
             {items.map((it) => (
               <MediaTile key={it.id} item={it} width={s.gridThumbWidth} showName showDuration={s.showDuration} className="aspect-square"
-                onOpen={() => pick(it)} onLongPress={dialogId ? () => open(it) : undefined} />
+                onOpen={() => pick(it)} onLongPress={() => longPress(it)} />
             ))}
           </div>
           <div ref={bottom} className="grid h-16 place-items-center">{loading && <Spinner size="sm" />}</div>
