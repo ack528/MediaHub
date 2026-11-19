@@ -61,6 +61,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -167,7 +168,7 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
         "settings.reset" -> { c.settings.reset(); AppJson.encodeToJsonElement(c.settings.value) }
 
         "http" -> http(a)
-        "peek" -> peek(a.s("path"))
+        "peek" -> peek(a.s("path"), a.b("groupFallback"))
 
         "session.probe" -> probe(a.s("address"))
         "session.trust" -> { c.session.trust(a.s("fp")); JsonNull }
@@ -235,6 +236,7 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
         "nav.close" -> { (web.context as? android.app.Activity)?.finish(); JsonNull }
 
         "view.load" -> loadView(a.s("dialogId"))
+        "view.local" -> c.viewState.load(a.s("dialogId"))?.let { AppJson.encodeToJsonElement(it) } ?: JsonNull
         "view.save" -> { saveView(a.s("dialogId"), AppJson.decodeFromJsonElement(a["view"]!!), a.b("now")); JsonNull }
         "view.recent" -> JsonObject(c.viewState.recentNames(c.session.ns()).first().mapValues { JsonPrimitive(it.value) })
         "view.history" -> {
@@ -434,8 +436,10 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
         val s = c.session.session.value
         val key = (s?.baseUrl ?: "") + "|" + (s?.token?.take(12) ?: "") + "|" + url
         val saved = if (cached) ApiDiskCache.read(key) else null
-        val b = Request.Builder().url(url)
-        if (saved != null) b.header("If-None-Match", saved.etag)
+        val requestUrl = url.toHttpUrl()
+        val b = Request.Builder().url(requestUrl)
+        val groupKey = if (cached) groupPageUrl(requestUrl)?.let { (s?.baseUrl ?: "") + "|" + (s?.token?.take(12) ?: "") + "|group-page|" + it } else null
+        if (saved != null && saved.etag.isNotEmpty()) b.header("If-None-Match", saved.etag)
         when (method) {
             "GET" -> b.get()
             "DELETE" -> if (body != null) b.delete(body.toRequestBody(jsonType)) else b.delete()
@@ -447,13 +451,18 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
             try {
                 c.apiHttp.newCall(b.build()).execute().use { r ->
                     val text = r.body.string()
-                    if (r.code == 304 && saved != null) return@withContext AppJson.parseToJsonElement(saved.body)
+                    if (r.code == 304 && saved != null) {
+                        if (groupKey != null) ApiDiskCache.write(groupKey, "", saved.body)
+                        return@withContext AppJson.parseToJsonElement(saved.body)
+                    }
                     if (!r.isSuccessful) {
                         val code = Regex("\"code\"\\s*:\\s*\"([^\"]*)\"").find(text)?.groupValues?.get(1) ?: "http.${r.code}"
                         val msg = Regex("\"message\"\\s*:\\s*\"([^\"]*)\"").find(text)?.groupValues?.get(1) ?: "HTTP ${r.code}"
                         throw ApiException(r.code, code, msg)
                     }
-                    if (cached) r.header("ETag")?.let { ApiDiskCache.write(key, it, text) }
+                    val etag = r.header("ETag")
+                    if (cached && (etag != null || groupKey != null)) ApiDiskCache.write(key, etag.orEmpty(), text)
+                    if (groupKey != null) ApiDiskCache.write(groupKey, "", text)
                     return@withContext if (text.isBlank()) JsonNull else runCatching { AppJson.parseToJsonElement(text) }.getOrElse { JsonPrimitive(text) }
                 }
             } catch (e: IOException) {
@@ -484,10 +493,24 @@ class WebBridge(private val c: AppContainer, private val web: WebView, private v
     }
 
     /** 磁盘缓存里上次的内容(先显示,不等网络)。 */
-    private fun peek(path: String): JsonElement {
-        val s = c.session.session.value ?: return JsonNull
-        val saved = ApiDiskCache.read(s.baseUrl + "|" + s.token.take(12) + "|" + s.baseUrl + path) ?: return JsonNull
-        return runCatching { AppJson.parseToJsonElement(saved.body) }.getOrDefault(JsonNull)
+    private suspend fun peek(path: String, groupFallback: Boolean): JsonElement = withContext(Dispatchers.IO) {
+        val s = c.session.session.value ?: return@withContext JsonNull
+        val prefix = s.baseUrl + "|" + s.token.take(12) + "|"
+        val url = s.baseUrl + path
+        val page = if (groupFallback) groupPageUrl(url.toHttpUrl()) else null
+        val saved = ApiDiskCache.read(prefix + url)
+            ?: page?.let { ApiDiskCache.read(prefix + "group-page|" + it) ?: ApiDiskCache.read(prefix + it) }
+            ?: return@withContext JsonNull
+        runCatching { AppJson.parseToJsonElement(saved.body) }.getOrDefault(JsonNull)
+    }
+
+    /** 同一群组、排序和筛选共用进入时的最近一页。分页和日期滑条的探测请求不覆盖它。 */
+    private fun groupPageUrl(url: HttpUrl): HttpUrl? {
+        val parts = url.pathSegments
+        if (parts.size != 5 || parts.take(3) != listOf("api", "v1", "dialogs") || parts.last() != "history") return null
+        val limit = url.queryParameter("limit")?.toIntOrNull() ?: return null
+        if (limit <= 2 || url.queryParameter("cursor") != null || url.queryParameter("aroundDate") != null) return null
+        return url.newBuilder().removeAllQueryParameters("around").build()
     }
 
     // ---------------------------------------------------------------- 浏览位置

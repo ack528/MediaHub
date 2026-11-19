@@ -81,6 +81,7 @@ export function installBrowserMock() {
       case "settings.reset": settings = defaultSettings(); emitLocal("settings", settings); return settings;
       case "peek": return null;
       case "caps": return { codecs: ["h264"], thumbWebp: true };
+      case "view.local": return null;
       case "view.load": return { view: null, from: "" };
       case "view.recent": return { d0: "IMG_0042.jpg", d2: "VID_0013.mp4" };
       case "view.history": return { entries: [], config: { enabled: true, maxEntries: 100, retentionDays: 90, intervalSeconds: 60 } };

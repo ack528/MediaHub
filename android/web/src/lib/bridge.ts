@@ -81,7 +81,9 @@ export function api<T = any>(path: string, opts: HttpOpts = {}): Promise<T> {
 }
 
 /** 磁盘缓存里上次的响应(没有就是 null)。 */
-export function peek<T = any>(path: string): Promise<T | null> { return call<T | null>("peek", { path }); }
+export function peek<T = any>(path: string, groupFallback = false): Promise<T | null> {
+  return call<T | null>("peek", { path, groupFallback });
+}
 
 export function haptic(kind: "Tick" | "Click" | "Long" | "Confirm" | "Reject" = "Tick") { if (inApp) call("app.haptic", { kind }).catch(() => {}); }
 

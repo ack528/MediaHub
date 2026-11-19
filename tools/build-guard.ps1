@@ -1,5 +1,5 @@
 ﻿# 带 CPU 监测的编译包装:所有编译 / 打包命令都应该通过它跑(全局约定,见 ~/.claude/CLAUDE.md)。
-#   powershell -NoProfile -File tools\build-guard.ps1 -Name android -Exe gradle -ArgList '--console=plain','--parallel',':app:assembleRelease' -Log dist\logs\android.log
+#   powershell -NoProfile -File tools\build-guard.ps1 -Name android -Exe gradle -ArgList '--console=plain','--parallel',':app:assembleRelease' -Log build\package\logs\android.log
 # 做的事:
 #   1. 输出一律写进日志文件(不走管道,Gradle 守护进程不会把管道占住);结束后按 -Show 正则打印关键行
 #   2. 每 2 秒采样整机 CPU 和编译进程(子进程树 + Gradle/Kotlin 守护进程 + cmake/ninja/clang/rustc/go 等)的 CPU 时间
@@ -20,7 +20,7 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 $Root = Split-Path -Parent $PSScriptRoot
-if (-not $Log) { $Log = Join-Path $Root "dist\logs\$Name.log" }
+if (-not $Log) { $Log = Join-Path $Root "build\package\logs\$Name.log" }
 New-Item -ItemType Directory -Force (Split-Path -Parent $Log) | Out-Null
 $ErrLog = "$Log.err"
 $Cores = [Environment]::ProcessorCount

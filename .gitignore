@@ -8,6 +8,7 @@ tools/*
 server/internal/tunnel/embed/frpc.exe.gz
 runtime/
 dist/
+/build/
 server/**/*.exe
 *.sqlite
 *.sqlite-wal

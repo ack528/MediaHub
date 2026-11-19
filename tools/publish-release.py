@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""把 dist/release/ 里的文件发布成 GitHub Release(ack528/MediaHub)。
+"""把 build/package/release/ 里的文件发布成 GitHub Release(ack528/MediaHub)。
 
 用法:python tools/publish-release.py <tag> <标题>
 - 凭据:用 git 已经保存的 GitHub 凭据(git credential fill),不会打印出来,也不需要另外的令牌;
 - 说明:取根目录 CHANGELOG.md 里手机端 / 服务端各自最新一个版本的条目;
-- 只上传 dist/release/ 里的文件(不带 Lossless.dll 的 APK、-update.zip、便携版 zip、SHA256SUMS.txt);
+- 上传 APK、更新包、便携包和 SHA256SUMS.txt。
 - 同名 tag 的 Release 已经存在就先删掉重建(重新发布同一个版本时用)。
 """
 import json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request
 
 REPO = "ack528/MediaHub"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REL = os.path.join(ROOT, "dist", "release")
+REL = os.path.join(ROOT, "build", "package", "release")
 
 
 def token():
@@ -53,18 +53,19 @@ def latest_entry(text, section):
     return title, items
 
 
-def save_last():
-    """发布成功后把这次的文件存一份到 dist/last-release/:下次只打包有改动的一端时,另一端沿用这里的 APK / update.zip。"""
-    import glob, shutil
+def save_last(files):
+    """本地只保留最新正式发版的四个附件。"""
+    import shutil
     last = os.path.join(ROOT, "dist", "last-release")
     os.makedirs(last, exist_ok=True)
-    for pat in ("LocalBrowse-*.apk", "MediaHub-*-update.zip"):
-        new = glob.glob(os.path.join(REL, pat))
-        if new:  # 这次有新的:删掉旧的再复制
-            for old in glob.glob(os.path.join(last, pat)):
-                os.remove(old)
-            for f in new:
-                shutil.copy2(f, last)
+    for name in files:
+        target = os.path.join(last, name)
+        pending = target + ".tmp"
+        shutil.copy2(os.path.join(REL, name), pending)
+        os.replace(pending, target)
+    for name in os.listdir(last):
+        if name not in files and re.fullmatch(r"LocalBrowse-[\d.]+\.apk|MediaHub-[\d.]+-(?:portable|update)\.zip", name):
+            os.remove(os.path.join(last, name))
 
 
 def main():
@@ -72,11 +73,12 @@ def main():
         sys.exit(__doc__)
     tag, name = sys.argv[1], sys.argv[2]
     files = sorted(f for f in os.listdir(REL) if os.path.isfile(os.path.join(REL, f)) and f != "SHA256SUMS.txt")
-    assert files, "dist/release 是空的,先运行 tools/package.ps1 -Release"
+    assert files, "候选发布目录是空的,先运行 tools/package.ps1 -Release"
     assert not any("dll" in f.lower() for f in files), "发布目录里不能有 DLL"
     # 手机端和服务端的更新程序都只看最新的一个 Release:安装包、更新包、SHA256SUMS.txt 缺一个就检查不了 / 校验不了更新
     assert any(re.match(r"^LocalBrowse-[\d.]+\.apk$", f) for f in files), "发布目录里没有手机端安装包(另一端没改时应由 package.ps1 从 dist/last-release 带过来)"
     assert any(re.match(r"^MediaHub-[\d.]+-update\.zip$", f) for f in files), "发布目录里没有服务端更新包"
+    assert any(re.match(r"^MediaHub-[\d.]+-portable\.zip$", f) for f in files), "发布目录里没有便携包"
     # SHA256SUMS.txt 在这里按实际要上传的文件重新算(以前靠打包脚本生成,那一步出错时发布就缺了校验文件)
     import hashlib
     lines = []
@@ -133,8 +135,18 @@ def main():
         print("上传", f, f"{len(data) / 1048576:.1f} MB")
         api(tok, "POST", f"{up}?name={urllib.parse.quote(f)}", data, {"Content-Type": ctype})
     api(tok, "PATCH", f"{base}/releases/{rel['id']}", {"draft": False, "make_latest": "true"})
+    latest = api(tok, "GET", f"{base}/releases/latest")
+    assert latest["tag_name"] == tag and not latest["draft"] and not latest["prerelease"], "最新正式 Release 状态不匹配"
+    remote_files = {asset["name"]: asset for asset in latest["assets"]}
+    assert set(remote_files) == set(files), "Release 附件列表不匹配"
+    for name in files:
+        path = os.path.join(REL, name)
+        asset = remote_files[name]
+        with open(path, "rb") as fh:
+            digest = "sha256:" + hashlib.file_digest(fh, "sha256").hexdigest()
+        assert asset["state"] == "uploaded" and asset["size"] == os.path.getsize(path) and asset["digest"] == digest, f"附件校验失败: {name}"
+    save_last(files)
     print("完成:", rel["html_url"])
-    save_last()
 
 
 main()

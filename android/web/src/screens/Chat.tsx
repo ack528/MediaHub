@@ -21,8 +21,6 @@ import { SelectMark, SelectionContext } from "../lib/select";
 /** 0 时间线 / 1 网格 / 2 瀑布流 */
 type Mode = 0 | 1 | 2;
 interface Opts { sort: string; asc: boolean; mode: Mode; types: string[]; columns: number }
-/** 刚离开的群组的内容(内存里,最多 8 个群组):很快再进同一个群组时不用重新加载。 */
-const snapshots = new Map<string, { at: number; key: string; items: Item[]; prev: string | null; next: string | null; total: number }>();
 
 const SORTS = [["taken", "时间"], ["name", "名称"], ["size", "大小"], ["type", "类型"]] as const;
 const TYPES = [["photo", "照片"], ["video", "视频"], ["gif", "动图"]] as const;
@@ -73,14 +71,6 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
   const pendingScroll = useRef<{ id: string; offset: number; frac?: number } | null>(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
-  // 离开时把内容留在内存里(下次很快再进同一个群组时直接显示)
-  const snapRef = useRef({ prev, next, total, opts });
-  snapRef.current = { prev, next, total, opts };
-  useEffect(() => () => {
-    if (itemsRef.current.length) snapshots.set(id, { at: Date.now(), key: JSON.stringify(snapRef.current.opts), items: itemsRef.current, prev: snapRef.current.prev, next: snapRef.current.next, total: snapRef.current.total });
-    if (snapshots.size > 8) snapshots.delete(snapshots.keys().next().value!);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
 
   // ---- 多选删除(管理员账号):选中的文件由服务端移进回收区
   const [selecting, setSelecting] = useState(false);
@@ -113,11 +103,13 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
   }), []);
 
   const scroller = useRef<HTMLDivElement>(null);
+  const openingInteracted = useRef(false);
+  const markOpeningInteraction = () => { openingInteracted.current = true; };
   useShortVideoPreload(scroller, items); // 屏幕附近 20 秒以内的短视频预加载,点开直接播
   const header = useRef<HTMLDivElement>(null);
   const headerBottom = () => header.current?.getBoundingClientRect().bottom ?? 0;
 
-  const reload = useCallback(async (anchor: string | null, offset = 0, o: Opts = optsRef.current) => {
+  const reload = useCallback(async (anchor: string | null, offset = 0, o: Opts = optsRef.current, groupFallback = false) => {
     const my = ++gen.current;
     restored.current = false;
     setStatus("loading"); setError(null);
@@ -126,42 +118,35 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
       // 磁盘缓存里有上次的内容:先显示出来(不用等网络),网络回来后只在内容变了时才更新
       let shown: string | null = null;
       const path = historyPath(id, o, { around: anchor });
-      // 刚离开不久的同一个群组、同样的视图设置:直接用离开时内存里的内容(上次位置一定在里面,不用任何网络)
-      const snap = snapshots.get(id);
-      if (snap && Date.now() - snap.at < 5 * 60_000 && snap.key === JSON.stringify(o) && (!anchor || snap.items.some((x) => x.id === anchor))) {
-        pendingScroll.current = anchor ? { id: anchor, offset } : null;
-        setItems(snap.items); setPrev(snap.prev); setNext(snap.next); setTotal(snap.total);
-        setStatus("ready");
-        if (!pendingScroll.current) { scroller.current?.scrollTo({ top: 0 }); restored.current = true; }
-        return;
-      }
-      const hit = await peek<HistoryResp>(path).catch(() => null);
+      const hit = await peek<HistoryResp>(path, groupFallback).catch(() => null);
+      const hitHasAnchor = anchor != null && hit?.items.some((x) => x.id === anchor);
       if (my !== gen.current) return;
       if (hit?.items?.length) {
         shown = JSON.stringify(hit);
-        pendingScroll.current = anchor && hit.items.some((x) => x.id === anchor) ? { id: anchor, offset } : null;
+        pendingScroll.current = anchor && hitHasAnchor ? { id: anchor, offset } : null;
         setItems(hit.items); setPrev(hit.prevCursor ?? null); setNext(hit.nextCursor ?? null); setTotal(hit.total ?? hit.items.length);
         setStatus("ready");
         if (!pendingScroll.current) { scroller.current?.scrollTo({ top: 0 }); restored.current = true; }
       }
       try {
-        r = await api<HistoryResp>(path, { cache: true });
+        r = await api<HistoryResp>(path, { cache: true }).catch((e: unknown) => {
+          if (anchor && e instanceof BridgeError && e.http === 404) return api<HistoryResp>(historyPath(id, o, {}), { cache: true });
+          throw e;
+        });
         if (shown !== null && JSON.stringify(r) === shown) return; // 没变:已经显示的就是最新的
         if (shown !== null) {
           // 变了(有新文件 / 被删除):替换内容,位置交给浏览器的滚动锚定;正在转场(点开 / 收回查看器)时等转场结束再换
           const fresh = r;
           runWhenCalm(() => {
-            if (my !== gen.current) return;
-            pendingScroll.current = null;
+            if (my !== gen.current || (groupFallback && anchor && !hitHasAnchor && openingInteracted.current)) return;
+            pendingScroll.current = anchor && !hitHasAnchor && fresh.items.some((x) => x.id === anchor) ? { id: anchor, offset } : null;
             setItems(fresh.items); setPrev(fresh.prevCursor ?? null); setNext(fresh.nextCursor ?? null); setTotal(fresh.total ?? fresh.items.length);
           });
           return;
         }
       } catch (e) {
         if (shown !== null) return; // 网络失败但已经有缓存内容在显示
-        // 上次停留的条目已不存在(被删除 / 移走):从头开始
-        if (anchor && e instanceof BridgeError && e.http === 404) r = await api<HistoryResp>(historyPath(id, o, {}), { cache: true });
-        else throw e;
+        throw e;
       }
       if (my !== gen.current) return;
       pendingScroll.current = anchor && r.items.some((x) => x.id === anchor) ? { id: anchor, offset } : null;
@@ -174,35 +159,42 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
     }
   }, [id]);
 
-  // 打开:取浏览记录(本机和服务器谁新用谁),然后按记录加载
-  const [ready, setReady] = useState(false);
+  // 打开时先用本机记录读缓存。服务器位置在后台同步，只在用户尚未操作时应用。
   useEffect(() => {
     let alive = true;
     (async () => {
-      let anchor: string | null = null, offset = 0;
-      if (s.rememberPosition) {
-        const r = await call<{ view: DialogView | null; from: string }>("view.load", { dialogId: id }).catch(() => null);
-        const v = r?.view;
-        if (v) {
-          const o: Opts = {
+      const options = (v: DialogView | null): Opts => {
+        const o: Opts = v
+          ? {
             sort: v.sort, asc: v.grid ? v.ascGrid : (v.ascChat ?? v.ascGrid), mode: !v.grid ? 0 : v.feed ? 2 : 1,
             types: v.types?.length ? v.types : ["photo", "video", "gif"], columns: Math.min(6, Math.max(2, v.columns || 3)),
-          };
-          optsRef.current = o; setOpts(o);
-          anchor = v.itemId ?? null; offset = v.offsetPx ?? 0;
-        }
-        if (r?.from && !focus) toast(`已接着「${r.from}」上次的浏览位置`);
-      }
-      // 从查看器「在文件夹中定位」打开:视图设置沿用记住的,但围绕那一项加载(不回到上次的位置)
-      // 类型过滤要包含它(记住的过滤可能把这一类排除了,围绕它加载会找不到)
-      if (focus) {
-        anchor = focus; offset = 0;
-        const o: Opts = { ...optsRef.current, types: ["photo", "video", "gif"] };
-        optsRef.current = o; setOpts(o);
-      }
-      if (!alive) return;
-      setReady(true);
-      reload(anchor, offset);
+          }
+          : optsRef.current;
+        return focus ? { ...o, types: ["photo", "video", "gif"] } : o;
+      };
+      const local = s.rememberPosition
+        ? await call<DialogView | null>("view.local", { dialogId: id }).catch(() => null)
+        : null;
+      if (!alive || gen.current !== 0) return;
+      const startOpts = options(local);
+      const startAnchor = focus ?? local?.itemId ?? null;
+      const startOffset = focus ? 0 : local?.offsetPx ?? 0;
+      optsRef.current = startOpts; setOpts(startOpts);
+      const initial = reload(startAnchor, startOffset, startOpts, !focus);
+      const initialGen = gen.current;
+      if (!s.rememberPosition || session.local || focus) return;
+      const [remote] = await Promise.all([
+        call<{ view: DialogView | null; from: string }>("view.load", { dialogId: id }).catch(() => null),
+        initial,
+      ]);
+      if (!alive || openingInteracted.current || gen.current !== initialGen || optsRef.current !== startOpts || !remote?.view) return;
+      const nextOpts = options(remote.view);
+      const nextAnchor = remote.view.itemId ?? null;
+      const nextOffset = remote.view.offsetPx ?? 0;
+      if (startAnchor === nextAnchor && startOffset === nextOffset && JSON.stringify(startOpts) === JSON.stringify(nextOpts)) return;
+      optsRef.current = nextOpts; setOpts(nextOpts);
+      if (remote.from) toast(`已接着「${remote.from}」上次的浏览位置`);
+      reload(nextAnchor, nextOffset, nextOpts, true);
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -437,7 +429,8 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
 
   return (
     <SelectionContext.Provider value={selection}>
-    <div ref={scroller} className="page" style={{ overflowAnchor: "none" }} onScroll={handleScroll}>
+    <div ref={scroller} className="page" style={{ overflowAnchor: "none" }} onScroll={handleScroll}
+      onPointerDownCapture={markOpeningInteraction} onWheelCapture={markOpeningInteraction} onKeyDownCapture={markOpeningInteraction}>
       <div ref={header} className="sticky top-0 z-20">
         <PageHeader
           title={selecting ? `已选 ${picked.size} 项` : dialog?.title ?? titleHint ?? "文件夹"}
@@ -464,7 +457,7 @@ export function ChatScreen({ id, titleHint, focus }: { id: string; titleHint?: s
         />
       </div>
 
-      {!ready || (status === "loading" && items.length === 0) ? (
+      {status === "loading" && items.length === 0 ? (
         opts.mode === 1 ? <GridSkeleton columns={adaptiveColumns(opts.columns, width)} gap={s.gridSpacing} />
           : opts.mode === 2 ? <MasonrySkeleton columns={2} />
           : <TimelineSkeleton widthPct={Math.min(100, Math.max(40, Number(s.bubbleWidth ?? 72)))} />

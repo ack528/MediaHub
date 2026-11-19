@@ -24,4 +24,4 @@
 
 - 便携工具链:`tools/`(`powershell -File tools\setup.ps1` 安装,`. .\env.ps1` 进入环境)。
 - 测试:`cd server; go test ./...`。
-- 打包:`powershell -File tools\package.ps1 -Version <手机端版本>`(自用,APK 带 DLL);发布到 GitHub 用 `-Release`(APK 不带 DLL,另出自动更新包,产物在 `dist\release\`)。服务端 / 管理程序版本取自 `desktop\package.json`。
+- 默认打包输出自用包到 `build\package\personal\`。正式发布使用 `-Release`，候选附件在 `build\package\release\`，发布校验后更新 `dist\last-release\`。服务端 / 管理程序版本取自 `desktop\package.json`。

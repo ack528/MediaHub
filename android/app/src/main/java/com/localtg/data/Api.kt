@@ -160,7 +160,7 @@ object ApiDiskCache {
         val f = file(key)?.takeIf { it.isFile } ?: return null
         val t = f.readText()
         val i = t.indexOf('\n')
-        if (i <= 0) null else Saved(t.substring(0, i), t.substring(i + 1)).also { f.setLastModified(System.currentTimeMillis()) }
+        if (i < 0) null else Saved(t.substring(0, i), t.substring(i + 1)).also { f.setLastModified(System.currentTimeMillis()) }
     }.getOrNull()
 
     fun write(key: String, etag: String, body: String) {
@@ -224,7 +224,7 @@ class Api(private val http: OkHttpClient, private val store: SessionStore) {
         val key = (s?.baseUrl ?: "") + "|" + (s?.token?.take(12) ?: "") + "|" + request.url.toString()
         val saved = ApiDiskCache.read(key)
         if (saved != null && onCached != null) runCatching { onCached(AppJson.decodeFromString<T>(saved.body)) }
-        val req = if (saved != null) request.newBuilder().header("If-None-Match", saved.etag).build() else request
+        val req = if (saved != null && saved.etag.isNotEmpty()) request.newBuilder().header("If-None-Match", saved.etag).build() else request
         val body = callBody(req, saved) { etag, b -> ApiDiskCache.write(key, etag, b) }
         return AppJson.decodeFromString<T>(body)
     }
